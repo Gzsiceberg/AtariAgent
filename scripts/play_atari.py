@@ -214,8 +214,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fps",
         type=int,
-        default=30,
-        help="Maximum agent steps per second (default: 30).",
+        default=15,
+        help=(
+            "Maximum agent steps per second (default: 15, matching Atari's "
+            "~60 Hz with the environment's default 4-frame skip)."
+        ),
     )
     parser.add_argument(
         "--zoom",
