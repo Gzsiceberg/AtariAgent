@@ -1,0 +1,31 @@
+defaults:
+  - override hydra/job_logging: disabled
+  - _self_
+
+seed: 0
+
+environment:
+  id: ALE/Pong-v5
+  frame_stack: 4
+
+model:
+  projection_dim: 1024
+  projection_hidden_dim: 1024
+  prediction_hidden_dim: 256
+
+training:
+  device: auto
+  steps: 10
+  batch_size: 4
+  unroll_steps: 5
+  lstm_horizon: 5
+  learning_rate: 0.001
+  consistency_weight: 2.0
+  log_every: 1
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
