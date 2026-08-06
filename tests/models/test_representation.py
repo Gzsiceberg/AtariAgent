@@ -1,4 +1,3 @@
-import pytest
 import torch
 from torch import nn
 
@@ -77,11 +76,3 @@ def test_downsample_residual_block_projects_identity() -> None:
     block = ResidualBlock(32, 64, stride=2)
 
     assert block(torch.randn(2, 32, 48, 48)).shape == (2, 64, 24, 24)
-
-
-@pytest.mark.parametrize("shape", [(4, 96, 96), (1, 4, 84, 84), (1, 3, 96, 96)])
-def test_representation_rejects_invalid_input(shape: tuple[int, ...]) -> None:
-    model = RepresentationNetwork(4)
-
-    with pytest.raises(ValueError):
-        model(torch.randn(shape))

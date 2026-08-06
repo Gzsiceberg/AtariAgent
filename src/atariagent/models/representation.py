@@ -2,7 +2,8 @@
 
 from collections.abc import Sequence
 
-import torch
+from beartype import beartype
+from jaxtyping import Float, jaxtyped
 from torch import Tensor, nn
 
 
@@ -43,7 +44,10 @@ class ResidualBlock(nn.Module):
         else:
             self.skip = nn.Identity()
 
-    def forward(self, x: Tensor) -> Tensor:
+    @jaxtyped(typechecker=beartype)
+    def forward(
+        self, x: Float[Tensor, "batch in_channels height width"]
+    ) -> Float[Tensor, "batch out_channels out_height out_width"]:
         identity = self.skip(x)
 
         out = self.relu(self.bn1(self.conv1(x)))
@@ -116,15 +120,14 @@ class RepresentationNetwork(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-    def forward(self, observation: Tensor) -> Tensor:
-        if observation.ndim != 4:
-            raise ValueError("observation must have shape (batch, channels, height, width)")
+    @jaxtyped(typechecker=beartype)
+    def forward(
+        self, observation: Float[Tensor, "batch channels 96 96"]
+    ) -> Float[Tensor, "batch 64 6 6"]:
         if observation.shape[1] != self.in_channels:
             raise ValueError(
                 f"expected {self.in_channels} input channels, got {observation.shape[1]}"
             )
-        if observation.shape[-2:] != (96, 96):
-            raise ValueError("representation network expects 96x96 observations")
 
         x = self.stem(observation)
         x = self.residual_48(x)
