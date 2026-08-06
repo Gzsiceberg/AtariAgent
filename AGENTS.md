@@ -6,6 +6,7 @@
 - Keep `pyproject.toml` and `uv.lock` synchronized, and commit dependency changes to both files.
 - Use [Hydra](https://hydra.cc/) for configuration files and configuration management.
 - Use [`pytest`](https://docs.pytest.org/) for writing and running tests.
+- Prefer [`einops`](https://einops.rocks/) for most tensor shape operations instead of manual PyTorch shape manipulation.
 
 ## Reference Repositories
 
