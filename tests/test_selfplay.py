@@ -107,7 +107,7 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     assert first_run[0][0].raw_rewards == (2.5, 2.5)
     assert len(first_run[0][0].observations) == 3
     assert first_run[0][0].search_results[0] is agent.search_result_batches[0][0]
-    assert first_run[0][0].child_visits == ((0.25, 0.75), (0.25, 0.75))
+    assert first_run[0][0].target_policy == ((0.25, 0.75), (0.25, 0.75))
     assert first_run[0][0].root_values == (1.0, 2.0)
     assert first_environment.reset_seeds == [10, None]
     assert second_environment.reset_seeds == [11]

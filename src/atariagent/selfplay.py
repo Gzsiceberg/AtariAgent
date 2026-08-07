@@ -88,7 +88,7 @@ class GameTrajectory:
         return len(self.actions)
 
     @property
-    def child_visits(self) -> tuple[tuple[float, ...], ...]:
+    def target_policy(self) -> tuple[tuple[float, ...], ...]:
         """Normalized MCTS visit distributions used as policy targets."""
         distributions = []
         for result in self.search_results:

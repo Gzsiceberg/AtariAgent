@@ -7,6 +7,7 @@ from .agent import (
     BatchedNetworkEvaluator,
     categorical_to_scalar,
 )
+from .replay import FIFOReplayBuffer, ReplayAddResult, ReplayBatch
 from .selfplay import GameTrajectory, SelfPlayWorker
 
 __all__ = [
@@ -14,7 +15,10 @@ __all__ = [
     "AgentOutput",
     "AtariAgent",
     "BatchedNetworkEvaluator",
+    "FIFOReplayBuffer",
     "GameTrajectory",
+    "ReplayAddResult",
+    "ReplayBatch",
     "SelfPlayWorker",
     "categorical_to_scalar",
 ]
