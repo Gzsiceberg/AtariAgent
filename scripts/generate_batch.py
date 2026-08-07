@@ -96,7 +96,7 @@ def print_batch_stats(batch) -> None:
         table.add_column(heading)
 
     tensor_names = (
-        "observations",
+        "frames",
         "actions",
         "rewards",
         "policy_targets",
@@ -108,14 +108,17 @@ def print_batch_stats(batch) -> None:
         table.add_row(*tensor_summary(name, getattr(batch, name)))
     print(table)
 
+    policy_mask = batch.target_mask & (batch.policy_targets.sum(dim=-1) > 0)
     valid_rewards = batch.rewards[batch.action_mask]
     valid_values = batch.root_values[batch.target_mask]
-    valid_policies = batch.policy_targets[batch.target_mask]
+    valid_policies = batch.policy_targets[policy_mask]
     print(
         "batch summary: "
         f"size={batch.batch_size} unroll_steps={batch.unroll_steps} "
         f"valid_actions={int(batch.action_mask.sum())}/{batch.action_mask.numel()} "
-        f"valid_targets={int(batch.target_mask.sum())}/{batch.target_mask.numel()} "
+        f"valid_state_targets={int(batch.target_mask.sum())}/"
+        f"{batch.target_mask.numel()} "
+        f"valid_policy_targets={int(policy_mask.sum())}/{policy_mask.numel()} "
         f"reward_mean={valid_rewards.mean().item():.4f} "
         f"root_value_mean={valid_values.mean().item():.4f} "
         f"policy_row_sum_mean={valid_policies.sum(dim=-1).mean().item():.4f}"
@@ -159,6 +162,7 @@ def main(config: DictConfig) -> None:
         with SelfPlayWorker(
             agent,
             environments=environments,
+            trajectory_length=config.self_play.trajectory_length,
             base_seed=config.seed,
             clip_rewards=True,
             add_exploration_noise=config.self_play.add_exploration_noise,

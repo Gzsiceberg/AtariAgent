@@ -78,8 +78,9 @@ def print_trajectory(trajectory: GameTrajectory) -> None:
         f"truncated={trajectory.truncated}"
     )
     print(
-        "    observation_shapes=",
-        tuple(observation.shape for observation in trajectory.observations),
+        "    frame_shapes=",
+        tuple(frame.shape for frame in trajectory.frames),
+        f" stack_size={trajectory.stack_size}",
         sep="",
     )
     print(f"    actions={trajectory.actions}")
@@ -145,11 +146,17 @@ def run_self_play(
     with SelfPlayWorker(
         agent,
         environments=environments,
+        frame_stack=frame_stack,
         base_seed=seed,
         add_exploration_noise=False,
         temperature=1.0,
     ) as worker:
-        return worker.run(steps)
+        completed = worker.run(steps)
+        partial = worker.flush()
+        return tuple(
+            finished + unfinished
+            for finished, unfinished in zip(completed, partial, strict=True)
+        )
 
 
 def parse_args() -> argparse.Namespace:

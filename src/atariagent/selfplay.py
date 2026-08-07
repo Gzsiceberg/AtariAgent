@@ -51,18 +51,19 @@ EnvironmentFactory = Callable[[int], Environment]
 
 @dataclass(frozen=True, slots=True)
 class GameTrajectory:
-    """An immutable block of transitions from one environment and episode.
+    """An immutable compact block from one environment and episode.
 
-    ``observations`` contains the initial observation followed by one next
-    observation per action, so its length is always ``len(actions) + 1``.
-    Rewards are the optionally clipped training rewards; ``raw_rewards`` keeps
-    the original environment values.
+    ``frames`` stores the initial frame-stack context once, followed by one
+    new processed frame per action. For stack size ``S`` and ``T`` actions,
+    its length is ``S + T``. State ``i`` is reconstructed from
+    ``frames[i : i + S]``.
     """
 
     environment_index: int
     episode_id: int
     block_id: int
-    observations: tuple[AtariObservation, ...]
+    stack_size: int
+    frames: tuple[AtariObservation, ...]
     actions: tuple[int, ...]
     rewards: tuple[float, ...]
     raw_rewards: tuple[float, ...]
@@ -72,8 +73,18 @@ class GameTrajectory:
 
     def __post_init__(self) -> None:
         transition_count = len(self.actions)
-        if len(self.observations) != transition_count + 1:
-            raise ValueError("a trajectory needs one more observation than actions")
+        if self.stack_size <= 0:
+            raise ValueError("stack_size must be positive")
+        if len(self.frames) != transition_count + self.stack_size:
+            raise ValueError(
+                "a trajectory needs stack_size initial frames plus one frame "
+                "per action"
+            )
+        if not self.frames:
+            raise ValueError("frames must not be empty")
+        frame_shape = self.frames[0].shape
+        if any(frame.shape != frame_shape for frame in self.frames):
+            raise ValueError("all trajectory frames must have the same shape")
         for values in (
             self.rewards,
             self.raw_rewards,
@@ -112,12 +123,16 @@ class _TrajectoryBuilder:
         environment_index: int,
         episode_id: int,
         block_id: int,
+        stack_size: int,
         initial_observation: AtariObservation,
     ) -> None:
         self.environment_index = environment_index
         self.episode_id = episode_id
         self.block_id = block_id
-        self.observations = [_copy_observation(initial_observation)]
+        self.stack_size = stack_size
+        self.frames = list(
+            _stacked_observation_frames(initial_observation, stack_size)
+        )
         self.actions: list[int] = []
         self.rewards: list[float] = []
         self.raw_rewards: list[float] = []
@@ -133,7 +148,8 @@ class _TrajectoryBuilder:
         search_result: SearchResult,
     ) -> None:
         self.actions.append(int(action))
-        self.observations.append(_copy_observation(observation))
+        next_frames = _stacked_observation_frames(observation, self.stack_size)
+        self.frames.append(next_frames[-1])
         self.rewards.append(float(reward))
         self.raw_rewards.append(float(raw_reward))
         self.search_results.append(search_result)
@@ -146,7 +162,8 @@ class _TrajectoryBuilder:
             environment_index=self.environment_index,
             episode_id=self.episode_id,
             block_id=self.block_id,
-            observations=tuple(self.observations),
+            stack_size=self.stack_size,
+            frames=tuple(self.frames),
             actions=tuple(self.actions),
             rewards=tuple(self.rewards),
             raw_rewards=tuple(self.raw_rewards),
@@ -208,10 +225,10 @@ class SelfPlayWorker:
     """Generate replay-ready trajectory blocks from persistent Atari games.
 
     ``run(steps)`` advances every environment by exactly ``steps`` transitions,
-    batching one agent call across all environments at each step. Terminal
-    games are finalized and reset immediately. Remaining trajectories are
-    finalized at the run boundary; the underlying game states continue into
-    the next call.
+    batching one agent call across all environments at each step. Blocks are
+    finalized only at a true episode boundary or ``trajectory_length``;
+    partial builders persist across calls so worker scheduling does not create
+    artificial replay boundaries.
     """
 
     def __init__(
@@ -226,6 +243,7 @@ class SelfPlayWorker:
         frame_skip: int = 4,
         screen_size: int = 96,
         max_episode_steps: int = 3000,
+        trajectory_length: int = 400,
         base_seed: int = 0,
         clip_rewards: bool = True,
         add_exploration_noise: bool = True,
@@ -237,6 +255,12 @@ class SelfPlayWorker:
             )
         if not np.isfinite(temperature) or temperature < 0.0:
             raise ValueError("temperature must be finite and non-negative")
+        if isinstance(trajectory_length, bool) or not isinstance(
+            trajectory_length, int
+        ):
+            raise TypeError("trajectory_length must be an integer")
+        if trajectory_length <= 0:
+            raise ValueError("trajectory_length must be positive")
 
         if environments is not None:
             self.environments = list(environments)
@@ -265,6 +289,8 @@ class SelfPlayWorker:
         self.agent = agent
         self.num_envs = num_envs
         self.base_seed = base_seed
+        self.frame_stack = frame_stack
+        self.trajectory_length = trajectory_length
         self.clip_rewards = clip_rewards
         self.add_exploration_noise = add_exploration_noise
         self.temperature = float(temperature)
@@ -272,6 +298,7 @@ class SelfPlayWorker:
         self.total_vector_steps = 0
         self.total_transitions = 0
         self._observations: list[AtariObservation] = []
+        self._builders: list[_TrajectoryBuilder] = []
         self._episode_ids = [0] * self.num_envs
         self._next_block_ids = [0] * self.num_envs
         self._initialized = False
@@ -290,7 +317,7 @@ class SelfPlayWorker:
         completed: list[list[GameTrajectory]] = [
             [] for _ in range(self.num_envs)
         ]
-        builders = [self._new_builder(index) for index in range(self.num_envs)]
+        builders = self._builders
 
         for _ in range(steps):
             agent_output = self.agent.act(
@@ -335,16 +362,41 @@ class SelfPlayWorker:
                         index, seed=None
                     )
                     builders[index] = self._new_builder(index)
+                elif len(builders[index]) >= self.trajectory_length:
+                    completed[index].append(
+                        builders[index].finalize(
+                            terminated=False,
+                            truncated=False,
+                        )
+                    )
+                    self._next_block_ids[index] += 1
+                    builders[index] = self._new_builder(index)
 
             self.total_vector_steps += 1
 
-        for index, builder in enumerate(builders):
-            if len(builder) > 0:
-                completed[index].append(
-                    builder.finalize(terminated=False, truncated=False)
-                )
-                self._next_block_ids[index] += 1
+        return tuple(tuple(blocks) for blocks in completed)
 
+    def flush(self) -> tuple[tuple[GameTrajectory, ...], ...]:
+        """Finalize non-empty partial blocks without resetting environments.
+
+        This is intended for inspection or shutdown. Training collection should
+        normally keep partial builders across calls to avoid artificial block
+        boundaries.
+        """
+        if self._closed:
+            raise RuntimeError("cannot flush a closed self-play worker")
+        self._ensure_initialized()
+        completed: list[list[GameTrajectory]] = [
+            [] for _ in range(self.num_envs)
+        ]
+        for index, builder in enumerate(self._builders):
+            if len(builder) == 0:
+                continue
+            completed[index].append(
+                builder.finalize(terminated=False, truncated=False)
+            )
+            self._next_block_ids[index] += 1
+            self._builders[index] = self._new_builder(index)
         return tuple(tuple(blocks) for blocks in completed)
 
     def close(self) -> None:
@@ -371,6 +423,9 @@ class SelfPlayWorker:
             )
             for index in range(self.num_envs)
         ]
+        self._builders = [
+            self._new_builder(index) for index in range(self.num_envs)
+        ]
         self._initialized = True
 
     def _reset_environment(
@@ -384,6 +439,7 @@ class SelfPlayWorker:
             environment_index=index,
             episode_id=self._episode_ids[index],
             block_id=self._next_block_ids[index],
+            stack_size=self.frame_stack,
             initial_observation=self._observations[index],
         )
 
@@ -411,6 +467,31 @@ class SelfPlayWorker:
 
 def _copy_observation(observation: AtariObservation) -> AtariObservation:
     return observation.copy()
+
+
+def _stacked_observation_frames(
+    observation: AtariObservation, stack_size: int
+) -> tuple[AtariObservation, ...]:
+    """Split a Gym frame stack into copied channel-first uint8 frames."""
+    stacked = np.asarray(observation, dtype=np.uint8)
+    if stacked.ndim == 4:
+        if stacked.shape[0] != stack_size:
+            raise ValueError("observation stack axis does not match stack_size")
+        return tuple(
+            np.moveaxis(frame, -1, 0).copy() for frame in stacked
+        )
+    if stacked.ndim == 3 and stacked.shape[0] == stack_size:
+        return tuple(frame[np.newaxis, ...].copy() for frame in stacked)
+    if stacked.ndim == 3 and stacked.shape[0] % stack_size == 0:
+        channels = stacked.shape[0] // stack_size
+        return tuple(
+            stacked[index * channels : (index + 1) * channels].copy()
+            for index in range(stack_size)
+        )
+    raise ValueError(
+        "observation must be a frame stack in stack-first or flattened "
+        "channel-first format"
+    )
 
 
 __all__ = [

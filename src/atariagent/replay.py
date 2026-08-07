@@ -6,12 +6,10 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, fields
 
-from einops import rearrange
 import numpy as np
 import torch
 from torch import Tensor
 
-from .agent import AtariObservation
 from .selfplay import GameTrajectory
 
 
@@ -29,13 +27,14 @@ class ReplayAddResult:
 class ReplayBatch:
     """A padded EfficientZero-style unroll batch.
 
-    Observations are kept as ``uint8`` to avoid making a 256-sample Atari
-    batch four times larger. Call :meth:`normalized_observations` immediately
-    before network training. ``action_mask`` identifies real action/reward
-    steps, while ``target_mask`` identifies states with stored MCTS targets.
+    ``frames`` contains the initial stack context followed by one new frame
+    per unroll action. Call :meth:`normalized_observations` to reconstruct the
+    overlapping state stacks for training. ``action_mask`` identifies real
+    action/reward steps. ``target_mask`` identifies valid state targets; a
+    true terminal state has a valid zero-value target without an MCTS policy.
     """
 
-    observations: Tensor
+    frames: Tensor
     actions: Tensor
     rewards: Tensor
     policy_targets: Tensor
@@ -51,11 +50,33 @@ class ReplayBatch:
     def unroll_steps(self) -> int:
         return self.actions.shape[1]
 
+    @property
+    def stack_size(self) -> int:
+        return self.frames.shape[1] - self.unroll_steps
+
+    def stacked_observations(self) -> Tensor:
+        """Reconstruct all overlapping channel-first state stacks."""
+        batch_size, _, channels, height, width = self.frames.shape
+        return torch.stack(
+            tuple(
+                self.frames[:, offset : offset + self.stack_size].reshape(
+                    batch_size,
+                    self.stack_size * channels,
+                    height,
+                    width,
+                )
+                for offset in range(self.unroll_steps + 1)
+            ),
+            dim=1,
+        )
+
     def normalized_observations(
         self, device: torch.device | str | None = None
     ) -> Tensor:
-        """Return channel-first observations as float values in ``[0, 1]``."""
-        return self.observations.to(device=device, dtype=torch.float32).div_(255.0)
+        """Return reconstructed state stacks as floats in ``[0, 1]``."""
+        return self.stacked_observations().to(
+            device=device, dtype=torch.float32
+        ).div_(255.0)
 
     def to(self, device: torch.device | str) -> ReplayBatch:
         """Move every batch tensor to ``device``."""
@@ -85,8 +106,11 @@ class FIFOReplayBuffer:
 
         self.max_transitions = max_transitions
         self._trajectories: deque[GameTrajectory] = deque()
+        self._trajectory_by_key: dict[tuple[int, int, int], GameTrajectory] = {}
         self._transition_count = 0
         self._action_space_size: int | None = None
+        self._stack_size: int | None = None
+        self._frame_shape: tuple[int, ...] | None = None
         self._rng = np.random.default_rng(seed)
 
     def __len__(self) -> int:
@@ -116,18 +140,30 @@ class FIFOReplayBuffer:
         action_space_size = self._validate_trajectory(trajectory)
         if self._action_space_size is None:
             self._action_space_size = action_space_size
+            self._stack_size = trajectory.stack_size
+            self._frame_shape = trajectory.frames[0].shape
         elif action_space_size != self._action_space_size:
             raise ValueError("all trajectories must use the same action space")
+        elif trajectory.stack_size != self._stack_size:
+            raise ValueError("all trajectories must use the same stack size")
+        elif trajectory.frames[0].shape != self._frame_shape:
+            raise ValueError("all trajectories must use the same frame shape")
+
+        key = self._trajectory_key(trajectory)
+        if key in self._trajectory_by_key:
+            raise ValueError("trajectory identity already exists in replay")
 
         evicted_trajectories = 0
         evicted_transitions = 0
         while self._transition_count + trajectory_length > self.max_transitions:
             evicted = self._trajectories.popleft()
+            del self._trajectory_by_key[self._trajectory_key(evicted)]
             self._transition_count -= len(evicted)
             evicted_trajectories += 1
             evicted_transitions += len(evicted)
 
         self._trajectories.append(trajectory)
+        self._trajectory_by_key[key] = trajectory
         self._transition_count += trajectory_length
         return ReplayAddResult(
             added_trajectories=1,
@@ -158,9 +194,10 @@ class FIFOReplayBuffer:
     def sample(self, batch_size: int, *, unroll_steps: int = 5) -> ReplayBatch:
         """Uniformly sample unique starts and return padded tensor sequences.
 
-        A sample at position ``t`` contains observations ``t..t+K``, actions
-        and rewards ``t..t+K-1``, and MCTS policy/value targets ``t..t+K``.
-        Values beyond a trajectory boundary are padded and masked out.
+        A sample at position ``t`` contains ``stack_size + K`` compact frames,
+        actions/rewards ``t..t+K-1``, and policy/value targets ``t..t+K``.
+        Consecutive nonterminal blocks are traversed when available; missing
+        continuation is padded and masked out.
         """
         self._validate_sample_request(batch_size, unroll_steps)
         assert self._action_space_size is not None
@@ -174,9 +211,9 @@ class FIFOReplayBuffer:
             for trajectory, position in locations
         ]
 
-        observations = torch.stack([sample["observations"] for sample in samples])
+        frames = torch.stack([sample["frames"] for sample in samples])
         return ReplayBatch(
-            observations=observations,
+            frames=frames,
             actions=torch.stack([sample["actions"] for sample in samples]),
             rewards=torch.stack([sample["rewards"] for sample in samples]),
             policy_targets=torch.stack(
@@ -260,47 +297,86 @@ class FIFOReplayBuffer:
         unroll_steps: int,
     ) -> dict[str, Tensor]:
         assert self._action_space_size is not None
-        trajectory_length = len(trajectory)
-        final_observation = trajectory.observations[-1]
+        stack_size = trajectory.stack_size
+        frame_sequence = [
+            torch.as_tensor(frame, dtype=torch.uint8)
+            for frame in trajectory.frames[start : start + stack_size]
+        ]
 
-        observation_tensors = []
         policy_targets = torch.zeros(
             unroll_steps + 1, self._action_space_size, dtype=torch.float32
         )
         root_values = torch.zeros(unroll_steps + 1, dtype=torch.float32)
         target_mask = torch.zeros(unroll_steps + 1, dtype=torch.bool)
-
-        target_policy = trajectory.target_policy
-        stored_root_values = trajectory.root_values
-        for offset in range(unroll_steps + 1):
-            state_position = start + offset
-            observation = (
-                trajectory.observations[state_position]
-                if state_position <= trajectory_length
-                else final_observation
-            )
-            observation_tensors.append(_uint8_observation_tensor(observation))
-            if state_position < trajectory_length:
-                policy_targets[offset] = torch.tensor(
-                    target_policy[state_position], dtype=torch.float32
-                )
-                root_values[offset] = stored_root_values[state_position]
-                target_mask[offset] = True
-
         actions = torch.zeros(unroll_steps, 1, dtype=torch.long)
         rewards = torch.zeros(unroll_steps, dtype=torch.float32)
         action_mask = torch.zeros(unroll_steps, dtype=torch.bool)
 
+        block: GameTrajectory | None = trajectory
+        position = start
+        self._set_stored_target(
+            policy_targets,
+            root_values,
+            target_mask,
+            target_offset=0,
+            trajectory=trajectory,
+            position=start,
+        )
+
         for offset in range(unroll_steps):
-            transition_position = start + offset
-            if transition_position >= trajectory_length:
+            if block is None or position >= len(block):
                 break
-            actions[offset, 0] = trajectory.actions[transition_position]
-            rewards[offset] = trajectory.rewards[transition_position]
+
+            actions[offset, 0] = block.actions[position]
+            rewards[offset] = block.rewards[position]
             action_mask[offset] = True
+            frame_sequence.append(
+                torch.as_tensor(
+                    block.frames[position + block.stack_size],
+                    dtype=torch.uint8,
+                )
+            )
+            position += 1
+
+            if position < len(block):
+                self._set_stored_target(
+                    policy_targets,
+                    root_values,
+                    target_mask,
+                    target_offset=offset + 1,
+                    trajectory=block,
+                    position=position,
+                )
+                continue
+
+            if block.terminated:
+                # No policy exists at a true terminal state, but value zero is
+                # valid supervision for the recurrent state reached here.
+                target_mask[offset + 1] = True
+                block = None
+                continue
+
+            next_block = self._next_trajectory(block)
+            if next_block is None:
+                block = None
+                continue
+
+            block = next_block
+            position = 0
+            self._set_stored_target(
+                policy_targets,
+                root_values,
+                target_mask,
+                target_offset=offset + 1,
+                trajectory=block,
+                position=position,
+            )
+
+        while len(frame_sequence) < stack_size + unroll_steps:
+            frame_sequence.append(frame_sequence[-1])
 
         return {
-            "observations": torch.stack(observation_tensors),
+            "frames": torch.stack(frame_sequence),
             "actions": actions,
             "rewards": rewards,
             "policy_targets": policy_targets,
@@ -309,21 +385,44 @@ class FIFOReplayBuffer:
             "target_mask": target_mask,
         }
 
-
-def _uint8_observation_tensor(observation: AtariObservation) -> Tensor:
-    """Convert one stacked observation to channel-first uint8 storage."""
-    frames = torch.as_tensor(np.asarray(observation), dtype=torch.uint8)
-    if frames.ndim == 4:
-        return rearrange(
-            frames,
-            "stack height width channels -> (stack channels) height width",
+    def _set_stored_target(
+        self,
+        policy_targets: Tensor,
+        root_values: Tensor,
+        target_mask: Tensor,
+        *,
+        target_offset: int,
+        trajectory: GameTrajectory,
+        position: int,
+    ) -> None:
+        search_result = trajectory.search_results[position]
+        visit_counts = torch.tensor(
+            search_result.visit_counts, dtype=torch.float32
         )
-    if frames.ndim == 3:
-        return frames
-    raise ValueError(
-        "Atari observations must have shape (stack, H, W, C) or "
-        "(channels, H, W)"
-    )
+        policy_targets[target_offset] = visit_counts / visit_counts.sum()
+        root_values[target_offset] = search_result.root_value
+        target_mask[target_offset] = True
+
+    def _next_trajectory(
+        self, trajectory: GameTrajectory
+    ) -> GameTrajectory | None:
+        if trajectory.terminated or trajectory.truncated:
+            return None
+        return self._trajectory_by_key.get(
+            (
+                trajectory.environment_index,
+                trajectory.episode_id,
+                trajectory.block_id + 1,
+            )
+        )
+
+    @staticmethod
+    def _trajectory_key(trajectory: GameTrajectory) -> tuple[int, int, int]:
+        return (
+            trajectory.environment_index,
+            trajectory.episode_id,
+            trajectory.block_id,
+        )
 
 
 __all__ = ["FIFOReplayBuffer", "ReplayAddResult", "ReplayBatch"]

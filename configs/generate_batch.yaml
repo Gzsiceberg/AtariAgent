@@ -15,6 +15,7 @@ self_play:
   worker_iterations: 1
   num_envs: 4
   steps_per_iteration: 400
+  trajectory_length: 400
   num_simulations: 50
   add_exploration_noise: false
   temperature: 1.0

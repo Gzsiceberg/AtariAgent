@@ -96,16 +96,24 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     assert agent.calls == 3
     assert all(len(batch) == 2 for batch in agent.observation_batches)
     assert all(obs.shape == (4, 2, 2, 3) for obs in agent.observation_batches[0])
-    assert [len(block) for block in first_run[0]] == [2, 1]
-    assert [len(block) for block in first_run[1]] == [3]
+    assert [len(block) for block in first_run[0]] == [2]
+    assert first_run[1] == ()
     assert first_run[0][0].terminated
-    assert not first_run[0][1].terminated
     assert first_run[0][0].episode_id == 0
-    assert first_run[0][1].episode_id == 1
     assert first_run[0][0].actions == (1, 1)
     assert first_run[0][0].rewards == (1.0, 1.0)
     assert first_run[0][0].raw_rewards == (2.5, 2.5)
-    assert len(first_run[0][0].observations) == 3
+    assert first_run[0][0].stack_size == 4
+    assert len(first_run[0][0].frames) == 6
+    assert all(frame.shape == (3, 2, 2) for frame in first_run[0][0].frames)
+    assert [int(frame[0, 0, 0]) for frame in first_run[0][0].frames] == [
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+    ]
     assert first_run[0][0].search_results[0] is agent.search_result_batches[0][0]
     assert first_run[0][0].target_policy == ((0.25, 0.75), (0.25, 0.75))
     assert first_run[0][0].root_values == (1.0, 2.0)
@@ -115,24 +123,40 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     second_run = worker.run(2)
 
     assert agent.calls == 5
-    assert [len(block) for block in second_run[0]] == [1, 1]
+    assert [len(block) for block in second_run[0]] == [2]
     assert second_run[0][0].terminated
     assert second_run[0][0].episode_id == 1
-    assert second_run[0][1].episode_id == 2
-    assert [len(block) for block in second_run[1]] == [2]
-    assert second_run[1][0].observations[0][0, 0, 0, 0] == 3
+    assert second_run[1] == ()
+
+    partial = worker.flush()
+    assert [len(block) for block in partial[0]] == [1]
+    assert partial[0][0].episode_id == 2
+    assert [len(block) for block in partial[1]] == [5]
+    assert [int(frame[0, 0, 0]) for frame in partial[1][0].frames] == [
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
     assert worker.total_vector_steps == 5
     assert worker.total_transitions == 10
 
 
-def test_worker_uses_run_size_for_uninterrupted_trajectory() -> None:
+def test_worker_uses_fixed_block_size_across_run_calls() -> None:
     worker = SelfPlayWorker(
         FakeAgent(),
         environments=[FakeEnvironment(episode_length=100)],
+        trajectory_length=5,
         clip_rewards=False,
     )
 
-    trajectories = worker.run(5)[0]
+    assert worker.run(3)[0] == ()
+    trajectories = worker.run(2)[0]
 
     assert len(trajectories) == 1
     assert len(trajectories[0]) == 5
