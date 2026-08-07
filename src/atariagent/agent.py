@@ -11,7 +11,13 @@ import torch
 from torch import Tensor, nn
 
 from .models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
-from .search import Evaluation, MCTS, MCTSConfig, SearchResult
+from .search import (
+    BatchedRecurrentEvaluator,
+    Evaluation,
+    MCTS,
+    MCTSConfig,
+    SearchResult,
+)
 
 
 AtariObservation: TypeAlias = NDArray[np.uint8]
@@ -107,6 +113,120 @@ class AgentOutput:
             raise ValueError("actions and search_results must have equal lengths")
 
 
+class BatchedNetworkEvaluator(BatchedRecurrentEvaluator):
+    """Evaluate MCTS leaves with batched dynamics and prediction networks."""
+
+    def __init__(
+        self,
+        dynamics_network: nn.Module,
+        prediction_network: nn.Module,
+        *,
+        action_space_size: int,
+        value_decoder: ScalarDecoder,
+        value_prefix_decoder: ScalarDecoder,
+    ) -> None:
+        self.dynamics_network = dynamics_network
+        self.prediction_network = prediction_network
+        self.action_space_size = action_space_size
+        self.value_decoder = value_decoder
+        self.value_prefix_decoder = value_prefix_decoder
+
+    @torch.inference_mode()
+    def __call__(
+        self,
+        states: Sequence[Tensor],
+        actions: Sequence[int],
+        value_prefix_hidden: Sequence[RewardHidden | None],
+    ) -> tuple[Evaluation, ...]:
+        if not states:
+            return ()
+
+        state_batch = torch.stack(tuple(states))
+        action_batch = torch.as_tensor(
+            actions, device=state_batch.device, dtype=torch.long
+        ).reshape(-1, 1)
+        hidden_batch = self._batch_hidden(
+            value_prefix_hidden,
+            batch_size=len(states),
+            device=state_batch.device,
+            dtype=state_batch.dtype,
+        )
+
+        next_states, next_hidden, value_prefix_logits = self.dynamics_network(
+            state_batch, action_batch, hidden_batch
+        )
+        policy_logits, value_logits = self.prediction_network(next_states)
+        self.validate_policy(policy_logits, len(states))
+        values = self.decode(self.value_decoder, value_logits, "value_decoder")
+        value_prefixes = self.decode(
+            self.value_prefix_decoder,
+            value_prefix_logits,
+            "value_prefix_decoder",
+        )
+
+        return tuple(
+            Evaluation(
+                state=next_states[index],
+                value_prefix=float(value_prefixes[index]),
+                value=float(values[index]),
+                policy_logits=policy_logits[index].tolist(),
+                value_prefix_hidden=(
+                    next_hidden[0][:, index : index + 1],
+                    next_hidden[1][:, index : index + 1],
+                ),
+            )
+            for index in range(len(states))
+        )
+
+    def validate_policy(self, policy_logits: Tensor, batch_size: int) -> None:
+        expected = (batch_size, self.action_space_size)
+        if tuple(policy_logits.shape) != expected:
+            raise ValueError(
+                f"prediction network policy shape must be {expected}, "
+                f"got {tuple(policy_logits.shape)}"
+            )
+
+    @staticmethod
+    def decode(decoder: ScalarDecoder, logits: Tensor, name: str) -> Tensor:
+        values = decoder(logits)
+        if values.numel() != logits.shape[0]:
+            raise ValueError(f"{name} must return one scalar per batch item")
+        return values.reshape(logits.shape[0])
+
+    def _batch_hidden(
+        self,
+        hidden_states: Sequence[RewardHidden | None],
+        *,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> RewardHidden:
+        if len(hidden_states) != batch_size:
+            raise ValueError("expected one recurrent hidden state per latent state")
+
+        reward_prediction = getattr(
+            self.dynamics_network, "reward_prediction", None
+        )
+        hidden_size = getattr(reward_prediction, "hidden_size", 512)
+
+        def zero_hidden() -> Tensor:
+            return torch.zeros(
+                1, 1, hidden_size, device=device, dtype=dtype
+            )
+
+        hidden_parts: list[Tensor] = []
+        cell_parts: list[Tensor] = []
+        for recurrent_state in hidden_states:
+            if recurrent_state is None:
+                hidden_parts.append(zero_hidden())
+                cell_parts.append(zero_hidden())
+            else:
+                hidden, cell = recurrent_state
+                hidden_parts.append(hidden.to(device=device, dtype=dtype))
+                cell_parts.append(cell.to(device=device, dtype=dtype))
+        return torch.cat(hidden_parts, dim=1), torch.cat(cell_parts, dim=1)
+
+
 class AtariAgent(nn.Module):
     """Use EfficientZero networks and batched MCTS to choose Atari actions.
 
@@ -154,6 +274,13 @@ class AtariAgent(nn.Module):
         self.mcts = mcts if mcts is not None else MCTS(mcts_config)
         self.value_decoder = value_decoder
         self.value_prefix_decoder = value_prefix_decoder
+        self.recurrent_evaluator = BatchedNetworkEvaluator(
+            self.dynamics_network,
+            self.prediction_network,
+            action_space_size=action_space_size,
+            value_decoder=self.value_decoder,
+            value_prefix_decoder=self.value_prefix_decoder,
+        )
 
     def forward(
         self,
@@ -185,9 +312,13 @@ class AtariAgent(nn.Module):
         try:
             states = self.representation_network(observations)
             policy_logits, value_logits = self.prediction_network(states)
-            self._validate_policy(policy_logits, states.shape[0])
-            values = self._decode(
-                self.value_decoder, value_logits, "value_decoder"
+            self.recurrent_evaluator.validate_policy(
+                policy_logits, states.shape[0]
+            )
+            values = self.recurrent_evaluator.decode(
+                self.recurrent_evaluator.value_decoder,
+                value_logits,
+                "value_decoder",
             )
 
             roots = tuple(
@@ -201,7 +332,7 @@ class AtariAgent(nn.Module):
             )
             search_results = self.mcts.search_batch(
                 roots,
-                self._evaluate_recurrent_batch,
+                self.recurrent_evaluator,
                 add_exploration_noise=add_exploration_noise,
                 temperature=temperature,
             )
@@ -233,102 +364,6 @@ class AtariAgent(nn.Module):
         device = parameter.device if parameter is not None else batch.device
         return batch.to(device=device, dtype=torch.float32)
 
-    def _evaluate_recurrent_batch(
-        self,
-        states: Sequence[Tensor],
-        actions: Sequence[int],
-        hidden_states: Sequence[RewardHidden | None],
-    ) -> tuple[Evaluation, ...]:
-        if not states:
-            return ()
-
-        state_batch = torch.stack(tuple(states))
-        action_batch = torch.as_tensor(
-            actions, device=state_batch.device, dtype=torch.long
-        ).reshape(-1, 1)
-        hidden_batch = self._batch_hidden(
-            hidden_states,
-            batch_size=len(states),
-            device=state_batch.device,
-            dtype=state_batch.dtype,
-        )
-
-        next_states, next_hidden, value_prefix_logits = self.dynamics_network(
-            state_batch, action_batch, hidden_batch
-        )
-        policy_logits, value_logits = self.prediction_network(next_states)
-        self._validate_policy(policy_logits, len(states))
-        values = self._decode(
-            self.value_decoder, value_logits, "value_decoder"
-        )
-        value_prefixes = self._decode(
-            self.value_prefix_decoder,
-            value_prefix_logits,
-            "value_prefix_decoder",
-        )
-
-        return tuple(
-            Evaluation(
-                state=next_states[index],
-                value_prefix=float(value_prefixes[index]),
-                value=float(values[index]),
-                policy_logits=policy_logits[index].tolist(),
-                value_prefix_hidden=(
-                    next_hidden[0][:, index : index + 1],
-                    next_hidden[1][:, index : index + 1],
-                ),
-            )
-            for index in range(len(states))
-        )
-
-    def _batch_hidden(
-        self,
-        hidden_states: Sequence[RewardHidden | None],
-        *,
-        batch_size: int,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> RewardHidden:
-        if len(hidden_states) != batch_size:
-            raise ValueError("expected one recurrent hidden state per latent state")
-
-        hidden_size = getattr(self.dynamics_network, "reward_prediction", None)
-        hidden_size = getattr(hidden_size, "hidden_size", 512)
-        zero = lambda: torch.zeros(
-            1, 1, hidden_size, device=device, dtype=dtype
-        )
-        hidden_parts: list[Tensor] = []
-        cell_parts: list[Tensor] = []
-        for recurrent_state in hidden_states:
-            if recurrent_state is None:
-                hidden_parts.append(zero())
-                cell_parts.append(zero())
-            else:
-                hidden, cell = recurrent_state
-                hidden_parts.append(hidden.to(device=device, dtype=dtype))
-                cell_parts.append(cell.to(device=device, dtype=dtype))
-        return torch.cat(hidden_parts, dim=1), torch.cat(cell_parts, dim=1)
-
-    def _validate_policy(self, policy_logits: Tensor, batch_size: int) -> None:
-        expected = (batch_size, self.action_space_size)
-        if tuple(policy_logits.shape) != expected:
-            raise ValueError(
-                f"prediction network policy shape must be {expected}, "
-                f"got {tuple(policy_logits.shape)}"
-            )
-
-    @staticmethod
-    def _decode(
-        decoder: ScalarDecoder,
-        logits: Tensor,
-        name: str,
-    ) -> Tensor:
-        values = decoder(logits)
-        if values.numel() != logits.shape[0]:
-            raise ValueError(f"{name} must return one scalar per batch item")
-        return values.reshape(logits.shape[0])
-
-
 Agent = AtariAgent
 
 
@@ -337,6 +372,7 @@ __all__ = [
     "AgentOutput",
     "AtariAgent",
     "AtariObservation",
+    "BatchedNetworkEvaluator",
     "ScalarDecoder",
     "atari_observation_tensor",
     "batch_atari_observations",

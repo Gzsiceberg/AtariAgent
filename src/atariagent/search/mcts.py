@@ -8,7 +8,7 @@ edge is recovered by subtracting the parent prefix from the child prefix.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import math
@@ -223,7 +223,7 @@ class MCTS:
     def search(
         self,
         root_evaluation: Evaluation,
-        evaluator: RecurrentEvaluator | Callable[[Any, int, Any], Evaluation],
+        evaluator: RecurrentEvaluator,
         *,
         add_exploration_noise: bool = False,
         temperature: float = 1.0,
@@ -265,11 +265,7 @@ class MCTS:
     def search_batch(
         self,
         root_evaluations: Sequence[Evaluation],
-        evaluator: BatchedRecurrentEvaluator
-        | Callable[
-            [Sequence[Any], Sequence[int], Sequence[Any]],
-            Sequence[Evaluation],
-        ],
+        evaluator: BatchedRecurrentEvaluator,
         *,
         add_exploration_noise: bool = False,
         temperature: float = 1.0,

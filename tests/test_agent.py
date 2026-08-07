@@ -2,8 +2,13 @@ import numpy as np
 import torch
 from torch import nn
 
-from atariagent import AgentOutput, AtariAgent, categorical_to_scalar
-from atariagent.search import MCTSConfig
+from atariagent import (
+    AgentOutput,
+    AtariAgent,
+    BatchedNetworkEvaluator,
+    categorical_to_scalar,
+)
+from atariagent.search import BatchedRecurrentEvaluator, MCTSConfig
 
 
 class RecordingRepresentation(nn.Module):
@@ -77,6 +82,9 @@ def test_agent_batches_root_and_recurrent_network_inference() -> None:
 
     output = agent(torch.randn(3, 4, 96, 96, requires_grad=True))
 
+    assert isinstance(agent.recurrent_evaluator, BatchedNetworkEvaluator)
+    assert isinstance(agent.recurrent_evaluator, BatchedRecurrentEvaluator)
+    assert not hasattr(agent, "_evaluate_recurrent_batch")
     assert isinstance(output, AgentOutput)
     assert len(output.actions) == 3
     assert all(action in range(4) for action in output.actions)
