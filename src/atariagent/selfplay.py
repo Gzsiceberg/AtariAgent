@@ -1,0 +1,424 @@
+"""Persistent batched Atari self-play trajectory generation."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Protocol
+
+import numpy as np
+
+from .agent import AgentOutput, AtariObservation
+from .search import SearchResult
+
+
+class DiscreteActionSpace(Protocol):
+    """Discrete action-space attributes used by self-play."""
+
+    n: int
+
+
+class Environment(Protocol):
+    """Atari environment operations used by the self-play worker."""
+
+    action_space: DiscreteActionSpace
+
+    def reset(
+        self, *, seed: int | None = None
+    ) -> tuple[AtariObservation, dict[str, object]]: ...
+
+    def step(
+        self, action: int
+    ) -> tuple[AtariObservation, float, bool, bool, dict[str, object]]: ...
+
+    def close(self) -> None: ...
+
+
+class SelfPlayAgent(Protocol):
+    """Batched action-selection interface consumed by the worker."""
+
+    def act(
+        self,
+        observations: Sequence[AtariObservation],
+        *,
+        add_exploration_noise: bool = False,
+        temperature: float = 0.0,
+    ) -> AgentOutput: ...
+
+
+EnvironmentFactory = Callable[[int], Environment]
+
+
+@dataclass(frozen=True, slots=True)
+class GameTrajectory:
+    """An immutable block of transitions from one environment and episode.
+
+    ``observations`` contains the initial observation followed by one next
+    observation per action, so its length is always ``len(actions) + 1``.
+    Rewards are the optionally clipped training rewards; ``raw_rewards`` keeps
+    the original environment values.
+    """
+
+    environment_index: int
+    episode_id: int
+    block_id: int
+    observations: tuple[AtariObservation, ...]
+    actions: tuple[int, ...]
+    rewards: tuple[float, ...]
+    raw_rewards: tuple[float, ...]
+    search_results: tuple[SearchResult, ...]
+    terminated: bool
+    truncated: bool
+
+    def __post_init__(self) -> None:
+        transition_count = len(self.actions)
+        if len(self.observations) != transition_count + 1:
+            raise ValueError("a trajectory needs one more observation than actions")
+        for values in (
+            self.rewards,
+            self.raw_rewards,
+            self.search_results,
+        ):
+            if len(values) != transition_count:
+                raise ValueError("all transition fields must have equal lengths")
+        if transition_count == 0:
+            raise ValueError("a finalized trajectory must contain a transition")
+
+    def __len__(self) -> int:
+        return len(self.actions)
+
+    @property
+    def child_visits(self) -> tuple[tuple[float, ...], ...]:
+        """Normalized MCTS visit distributions used as policy targets."""
+        distributions = []
+        for result in self.search_results:
+            total_visits = sum(result.visit_counts)
+            if total_visits <= 0:
+                raise ValueError("MCTS search result must contain visited actions")
+            distributions.append(
+                tuple(count / total_visits for count in result.visit_counts)
+            )
+        return tuple(distributions)
+
+    @property
+    def root_values(self) -> tuple[float, ...]:
+        """MCTS root-value targets for every transition."""
+        return tuple(result.root_value for result in self.search_results)
+
+
+class _TrajectoryBuilder:
+    def __init__(
+        self,
+        environment_index: int,
+        episode_id: int,
+        block_id: int,
+        initial_observation: AtariObservation,
+    ) -> None:
+        self.environment_index = environment_index
+        self.episode_id = episode_id
+        self.block_id = block_id
+        self.observations = [_copy_observation(initial_observation)]
+        self.actions: list[int] = []
+        self.rewards: list[float] = []
+        self.raw_rewards: list[float] = []
+        self.search_results: list[SearchResult] = []
+
+    def append(
+        self,
+        *,
+        action: int,
+        observation: AtariObservation,
+        reward: float,
+        raw_reward: float,
+        search_result: SearchResult,
+    ) -> None:
+        self.actions.append(int(action))
+        self.observations.append(_copy_observation(observation))
+        self.rewards.append(float(reward))
+        self.raw_rewards.append(float(raw_reward))
+        self.search_results.append(search_result)
+
+    def __len__(self) -> int:
+        return len(self.actions)
+
+    def finalize(self, *, terminated: bool, truncated: bool) -> GameTrajectory:
+        return GameTrajectory(
+            environment_index=self.environment_index,
+            episode_id=self.episode_id,
+            block_id=self.block_id,
+            observations=tuple(self.observations),
+            actions=tuple(self.actions),
+            rewards=tuple(self.rewards),
+            raw_rewards=tuple(self.raw_rewards),
+            search_results=tuple(self.search_results),
+            terminated=terminated,
+            truncated=truncated,
+        )
+
+
+def make_atari_environment(
+    env_id: str,
+    *,
+    frame_stack: int = 4,
+    frame_skip: int = 4,
+    screen_size: int = 96,
+    max_episode_steps: int = 3000,
+    terminal_on_life_loss: bool = False,
+    grayscale_obs: bool = False,
+    render_mode: str | None = None,
+) -> Environment:
+    """Create an Atari environment matching the project's training setup."""
+    if frame_stack <= 0:
+        raise ValueError("frame_stack must be positive")
+    if frame_skip <= 0:
+        raise ValueError("frame_skip must be positive")
+    if screen_size <= 0:
+        raise ValueError("screen_size must be positive")
+    if max_episode_steps <= 0:
+        raise ValueError("max_episode_steps must be positive")
+
+    import ale_py
+    import gymnasium as gym
+    from gymnasium.wrappers import (
+        AtariPreprocessing,
+        FrameStackObservation,
+        TimeLimit,
+    )
+
+    gym.register_envs(ale_py)
+    base_environment = gym.make(
+        env_id,
+        render_mode=render_mode,
+        frameskip=1,
+        repeat_action_probability=0.0,
+    )
+    environment = AtariPreprocessing(
+        base_environment,
+        frame_skip=frame_skip,
+        screen_size=screen_size,
+        terminal_on_life_loss=terminal_on_life_loss,
+        grayscale_obs=grayscale_obs,
+        scale_obs=False,
+    )
+    environment = TimeLimit(environment, max_episode_steps=max_episode_steps)
+    return FrameStackObservation(environment, stack_size=frame_stack)
+
+
+class SelfPlayWorker:
+    """Generate replay-ready trajectory blocks from persistent Atari games.
+
+    ``run(steps)`` advances every environment by exactly ``steps`` transitions,
+    batching one agent call across all environments at each step. Terminal
+    games are finalized and reset immediately. Remaining trajectories are
+    finalized at the run boundary; the underlying game states continue into
+    the next call.
+    """
+
+    def __init__(
+        self,
+        agent: SelfPlayAgent,
+        *,
+        env_id: str = "ALE/Pong-v5",
+        num_envs: int | None = None,
+        environments: Sequence[Environment] | None = None,
+        environment_factory: EnvironmentFactory | None = None,
+        frame_stack: int = 4,
+        frame_skip: int = 4,
+        screen_size: int = 96,
+        max_episode_steps: int = 3000,
+        base_seed: int = 0,
+        clip_rewards: bool = True,
+        add_exploration_noise: bool = True,
+        temperature: float = 1.0,
+    ) -> None:
+        if environments is not None and environment_factory is not None:
+            raise ValueError(
+                "pass either environments or environment_factory, not both"
+            )
+        if not np.isfinite(temperature) or temperature < 0.0:
+            raise ValueError("temperature must be finite and non-negative")
+
+        if environments is not None:
+            self.environments = list(environments)
+            if not self.environments:
+                raise ValueError("environments must not be empty")
+            if num_envs is not None and num_envs != len(self.environments):
+                raise ValueError("num_envs must match the supplied environments")
+            num_envs = len(self.environments)
+        else:
+            num_envs = 4 if num_envs is None else num_envs
+            if num_envs <= 0:
+                raise ValueError("num_envs must be positive")
+            factory = environment_factory
+            if factory is None:
+                factory = lambda _seed: make_atari_environment(
+                    env_id,
+                    frame_stack=frame_stack,
+                    frame_skip=frame_skip,
+                    screen_size=screen_size,
+                    max_episode_steps=max_episode_steps,
+                )
+            self.environments = [
+                factory(base_seed + index) for index in range(num_envs)
+            ]
+
+        self.agent = agent
+        self.num_envs = num_envs
+        self.base_seed = base_seed
+        self.clip_rewards = clip_rewards
+        self.add_exploration_noise = add_exploration_noise
+        self.temperature = float(temperature)
+
+        self.total_vector_steps = 0
+        self.total_transitions = 0
+        self._observations: list[AtariObservation] = []
+        self._episode_ids = [0] * self.num_envs
+        self._next_block_ids = [0] * self.num_envs
+        self._initialized = False
+        self._closed = False
+
+    def run(self, steps: int) -> tuple[tuple[GameTrajectory, ...], ...]:
+        """Advance each game by ``steps`` and return blocks grouped by game."""
+        if isinstance(steps, bool) or not isinstance(steps, int):
+            raise TypeError("steps must be an integer")
+        if steps <= 0:
+            raise ValueError("steps must be positive")
+        if self._closed:
+            raise RuntimeError("cannot run a closed self-play worker")
+
+        self._ensure_initialized()
+        completed: list[list[GameTrajectory]] = [
+            [] for _ in range(self.num_envs)
+        ]
+        builders = [self._new_builder(index) for index in range(self.num_envs)]
+
+        for _ in range(steps):
+            agent_output = self.agent.act(
+                self._observations,
+                add_exploration_noise=self.add_exploration_noise,
+                temperature=self.temperature,
+            )
+            self._validate_agent_output(agent_output)
+
+            for index, environment in enumerate(self.environments):
+                action = agent_output.actions[index]
+                next_observation, raw_reward, terminated, truncated, _ = (
+                    environment.step(action)
+                )
+                raw_reward = float(raw_reward)
+                reward = (
+                    float(np.sign(raw_reward))
+                    if self.clip_rewards
+                    else raw_reward
+                )
+                builders[index].append(
+                    action=action,
+                    observation=next_observation,
+                    reward=reward,
+                    raw_reward=raw_reward,
+                    search_result=agent_output.search_results[index],
+                )
+                self._observations[index] = _copy_observation(next_observation)
+                self.total_transitions += 1
+
+                episode_done = bool(terminated or truncated)
+                if episode_done:
+                    completed[index].append(
+                        builders[index].finalize(
+                            terminated=bool(terminated),
+                            truncated=bool(truncated),
+                        )
+                    )
+                    self._next_block_ids[index] += 1
+                    self._episode_ids[index] += 1
+                    self._observations[index] = self._reset_environment(
+                        index, seed=None
+                    )
+                    builders[index] = self._new_builder(index)
+
+            self.total_vector_steps += 1
+
+        for index, builder in enumerate(builders):
+            if len(builder) > 0:
+                completed[index].append(
+                    builder.finalize(terminated=False, truncated=False)
+                )
+                self._next_block_ids[index] += 1
+
+        return tuple(tuple(blocks) for blocks in completed)
+
+    def close(self) -> None:
+        """Close every environment. Calling this method repeatedly is safe."""
+        if self._closed:
+            return
+        for environment in self.environments:
+            environment.close()
+        self._closed = True
+
+    def __enter__(self) -> SelfPlayWorker:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def _ensure_initialized(self) -> None:
+        if self._initialized:
+            return
+        self._observations = [
+            self._reset_environment(
+                index,
+                seed=self.base_seed + index,
+            )
+            for index in range(self.num_envs)
+        ]
+        self._initialized = True
+
+    def _reset_environment(
+        self, index: int, *, seed: int | None
+    ) -> AtariObservation:
+        observation, _ = self.environments[index].reset(seed=seed)
+        return _copy_observation(observation)
+
+    def _new_builder(self, index: int) -> _TrajectoryBuilder:
+        return _TrajectoryBuilder(
+            environment_index=index,
+            episode_id=self._episode_ids[index],
+            block_id=self._next_block_ids[index],
+            initial_observation=self._observations[index],
+        )
+
+    def _validate_agent_output(self, output: AgentOutput) -> None:
+        if len(output.actions) != self.num_envs:
+            raise ValueError("agent must return one action per environment")
+        if len(output.search_results) != self.num_envs:
+            raise ValueError("agent must return one search result per environment")
+        for index, (action, result, environment) in enumerate(
+            zip(
+                output.actions,
+                output.search_results,
+                self.environments,
+                strict=True,
+            )
+        ):
+            action_count = getattr(environment.action_space, "n", None)
+            if action_count is not None and action not in range(action_count):
+                raise ValueError(
+                    f"agent returned invalid action {action} for environment {index}"
+                )
+            if result.action != action:
+                raise ValueError("agent action must match its MCTS search result")
+
+
+def _copy_observation(observation: AtariObservation) -> AtariObservation:
+    return observation.copy()
+
+
+__all__ = [
+    "DiscreteActionSpace",
+    "Environment",
+    "EnvironmentFactory",
+    "GameTrajectory",
+    "SelfPlayAgent",
+    "SelfPlayWorker",
+    "make_atari_environment",
+]

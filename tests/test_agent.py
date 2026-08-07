@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 
@@ -9,11 +10,15 @@ class RecordingRepresentation(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.batch_sizes: list[int] = []
+        self.input_shapes: list[tuple[int, ...]] = []
+        self.input_dtypes: list[torch.dtype] = []
         self.grad_modes: list[bool] = []
         self.training_modes: list[bool] = []
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         self.batch_sizes.append(observations.shape[0])
+        self.input_shapes.append(tuple(observations.shape))
+        self.input_dtypes.append(observations.dtype)
         self.grad_modes.append(torch.is_grad_enabled())
         self.training_modes.append(self.training)
         return torch.zeros(
@@ -102,6 +107,28 @@ def test_agent_runs_every_network_without_gradients_and_in_eval_mode() -> None:
     assert all(not any(module.grad_modes) for module in modules)
     assert all(not any(module.training_modes) for module in modules)
     assert agent.training
+
+
+def test_agent_prepares_raw_atari_observations() -> None:
+    representation = RecordingRepresentation()
+    agent = AtariAgent(
+        12,
+        3,
+        representation_network=representation,
+        dynamics_network=RecordingDynamics(),
+        prediction_network=RecordingPrediction(3),
+        mcts_config=MCTSConfig(num_simulations=1),
+    )
+    observations = [
+        np.full((4, 96, 96, 3), 255, dtype=np.uint8),
+        np.zeros((4, 96, 96, 3), dtype=np.uint8),
+    ]
+
+    output = agent.act(observations)
+
+    assert len(output.actions) == 2
+    assert representation.input_shapes == [(2, 12, 96, 96)]
+    assert representation.input_dtypes == [torch.float32]
 
 
 def test_agent_accepts_one_unbatched_observation() -> None:

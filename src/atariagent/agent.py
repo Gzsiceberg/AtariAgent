@@ -4,6 +4,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TypeAlias
 
+from einops import rearrange
+import numpy as np
+from numpy.typing import NDArray
 import torch
 from torch import Tensor, nn
 
@@ -11,8 +14,33 @@ from .models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
 from .search import Evaluation, MCTS, MCTSConfig, SearchResult
 
 
+AtariObservation: TypeAlias = NDArray[np.uint8]
 ScalarDecoder: TypeAlias = Callable[[Tensor], Tensor]
 RewardHidden: TypeAlias = tuple[Tensor, Tensor]
+
+
+def atari_observation_tensor(observation: AtariObservation) -> Tensor:
+    """Convert one stacked Atari observation to channel-first float format."""
+    frames = torch.as_tensor(np.asarray(observation)).float() / 255.0
+    if frames.ndim == 4:
+        return rearrange(
+            frames,
+            "stack height width channels -> (stack channels) height width",
+        )
+    if frames.ndim == 3:
+        return frames
+    raise ValueError(
+        "Atari observations must have shape (stack, H, W, C) or (channels, H, W)"
+    )
+
+
+def batch_atari_observations(
+    observations: Sequence[AtariObservation],
+) -> Tensor:
+    """Convert raw Atari observations into a channel-first float batch."""
+    if not observations:
+        raise ValueError("observations must not be empty")
+    return torch.stack(tuple(atari_observation_tensor(obs) for obs in observations))
 
 
 @torch.no_grad()
@@ -129,7 +157,7 @@ class AtariAgent(nn.Module):
 
     def forward(
         self,
-        observations: Tensor,
+        observations: Tensor | Sequence[AtariObservation],
         *,
         add_exploration_noise: bool = False,
         temperature: float = 0.0,
@@ -144,20 +172,13 @@ class AtariAgent(nn.Module):
     @torch.inference_mode()
     def act(
         self,
-        observations: Tensor,
+        observations: Tensor | Sequence[AtariObservation],
         *,
         add_exploration_noise: bool = False,
         temperature: float = 0.0,
     ) -> AgentOutput:
-        """Evaluate a batch of observations and search for their best actions."""
-        if observations.ndim == 3:
-            observations = observations.unsqueeze(0)
-        if observations.ndim != 4:
-            raise ValueError(
-                "observations must have shape (batch, channels, height, width)"
-            )
-        if observations.shape[0] == 0:
-            raise ValueError("observations batch must not be empty")
+        """Evaluate raw Atari observations or a prepared tensor batch."""
+        observations = self._prepare_observations(observations)
 
         was_training = self.training
         self.eval()
@@ -190,6 +211,27 @@ class AtariAgent(nn.Module):
             )
         finally:
             self.train(was_training)
+
+    def _prepare_observations(
+        self, observations: Tensor | Sequence[AtariObservation]
+    ) -> Tensor:
+        if isinstance(observations, Tensor):
+            batch = observations
+            if batch.ndim == 3:
+                batch = batch.unsqueeze(0)
+            if batch.ndim != 4:
+                raise ValueError(
+                    "tensor observations must have shape "
+                    "(batch, channels, height, width)"
+                )
+            if batch.shape[0] == 0:
+                raise ValueError("observations batch must not be empty")
+        else:
+            batch = batch_atari_observations(observations)
+
+        parameter = next(self.parameters(), None)
+        device = parameter.device if parameter is not None else batch.device
+        return batch.to(device=device, dtype=torch.float32)
 
     def _evaluate_recurrent_batch(
         self,
@@ -294,6 +336,9 @@ __all__ = [
     "Agent",
     "AgentOutput",
     "AtariAgent",
+    "AtariObservation",
     "ScalarDecoder",
+    "atari_observation_tensor",
+    "batch_atari_observations",
     "categorical_to_scalar",
 ]
