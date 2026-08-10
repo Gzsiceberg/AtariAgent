@@ -1,0 +1,11 @@
+{
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/.pytest_cache": true,
+        "**/.venv": true,
+        // "**/wandb": true,
+        // "**/runs": true,
+        "**/checkpoints": true,
+        "**/outputs": true
+    }
+}
