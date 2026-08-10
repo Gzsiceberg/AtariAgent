@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 import random
+import shutil
 import sys
 
 import hydra
@@ -16,9 +17,19 @@ import torch
 from tqdm.auto import tqdm
 
 from atariagent import AtariAgent, FIFOReplayBuffer, GameTrajectory, SelfPlayWorker
+from atariagent.evaluation import (
+    EvaluationRecord,
+    evaluate_agent,
+    plot_evaluation_history,
+    write_evaluation_history,
+)
 from atariagent.search import MCTS, MCTSConfig
 from atariagent.selfplay import Environment, make_atari_environment
-from atariagent.training import MuZeroTrainer
+from atariagent.training import (
+    MuZeroTrainer,
+    representative_checkpoint_path,
+    representative_checkpoint_updates,
+)
 from atariagent.training.muzero_config import (
     TrainMuZeroConfig,
     linear_priority_beta,
@@ -75,6 +86,19 @@ def create_environments(config: TrainMuZeroConfig) -> list[Environment]:
     return environments
 
 
+def create_evaluation_environment(config: TrainMuZeroConfig) -> Environment:
+    """Create a full-episode Atari environment for policy evaluation."""
+    return make_atari_environment(
+        config.environment.id,
+        frame_stack=config.environment.frame_stack,
+        frame_skip=config.environment.frame_skip,
+        screen_size=config.environment.screen_size,
+        max_episode_steps=config.environment.max_episode_steps,
+        grayscale_obs=config.environment.grayscale,
+        terminal_on_life_loss=False,
+    )
+
+
 def save_checkpoint(
     path: Path,
     *,
@@ -111,6 +135,12 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("updates_per_iteration must be positive")
     if config.training.log_every <= 0:
         raise ValueError("log_every must be positive")
+    if config.checkpoint.every < 0:
+        raise ValueError("checkpoint.every must be non-negative")
+    if config.checkpoint.keep_representative <= 0:
+        raise ValueError("checkpoint.keep_representative must be positive")
+    if config.evaluation.enabled and config.evaluation.episodes <= 0:
+        raise ValueError("evaluation.episodes must be positive")
     if config.self_play.num_envs <= 0:
         raise ValueError("self_play.num_envs must be positive")
     if config.self_play.total_transitions <= 0:
@@ -179,7 +209,21 @@ def main(config: TrainMuZeroConfig) -> None:
         )
 
         total_updates = config.training.steps + config.training.final_steps
+        representative_updates = set(
+            representative_checkpoint_updates(
+                total_updates, config.checkpoint.keep_representative
+            )
+        )
+        evaluation_records: list[EvaluationRecord] = []
+        checkpointed_updates: set[int] = set()
+        latest_checkpoint_path = Path(config.checkpoint.path)
         update = 0
+        if config.evaluation.enabled:
+            write_evaluation_history(
+                config.evaluation.data_path,
+                evaluation_records,
+                environment_id=config.environment.id,
+            )
         training_progress = tqdm(
             total=total_updates,
             desc="Training",
@@ -202,6 +246,53 @@ def main(config: TrainMuZeroConfig) -> None:
             f"transitions={config.self_play.total_transitions:,} "
             f"updates={total_updates:,}[/dim]"
         )
+
+        def checkpoint_and_evaluate() -> None:
+            """Save latest/representative weights and evaluate this checkpoint."""
+            if update in checkpointed_updates:
+                return
+            save_checkpoint(
+                latest_checkpoint_path,
+                agent=agent,
+                trainer=trainer,
+                update=update,
+                config=config,
+            )
+            saved_path = latest_checkpoint_path
+            if update in representative_updates:
+                saved_path = representative_checkpoint_path(
+                    latest_checkpoint_path, update
+                )
+                saved_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(latest_checkpoint_path, saved_path)
+            checkpointed_updates.add(update)
+            log(
+                "[green]Checkpoint saved[/green] "
+                f"[dim]update={update:,} path={saved_path}[/dim]"
+            )
+
+            if not config.evaluation.enabled:
+                return
+            stats = evaluate_agent(
+                agent,
+                lambda: create_evaluation_environment(config),
+                episodes=config.evaluation.episodes,
+                seed=config.seed,
+            )
+            evaluation_records.append(
+                EvaluationRecord.create(update, saved_path, stats)
+            )
+            write_evaluation_history(
+                config.evaluation.data_path,
+                evaluation_records,
+                environment_id=config.environment.id,
+            )
+            log(
+                "[bold blue]Evaluation complete[/bold blue] "
+                f"[dim]update={update:,} episodes={config.evaluation.episodes} "
+                f"mean={stats.mean:.2f} median={stats.median:.2f} "
+                f"std={stats.std:.2f}[/dim]"
+            )
 
         def run_updates(count: int) -> None:
             nonlocal update
@@ -234,22 +325,12 @@ def main(config: TrainMuZeroConfig) -> None:
                         refresh=False,
                     )
                 training_progress.update(1)
-                if (
+                regular_checkpoint = (
                     config.checkpoint.every > 0
                     and update % config.checkpoint.every == 0
-                ):
-                    save_checkpoint(
-                        Path(config.checkpoint.path),
-                        agent=agent,
-                        trainer=trainer,
-                        update=update,
-                        config=config,
-                    )
-                    log(
-                        "[green]Checkpoint saved[/green] "
-                        f"[dim]update={update:,} "
-                        f"path={config.checkpoint.path}[/dim]"
-                    )
+                )
+                if regular_checkpoint or update in representative_updates:
+                    checkpoint_and_evaluate()
 
         minimum_replay_size = max(
             config.replay.warmup_transitions,
@@ -333,13 +414,17 @@ def main(config: TrainMuZeroConfig) -> None:
         )
         run_updates(config.training.final_steps)
 
-        save_checkpoint(
-            Path(config.checkpoint.path),
-            agent=agent,
-            trainer=trainer,
-            update=update,
-            config=config,
-        )
+        checkpoint_and_evaluate()
+        if config.evaluation.enabled:
+            plot_evaluation_history(
+                config.evaluation.plot_path,
+                evaluation_records,
+                title=config.environment.id.removeprefix("ALE/").removesuffix("-v5"),
+            )
+            log(
+                "[bold magenta]Evaluation plot saved[/bold magenta] "
+                f"[dim]path={config.evaluation.plot_path}[/dim]"
+            )
         training_progress.close()
         log(
             "[bold green]Training complete[/bold green] "

@@ -77,10 +77,21 @@ class LossConfig:
 
 @dataclass
 class CheckpointConfig:
-    """Checkpoint destination and frequency."""
+    """Checkpoint destination, frequency, and representative snapshot count."""
 
     path: str = "checkpoints/muzero_latest.pt"
     every: int = 1_000
+    keep_representative: int = 10
+
+
+@dataclass
+class EvaluationConfig:
+    """Noise-free checkpoint evaluation and output settings."""
+
+    enabled: bool = True
+    episodes: int = 10
+    data_path: str = "evaluations/muzero_evaluations.json"
+    plot_path: str = "evaluations/muzero_evaluation.png"
 
 
 @dataclass
@@ -94,6 +105,7 @@ class TrainMuZeroConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
 
 
 def next_collection_vector_steps(
@@ -156,6 +168,7 @@ def register_train_muzero_config() -> None:
 __all__ = [
     "CheckpointConfig",
     "EnvironmentConfig",
+    "EvaluationConfig",
     "LossConfig",
     "linear_priority_beta",
     "next_collection_vector_steps",
