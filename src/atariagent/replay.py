@@ -6,8 +6,11 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, fields
 
+from beartype import beartype
+from jaxtyping import Bool, Float, Int, UInt8, jaxtyped
 import numpy as np
 import torch
+import torch.nn.functional as functional
 from torch import Tensor
 
 from .selfplay import GameTrajectory
@@ -30,17 +33,21 @@ class ReplayBatch:
     ``frames`` contains the initial stack context followed by one new frame
     per unroll action. Call :meth:`normalized_observations` to reconstruct the
     overlapping state stacks for training. ``action_mask`` identifies real
-    action/reward steps. ``target_mask`` identifies valid state targets; a
-    true terminal state has a valid zero-value target without an MCTS policy.
+    action/reward steps. ``target_mask`` identifies states with stored search
+    targets. ``value_mask`` identifies states whose fixed-horizon return can
+    be computed; a true terminal state has a valid zero-value target without
+    an MCTS policy.
     """
 
-    frames: Tensor
-    actions: Tensor
-    rewards: Tensor
-    policy_targets: Tensor
-    root_values: Tensor
-    action_mask: Tensor
-    target_mask: Tensor
+    frames: UInt8[Tensor, "batch frames channels height width"]
+    actions: Int[Tensor, "batch unroll 1"]
+    rewards: Float[Tensor, "batch unroll"]
+    policy_targets: Float[Tensor, "batch states actions"]
+    root_values: Float[Tensor, "batch states"]
+    value_targets: Float[Tensor, "batch states"]
+    action_mask: Bool[Tensor, "batch unroll"]
+    target_mask: Bool[Tensor, "batch states"]
+    value_mask: Bool[Tensor, "batch states"]
 
     @property
     def batch_size(self) -> int:
@@ -54,7 +61,10 @@ class ReplayBatch:
     def stack_size(self) -> int:
         return self.frames.shape[1] - self.unroll_steps
 
-    def stacked_observations(self) -> Tensor:
+    @jaxtyped(typechecker=beartype)
+    def stacked_observations(
+        self,
+    ) -> UInt8[Tensor, "batch states stacked_channels height width"]:
         """Reconstruct all overlapping channel-first state stacks."""
         batch_size, _, channels, height, width = self.frames.shape
         return torch.stack(
@@ -70,13 +80,135 @@ class ReplayBatch:
             dim=1,
         )
 
+    @jaxtyped(typechecker=beartype)
     def normalized_observations(
         self, device: torch.device | str | None = None
-    ) -> Tensor:
+    ) -> Float[Tensor, "batch states stacked_channels height width"]:
         """Return reconstructed state stacks as floats in ``[0, 1]``."""
         return self.stacked_observations().to(
             device=device, dtype=torch.float32
         ).div_(255.0)
+
+    @jaxtyped(typechecker=beartype)
+    def prediction_losses(
+        self,
+        policy_logits: Float[Tensor, "batch actions"],
+        value_logits: Float[Tensor, "batch support"],
+        *,
+        offset: int,
+        support_min: int = -300,
+        support_max: int = 300,
+    ) -> tuple[
+        Float[Tensor, "batch"],
+        Float[Tensor, "batch"],
+    ]:
+        """Return masked policy and n-step value losses for one state."""
+        policy_target = self.policy_targets[:, offset]
+        has_policy = policy_target.sum(dim=-1) > 0.0
+        policy_mask = self.target_mask[:, offset] & has_policy
+        policy_loss = self._policy_cross_entropy(
+            policy_logits, policy_target
+        ) * policy_mask.to(policy_logits.dtype)
+
+        value_loss = self._scalar_loss(
+            value_logits,
+            self.value_targets[:, offset],
+            support_min=support_min,
+            support_max=support_max,
+        ) * self.value_mask[:, offset].to(value_logits.dtype)
+        return policy_loss, value_loss
+
+    @jaxtyped(typechecker=beartype)
+    def value_prefix_loss(
+        self,
+        logits: Float[Tensor, "batch support"],
+        target: Float[Tensor, "batch"],
+        *,
+        step: int,
+        support_min: int = -300,
+        support_max: int = 300,
+    ) -> Float[Tensor, "batch"]:
+        """Return masked categorical value-prefix loss for one action step."""
+        return self._scalar_loss(
+            logits,
+            target,
+            support_min=support_min,
+            support_max=support_max,
+        ) * self.action_mask[:, step].to(logits.dtype)
+
+    @staticmethod
+    @jaxtyped(typechecker=beartype)
+    def _policy_cross_entropy(
+        logits: Float[Tensor, "batch actions"],
+        target: Float[Tensor, "batch actions"],
+    ) -> Float[Tensor, "batch"]:
+        if logits.shape != target.shape:
+            raise ValueError("policy logits and targets must have the same shape")
+        return -(target * functional.log_softmax(logits, dim=-1)).sum(dim=-1)
+
+    @staticmethod
+    @jaxtyped(typechecker=beartype)
+    def _scalar_loss(
+        logits: Float[Tensor, "batch support"],
+        target: Float[Tensor, "batch"],
+        *,
+        support_min: int,
+        support_max: int,
+        epsilon: float = 0.001,
+    ) -> Float[Tensor, "batch"]:
+        if support_min >= support_max:
+            raise ValueError("support_min must be less than support_max")
+        if epsilon <= 0.0:
+            raise ValueError("epsilon must be positive")
+        expected_size = support_max - support_min + 1
+        if logits.ndim != target.ndim + 1 or logits.shape[:-1] != target.shape:
+            raise ValueError(
+                "logits must have target.shape followed by a support axis"
+            )
+        if logits.shape[-1] != expected_size:
+            raise ValueError(
+                f"expected {expected_size} support logits, got {logits.shape[-1]}"
+            )
+
+        transformed = (
+            target.sign() * (torch.sqrt(target.abs() + 1.0) - 1.0)
+            + epsilon * target
+        )
+        transformed = transformed.clamp(support_min, support_max) - support_min
+        lower = transformed.floor().long()
+        upper = transformed.ceil().long()
+        upper_weight = transformed - lower
+        lower_weight = 1.0 - upper_weight
+        lower_loss = functional.cross_entropy(
+            logits, lower, reduction="none"
+        )
+        upper_loss = functional.cross_entropy(
+            logits, upper, reduction="none"
+        )
+        return lower_weight * lower_loss + upper_weight * upper_loss
+
+    @jaxtyped(typechecker=beartype)
+    def value_prefix_targets(
+        self, *, lstm_horizon: int
+    ) -> Float[Tensor, "batch unroll"]:
+        """Build cumulative reward targets, resetting at each LSTM horizon."""
+        if self.rewards.shape != self.action_mask.shape:
+            raise ValueError("rewards and action_mask must have the same shape")
+        if self.rewards.ndim != 2:
+            raise ValueError("rewards must have shape (batch, unroll_steps)")
+        if lstm_horizon <= 0:
+            raise ValueError("lstm_horizon must be positive")
+
+        prefix = torch.zeros_like(self.rewards[:, 0])
+        targets: list[Tensor] = []
+        for step in range(self.rewards.shape[1]):
+            prefix = prefix + self.rewards[:, step] * self.action_mask[
+                :, step
+            ].to(self.rewards.dtype)
+            targets.append(prefix)
+            if (step + 1) % lstm_horizon == 0:
+                prefix = torch.zeros_like(prefix)
+        return torch.stack(targets, dim=1)
 
     def to(self, device: torch.device | str) -> ReplayBatch:
         """Move every batch tensor to ``device``."""
@@ -191,15 +323,26 @@ class FIFOReplayBuffer:
             evicted_transitions=evicted_transitions,
         )
 
-    def sample(self, batch_size: int, *, unroll_steps: int = 5) -> ReplayBatch:
+    def sample(
+        self,
+        batch_size: int,
+        *,
+        unroll_steps: int = 5,
+        td_steps: int = 5,
+        discount: float = 0.997,
+    ) -> ReplayBatch:
         """Uniformly sample unique starts and return padded tensor sequences.
 
         A sample at position ``t`` contains ``stack_size + K`` compact frames,
         actions/rewards ``t..t+K-1``, and policy/value targets ``t..t+K``.
-        Consecutive nonterminal blocks are traversed when available; missing
-        continuation is padded and masked out.
+        Value targets use a fixed ``td_steps`` discounted reward return,
+        bootstrapped from the stored MCTS root value. Consecutive nonterminal
+        blocks are traversed when available; missing continuation is padded
+        and masked out.
         """
-        self._validate_sample_request(batch_size, unroll_steps)
+        self._validate_sample_request(
+            batch_size, unroll_steps, td_steps, discount
+        )
         assert self._action_space_size is not None
 
         flat_indices = self._rng.choice(
@@ -207,7 +350,13 @@ class FIFOReplayBuffer:
         )
         locations = self._locations_for_indices(flat_indices)
         samples = [
-            self._make_sample(trajectory, position, unroll_steps)
+            self._make_sample(
+                trajectory,
+                position,
+                unroll_steps,
+                td_steps,
+                discount,
+            )
             for trajectory, position in locations
         ]
 
@@ -222,11 +371,17 @@ class FIFOReplayBuffer:
             root_values=torch.stack(
                 [sample["root_values"] for sample in samples]
             ),
+            value_targets=torch.stack(
+                [sample["value_targets"] for sample in samples]
+            ),
             action_mask=torch.stack(
                 [sample["action_mask"] for sample in samples]
             ),
             target_mask=torch.stack(
                 [sample["target_mask"] for sample in samples]
+            ),
+            value_mask=torch.stack(
+                [sample["value_mask"] for sample in samples]
             ),
         )
 
@@ -244,16 +399,23 @@ class FIFOReplayBuffer:
         return action_space_size
 
     def _validate_sample_request(
-        self, batch_size: int, unroll_steps: int
+        self,
+        batch_size: int,
+        unroll_steps: int,
+        td_steps: int,
+        discount: float,
     ) -> None:
         for value, name in (
             (batch_size, "batch_size"),
             (unroll_steps, "unroll_steps"),
+            (td_steps, "td_steps"),
         ):
             if isinstance(value, bool) or not isinstance(value, int):
                 raise TypeError(f"{name} must be an integer")
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
+        if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
+            raise ValueError("discount must be finite and in [0, 1]")
         if batch_size > self._transition_count:
             raise ValueError(
                 f"cannot sample {batch_size} unique transitions from "
@@ -295,6 +457,8 @@ class FIFOReplayBuffer:
         trajectory: GameTrajectory,
         start: int,
         unroll_steps: int,
+        td_steps: int,
+        discount: float,
     ) -> dict[str, Tensor]:
         assert self._action_space_size is not None
         stack_size = trajectory.stack_size
@@ -307,13 +471,19 @@ class FIFOReplayBuffer:
             unroll_steps + 1, self._action_space_size, dtype=torch.float32
         )
         root_values = torch.zeros(unroll_steps + 1, dtype=torch.float32)
+        value_targets = torch.zeros(unroll_steps + 1, dtype=torch.float32)
         target_mask = torch.zeros(unroll_steps + 1, dtype=torch.bool)
+        value_mask = torch.zeros(unroll_steps + 1, dtype=torch.bool)
         actions = torch.zeros(unroll_steps, 1, dtype=torch.long)
         rewards = torch.zeros(unroll_steps, dtype=torch.float32)
         action_mask = torch.zeros(unroll_steps, dtype=torch.bool)
 
         block: GameTrajectory | None = trajectory
         position = start
+        target_locations: list[tuple[GameTrajectory, int] | None] = [
+            (trajectory, start)
+        ]
+        terminal_target_offsets: set[int] = set()
         self._set_stored_target(
             policy_targets,
             root_values,
@@ -339,6 +509,7 @@ class FIFOReplayBuffer:
             position += 1
 
             if position < len(block):
+                target_locations.append((block, position))
                 self._set_stored_target(
                     policy_targets,
                     root_values,
@@ -352,17 +523,19 @@ class FIFOReplayBuffer:
             if block.terminated:
                 # No policy exists at a true terminal state, but value zero is
                 # valid supervision for the recurrent state reached here.
+                target_locations.append(None)
+                terminal_target_offsets.add(offset + 1)
                 target_mask[offset + 1] = True
-                block = None
-                continue
+                break
 
             next_block = self._next_trajectory(block)
             if next_block is None:
-                block = None
-                continue
+                target_locations.append(None)
+                break
 
             block = next_block
             position = 0
+            target_locations.append((block, position))
             self._set_stored_target(
                 policy_targets,
                 root_values,
@@ -371,6 +544,24 @@ class FIFOReplayBuffer:
                 trajectory=block,
                 position=position,
             )
+
+        while len(target_locations) < unroll_steps + 1:
+            target_locations.append(None)
+
+        for target_offset, location in enumerate(target_locations):
+            if target_offset in terminal_target_offsets:
+                value_mask[target_offset] = True
+                continue
+            if location is None:
+                continue
+            value_target, valid = self._n_step_value_target(
+                *location,
+                td_steps=td_steps,
+                discount=discount,
+            )
+            if valid:
+                value_targets[target_offset] = value_target
+                value_mask[target_offset] = True
 
         while len(frame_sequence) < stack_size + unroll_steps:
             frame_sequence.append(frame_sequence[-1])
@@ -381,9 +572,43 @@ class FIFOReplayBuffer:
             "rewards": rewards,
             "policy_targets": policy_targets,
             "root_values": root_values,
+            "value_targets": value_targets,
             "action_mask": action_mask,
             "target_mask": target_mask,
+            "value_mask": value_mask,
         }
+
+    def _n_step_value_target(
+        self,
+        trajectory: GameTrajectory,
+        position: int,
+        *,
+        td_steps: int,
+        discount: float,
+    ) -> tuple[float, bool]:
+        """Return a fixed-horizon reward return and stored-root bootstrap."""
+        value = 0.0
+        discount_power = 1.0
+        block = trajectory
+
+        for _ in range(td_steps):
+            value += discount_power * block.rewards[position]
+            discount_power *= discount
+            position += 1
+
+            if position < len(block):
+                continue
+            if block.terminated:
+                return value, True
+
+            next_block = self._next_trajectory(block)
+            if next_block is None:
+                return 0.0, False
+            block = next_block
+            position = 0
+
+        bootstrap_value = block.search_results[position].root_value
+        return value + discount_power * bootstrap_value, True
 
     def _set_stored_target(
         self,

@@ -1,0 +1,145 @@
+import pytest
+import torch
+import torch.nn.functional as functional
+
+from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
+from atariagent.replay import ReplayBatch
+from atariagent.training import MuZeroTrainer
+
+
+def test_scalar_categorical_loss_interpolates_transformed_target() -> None:
+    logits = torch.randn(2, 601)
+    targets = torch.tensor([0.0, 1.0])
+    batch = ReplayBatch(
+        frames=torch.zeros(2, 2, 1, 1, 1, dtype=torch.uint8),
+        actions=torch.zeros(2, 1, 1, dtype=torch.long),
+        rewards=torch.zeros(2, 1),
+        policy_targets=torch.zeros(2, 2, 1),
+        root_values=torch.zeros(2, 2),
+        value_targets=torch.stack((targets, torch.zeros_like(targets)), dim=1),
+        action_mask=torch.ones(2, 1, dtype=torch.bool),
+        target_mask=torch.zeros(2, 2, dtype=torch.bool),
+        value_mask=torch.tensor([[True, False], [True, False]]),
+    )
+
+    _, loss = batch.prediction_losses(
+        torch.zeros(2, 1), logits, offset=0
+    )
+    transformed = (
+        targets.sign() * (torch.sqrt(targets.abs() + 1.0) - 1.0)
+        + 0.001 * targets
+        + 300
+    )
+    lower = transformed.floor().long()
+    upper = transformed.ceil().long()
+    upper_weight = transformed - lower
+    expected = (
+        (1.0 - upper_weight)
+        * functional.cross_entropy(logits, lower, reduction="none")
+        + upper_weight
+        * functional.cross_entropy(logits, upper, reduction="none")
+    )
+
+    torch.testing.assert_close(loss, expected)
+
+
+def test_value_prefix_targets_reset_at_lstm_horizon_and_respect_mask() -> None:
+    rewards = torch.tensor([[1.0, 2.0, 4.0, 8.0], [1.0, 2.0, 4.0, 8.0]])
+    mask = torch.tensor(
+        [[True, True, True, True], [True, False, False, False]]
+    )
+
+    batch = ReplayBatch(
+        frames=torch.zeros(2, 5, 1, 1, 1, dtype=torch.uint8),
+        actions=torch.zeros(2, 4, 1, dtype=torch.long),
+        rewards=rewards,
+        policy_targets=torch.zeros(2, 5, 1),
+        root_values=torch.zeros(2, 5),
+        value_targets=torch.zeros(2, 5),
+        action_mask=mask,
+        target_mask=torch.zeros(2, 5, dtype=torch.bool),
+        value_mask=torch.zeros(2, 5, dtype=torch.bool),
+    )
+
+    torch.testing.assert_close(
+        batch.value_prefix_targets(lstm_horizon=2),
+        torch.tensor([[1.0, 3.0, 4.0, 12.0], [1.0, 1.0, 0.0, 0.0]]),
+    )
+
+
+def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
+    representation = RepresentationNetwork(4)
+    dynamics = DynamicsNetwork(action_space_size=3)
+    prediction = PredictionNetwork(action_space_size=3)
+    trainer = MuZeroTrainer(
+        representation,
+        dynamics,
+        prediction,
+        lr_warmup_steps=0,
+        unroll_steps=1,
+        lstm_horizon=1,
+    )
+    policy_output = prediction.policy.projection[-1]
+    value_output = prediction.value.projection[-1]
+    reward_output = dynamics.reward_prediction.projection[-1]
+    initial_policy = policy_output.weight.detach().clone()
+    initial_value = value_output.weight.detach().clone()
+    initial_reward = reward_output.weight.detach().clone()
+
+    batch = ReplayBatch(
+        frames=torch.randint(0, 256, (2, 5, 1, 96, 96), dtype=torch.uint8),
+        actions=torch.tensor([[[0]], [[2]]]),
+        rewards=torch.tensor([[1.0], [-1.0]]),
+        policy_targets=torch.tensor(
+            [
+                [[0.8, 0.1, 0.1], [0.1, 0.1, 0.8]],
+                [[0.1, 0.8, 0.1], [0.8, 0.1, 0.1]],
+            ]
+        ),
+        root_values=torch.tensor([[2.0, 1.0], [-2.0, -1.0]]),
+        value_targets=torch.tensor([[1.0, 0.5], [-1.0, -0.5]]),
+        action_mask=torch.ones(2, 1, dtype=torch.bool),
+        target_mask=torch.ones(2, 2, dtype=torch.bool),
+        value_mask=torch.ones(2, 2, dtype=torch.bool),
+    )
+
+    metrics = trainer.train_step(batch)
+
+    assert metrics.loss == pytest.approx(
+        metrics.policy_loss
+        + 0.25 * metrics.value_loss
+        + metrics.reward_loss
+    )
+    assert metrics.policy_loss > 0.0
+    assert metrics.value_loss > 0.0
+    assert metrics.reward_loss > 0.0
+    assert metrics.learning_rate == pytest.approx(0.2)
+    assert not torch.equal(policy_output.weight, initial_policy)
+    assert not torch.equal(value_output.weight, initial_value)
+    assert not torch.equal(reward_output.weight, initial_reward)
+
+
+def test_muzero_trainer_uses_efficientzero_v1_optimizer_and_schedule() -> None:
+    trainer = MuZeroTrainer(
+        RepresentationNetwork(4),
+        DynamicsNetwork(action_space_size=3),
+        PredictionNetwork(action_space_size=3),
+        learning_rate=0.2,
+        momentum=0.9,
+        weight_decay=1e-4,
+        lr_warmup_steps=10,
+        lr_decay_rate=0.1,
+        lr_decay_steps=100,
+    )
+
+    assert isinstance(trainer.optimizer, torch.optim.SGD)
+    assert trainer.optimizer.defaults["momentum"] == pytest.approx(0.9)
+    assert trainer.optimizer.defaults["weight_decay"] == pytest.approx(1e-4)
+    assert trainer._adjust_learning_rate() == pytest.approx(0.0)
+
+    trainer._step_count = 5
+    assert trainer._adjust_learning_rate() == pytest.approx(0.1)
+    trainer._step_count = 10
+    assert trainer._adjust_learning_rate() == pytest.approx(0.2)
+    trainer._step_count = 110
+    assert trainer._adjust_learning_rate() == pytest.approx(0.02)

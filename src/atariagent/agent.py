@@ -349,7 +349,9 @@ class AtariAgent(nn.Module):
         if isinstance(observations, Tensor):
             batch = observations
             if batch.ndim == 3:
-                batch = batch.unsqueeze(0)
+                batch = rearrange(
+                    batch, "channels height width -> 1 channels height width"
+                )
             if batch.ndim != 4:
                 raise ValueError(
                     "tensor observations must have shape "

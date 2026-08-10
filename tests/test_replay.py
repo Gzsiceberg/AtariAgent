@@ -81,8 +81,10 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.rewards.shape == (3, 5)
     assert batch.policy_targets.shape == (3, 6, 2)
     assert batch.root_values.shape == (3, 6)
+    assert batch.value_targets.shape == (3, 6)
     assert batch.action_mask.dtype == torch.bool
     assert batch.target_mask.dtype == torch.bool
+    assert batch.value_mask.dtype == torch.bool
 
     sampled_start_values = batch.frames[:, 0, 0, 0, 0]
     assert sorted(sampled_start_values.tolist()) == [0, 1, 2]
@@ -96,6 +98,9 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
         torch.tensor([True, True, False, False, False, False]),
     )
     assert batch.root_values[final_sample, 1] == 0.0
+    assert batch.value_targets[final_sample, 0] == 3.0
+    assert batch.value_targets[final_sample, 1] == 0.0
+    assert torch.all(batch.value_mask[final_sample, :2])
     assert torch.all(batch.policy_targets[final_sample, 1] == 0)
     assert batch.rewards[final_sample, 0] == 3.0
     assert torch.all(batch.rewards[final_sample, 1:] == 0)
@@ -110,6 +115,28 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     torch.testing.assert_close(
         normalized[final_sample, 0],
         torch.full((1, 2, 2), 2.0 / 255.0),
+    )
+
+
+def test_replay_builds_fixed_n_step_values_from_stored_root_values() -> None:
+    replay = FIFOReplayBuffer(max_transitions=10, seed=3)
+    replay.add(make_trajectory(3, terminated=True))
+
+    batch = replay.sample(
+        batch_size=3,
+        unroll_steps=3,
+        td_steps=2,
+        discount=0.5,
+    )
+    start_zero = int((batch.frames[:, 0, 0, 0, 0] == 0).nonzero().item())
+
+    torch.testing.assert_close(
+        batch.value_targets[start_zero],
+        torch.tensor([2.5, 3.5, 3.0, 0.0]),
+    )
+    torch.testing.assert_close(
+        batch.value_mask[start_zero],
+        torch.tensor([True, True, True, True]),
     )
 
 
@@ -158,6 +185,24 @@ def test_replay_unroll_continues_across_nonterminal_blocks() -> None:
     torch.testing.assert_close(
         batch.root_values[crossing_sample],
         torch.tensor([1.0, 2.0, 3.0, 4.0]),
+    )
+
+    value_batch = replay.sample(
+        batch_size=5,
+        unroll_steps=3,
+        td_steps=2,
+        discount=0.5,
+    )
+    crossing_value_sample = int(
+        (value_batch.frames[:, 0, 0, 0, 0] == 1).nonzero().item()
+    )
+    torch.testing.assert_close(
+        value_batch.value_targets[crossing_value_sample],
+        torch.tensor([3.25, 3.0, 0.0, 0.0]),
+    )
+    torch.testing.assert_close(
+        value_batch.value_mask[crossing_value_sample],
+        torch.tensor([True, True, False, False]),
     )
 
 

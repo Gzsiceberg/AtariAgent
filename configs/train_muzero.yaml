@@ -1,0 +1,66 @@
+defaults:
+  - train_muzero_schema
+  - override hydra/job_logging: disabled
+  - _self_
+
+seed: 0
+
+environment:
+  id: ALE/Pong-v5
+  frame_stack: 4
+  frame_skip: 4
+  screen_size: 96
+  max_episode_steps: 3000
+  grayscale: false
+
+self_play:
+  num_envs: 4
+  num_simulations: 50
+  steps_per_iteration: 100
+  trajectory_length: 100
+  clip_rewards: true
+  add_exploration_noise: true
+  temperature: 1.0
+
+replay:
+  max_transitions: 100000
+  warmup_transitions: 1000
+
+training:
+  device: auto
+  steps: 10000
+  updates_per_iteration: 100
+  batch_size: 256
+  unroll_steps: 5
+  td_steps: 5
+  lstm_horizon: 5
+  # Per raw frame; training and MCTS use discount ** frame_skip.
+  discount: 0.997
+  # EfficientZero V1 Atari optimizer and step learning-rate schedule.
+  learning_rate: 0.2
+  momentum: 0.9
+  weight_decay: 0.0001
+  lr_warmup_steps: 100  # 1% of 10,000 training updates
+  lr_decay_rate: 0.1
+  lr_decay_steps: 100000
+  recurrent_gradient_scale: 0.5
+  max_gradient_norm: 5.0
+  log_every: 10
+
+# EfficientZero Atari policy, value, and value-prefix coefficients.
+# Reward supervises an LSTM value prefix.
+loss:
+  policy_weight: 1.0
+  value_weight: 0.25
+  reward_weight: 1.0
+
+checkpoint:
+  path: checkpoints/muzero_latest.pt
+  every: 1000
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
