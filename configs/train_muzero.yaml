@@ -70,7 +70,7 @@ checkpoint:
 
 evaluation:
   enabled: true
-  episodes: 10
+  episodes: 1
   data_path: evaluations/muzero_evaluations.json
   plot_path: evaluations/muzero_evaluation.png
 

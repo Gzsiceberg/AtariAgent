@@ -248,9 +248,10 @@ def main(config: TrainMuZeroConfig) -> None:
         )
 
         def checkpoint_and_evaluate() -> None:
-            """Save latest/representative weights and evaluate this checkpoint."""
+            """Save scheduled weights and evaluate representative checkpoints."""
             if update in checkpointed_updates:
                 return
+            is_representative = update in representative_updates
             save_checkpoint(
                 latest_checkpoint_path,
                 agent=agent,
@@ -259,7 +260,7 @@ def main(config: TrainMuZeroConfig) -> None:
                 config=config,
             )
             saved_path = latest_checkpoint_path
-            if update in representative_updates:
+            if is_representative:
                 saved_path = representative_checkpoint_path(
                     latest_checkpoint_path, update
                 )
@@ -271,7 +272,7 @@ def main(config: TrainMuZeroConfig) -> None:
                 f"[dim]update={update:,} path={saved_path}[/dim]"
             )
 
-            if not config.evaluation.enabled:
+            if not config.evaluation.enabled or not is_representative:
                 return
             stats = evaluate_agent(
                 agent,
