@@ -50,6 +50,15 @@ def test_representation_intermediate_resolutions() -> None:
     ]
 
 
+def test_downsampling_pools_match_efficientzero() -> None:
+    model = RepresentationNetwork(4)
+
+    assert isinstance(model.pool_12, nn.AvgPool2d)
+    assert isinstance(model.pool_6, nn.AvgPool2d)
+    assert not any(True for _ in model.pool_12.children())
+    assert not any(True for _ in model.pool_6.children())
+
+
 def test_all_spatial_operations_use_three_by_three_kernels() -> None:
     model = RepresentationNetwork(4)
 

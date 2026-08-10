@@ -38,6 +38,7 @@ def test_reward_prediction_architecture() -> None:
     assert isinstance(convolution, nn.Conv2d)
     assert convolution.kernel_size == (1, 1)
     assert convolution.out_channels == 16
+    assert convolution.bias is not None
     assert model.lstm.input_size == 16 * 6 * 6
     assert model.lstm.hidden_size == 512
     assert isinstance(first_linear, nn.Linear)

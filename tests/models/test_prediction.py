@@ -26,6 +26,7 @@ def test_prediction_head_architecture(model: nn.Module, output_size: int) -> Non
     assert isinstance(convolution, nn.Conv2d)
     assert convolution.kernel_size == (1, 1)
     assert (convolution.in_channels, convolution.out_channels) == (64, 16)
+    assert convolution.bias is not None
     assert isinstance(first_linear, nn.Linear)
     assert (first_linear.in_features, first_linear.out_features) == (
         16 * 6 * 6,

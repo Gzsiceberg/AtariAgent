@@ -12,24 +12,32 @@ environment:
   screen_size: 96
   max_episode_steps: 3000
   grayscale: false
+  episodic_life: true
 
 self_play:
   num_envs: 4
   num_simulations: 50
   steps_per_iteration: 100
-  trajectory_length: 100
+  trajectory_length: 400
   clip_rewards: true
   add_exploration_noise: true
-  temperature: 1.0
 
 replay:
-  max_transitions: 100000
-  warmup_transitions: 1000
+  max_transitions: 10000
+  warmup_transitions: 2000
+  priority_alpha: 0.6
+  priority_beta_initial: 0.4
+  priority_beta_final: 1.0
+  priority_epsilon: 0.000001
 
 training:
   device: auto
-  steps: 10000
-  updates_per_iteration: 100
+  # EfficientZero's 100k collection-phase updates followed by 20k
+  # learner-only updates.
+  steps: 100000
+  final_steps: 20000
+  # Four environments collect 400 transitions per iteration on average.
+  updates_per_iteration: 400
   batch_size: 256
   unroll_steps: 5
   td_steps: 5
@@ -40,10 +48,9 @@ training:
   learning_rate: 0.2
   momentum: 0.9
   weight_decay: 0.0001
-  lr_warmup_steps: 100  # 1% of 10,000 training updates
+  lr_warmup_steps: 1000  # 1% of 100,000 collection-phase updates
   lr_decay_rate: 0.1
   lr_decay_steps: 100000
-  recurrent_gradient_scale: 0.5
   max_gradient_norm: 5.0
   log_every: 10
 

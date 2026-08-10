@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from atariagent.agent import categorical_to_scalar
 from atariagent.replay import ReplayBatch
 
 
@@ -24,15 +25,16 @@ class MuZeroTrainMetrics:
     reward_loss: float
     gradient_norm: float
     learning_rate: float
+    priorities: tuple[float, ...]
 
 
 class MuZeroTrainer:
     """Train all agent networks from :class:`ReplayBatch` self-play data.
 
-    Losses are accumulated across the root and recurrent unroll, averaged over
-    the batch, and scaled by ``1 / unroll_steps`` as in EfficientZero. The
-    three default Atari loss coefficients are policy 1, value 0.25, and
-    value-prefix reward 1.
+    Root prediction losses keep full weight, while losses across recurrent
+    unrolls are scaled by ``1 / unroll_steps`` as in the original MuZero
+    pseudocode. The three default Atari loss coefficients are policy 1,
+    value 0.25, and value-prefix reward 1.
     """
 
     def __init__(
@@ -55,6 +57,7 @@ class MuZeroTrainer:
         max_gradient_norm: float = 5.0,
         support_min: int = -300,
         support_max: int = 300,
+        priority_epsilon: float = 1e-6,
     ) -> None:
         if unroll_steps <= 0:
             raise ValueError("unroll_steps must be positive")
@@ -74,6 +77,8 @@ class MuZeroTrainer:
             raise ValueError("lr_decay_steps must be positive")
         if max_gradient_norm <= 0.0:
             raise ValueError("max_gradient_norm must be positive")
+        if priority_epsilon <= 0.0:
+            raise ValueError("priority_epsilon must be positive")
         for weight, name in (
             (policy_weight, "policy_weight"),
             (value_weight, "value_weight"),
@@ -93,6 +98,7 @@ class MuZeroTrainer:
         self.max_gradient_norm = max_gradient_norm
         self.support_min = support_min
         self.support_max = support_max
+        self.priority_epsilon = priority_epsilon
         self.learning_rate = learning_rate
         self.lr_warmup_steps = lr_warmup_steps
         self.lr_decay_rate = lr_decay_rate
@@ -124,9 +130,9 @@ class MuZeroTrainer:
             lstm_horizon=self.lstm_horizon
         )
         batch_size = batch.batch_size
-        policy_loss = observations.new_zeros(batch_size)
-        value_loss = observations.new_zeros(batch_size)
-        reward_loss = observations.new_zeros(batch_size)
+        recurrent_policy_loss = observations.new_zeros(batch_size)
+        recurrent_value_loss = observations.new_zeros(batch_size)
+        recurrent_reward_loss = observations.new_zeros(batch_size)
 
         state = self.representation(observations[:, 0])
         policy_logits, value_logits = self.prediction(state)
@@ -137,8 +143,14 @@ class MuZeroTrainer:
             support_min=self.support_min,
             support_max=self.support_max,
         )
-        policy_loss += root_policy_loss
-        value_loss += root_value_loss
+        predicted_root_values = categorical_to_scalar(
+            value_logits.detach(),
+            support_min=self.support_min,
+            support_max=self.support_max,
+        )
+        new_priorities = (
+            predicted_root_values - batch.value_targets[:, 0]
+        ).abs() + self.priority_epsilon
 
         hidden = None
         for step in range(self.unroll_steps):
@@ -146,7 +158,7 @@ class MuZeroTrainer:
                 state, batch.actions[:, step], hidden
             )
 
-            reward_loss += batch.value_prefix_loss(
+            recurrent_reward_loss += batch.value_prefix_loss(
                 value_prefix_logits,
                 prefix_targets[:, step],
                 step=step,
@@ -163,16 +175,25 @@ class MuZeroTrainer:
                 support_min=self.support_min,
                 support_max=self.support_max,
             )
-            policy_loss += step_policy_loss
-            value_loss += step_value_loss
+            recurrent_policy_loss += step_policy_loss
+            recurrent_value_loss += step_value_loss
 
             if (step + 1) % self.lstm_horizon == 0:
                 hidden = None
 
-        gradient_scale = 1.0 / self.unroll_steps
-        policy_loss = policy_loss.mean() * gradient_scale
-        value_loss = value_loss.mean() * gradient_scale
-        reward_loss = reward_loss.mean() * gradient_scale
+        recurrent_scale = 1.0 / self.unroll_steps
+        sample_weights = batch.importance_weights.to(root_policy_loss.dtype)
+        policy_loss = (
+            sample_weights
+            * (root_policy_loss + recurrent_policy_loss * recurrent_scale)
+        ).mean()
+        value_loss = (
+            sample_weights
+            * (root_value_loss + recurrent_value_loss * recurrent_scale)
+        ).mean()
+        reward_loss = (
+            sample_weights * recurrent_reward_loss * recurrent_scale
+        ).mean()
         loss = (
             self.policy_weight * policy_loss
             + self.value_weight * value_loss
@@ -192,6 +213,7 @@ class MuZeroTrainer:
             reward_loss=float(reward_loss.detach()),
             gradient_norm=float(gradient_norm.detach()),
             learning_rate=learning_rate,
+            priorities=tuple(new_priorities.detach().cpu().tolist()),
         )
 
     def _modules(self) -> tuple[nn.Module, ...]:
@@ -229,6 +251,10 @@ class MuZeroTrainer:
             raise ValueError("value_targets has an invalid shape")
         if batch.value_mask.shape != target_shape:
             raise ValueError("value_mask has an invalid shape")
+        if batch.indices.shape != (batch.batch_size,):
+            raise ValueError("indices has an invalid shape")
+        if batch.importance_weights.shape != (batch.batch_size,):
+            raise ValueError("importance_weights has an invalid shape")
 
 
 __all__ = [

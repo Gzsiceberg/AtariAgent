@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 
+import gymnasium as gym
 import numpy as np
 import pytest
 import torch
@@ -11,11 +12,47 @@ from atariagent.agent import (
     batch_atari_observations,
 )
 from atariagent.search import Node, SearchResult
-from atariagent.selfplay import SelfPlayWorker
+from atariagent.selfplay import EpisodicLifeEnvironment, SelfPlayWorker
 
 
 class DiscreteActionSpace:
     n = 2
+
+
+class LifeLossEnvironment(gym.Env):
+    observation_space = gym.spaces.Box(0, 255, shape=(1,), dtype=np.uint8)
+    action_space = gym.spaces.Discrete(2)
+
+    def __init__(self) -> None:
+        self.ale = self
+        self.current_lives = 3
+        self.reset_calls = 0
+        self.step_calls = 0
+
+    def lives(self) -> int:
+        return self.current_lives
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.reset_calls += 1
+        self.current_lives = 3
+        return np.array([self.step_calls], dtype=np.uint8), {}
+
+    def step(self, action):
+        self.step_calls += 1
+        terminated = False
+        if self.step_calls == 1:
+            self.current_lives = 2
+        elif self.step_calls == 3:
+            self.current_lives = 0
+            terminated = True
+        return (
+            np.array([self.step_calls], dtype=np.uint8),
+            0.0,
+            terminated,
+            False,
+            {},
+        )
 
 
 class FakeEnvironment:
@@ -79,6 +116,27 @@ class FakeAgent:
             actions=tuple(1 for _ in results),
             search_results=results,
         )
+
+
+def test_episodic_life_continues_after_life_loss_and_resets_on_game_over() -> None:
+    base = LifeLossEnvironment()
+    environment = EpisodicLifeEnvironment(base)
+
+    environment.reset(seed=3)
+    _, _, terminated, truncated, _ = environment.step(1)
+
+    assert terminated
+    assert not truncated
+    assert base.reset_calls == 1
+
+    environment.reset()
+    assert base.reset_calls == 1
+    assert base.step_calls == 2
+
+    _, _, terminated, _, _ = environment.step(1)
+    assert terminated
+    environment.reset()
+    assert base.reset_calls == 2
 
 
 def test_worker_batches_games_and_persists_them_between_runs() -> None:
@@ -163,6 +221,34 @@ def test_worker_uses_fixed_block_size_across_run_calls() -> None:
     assert trajectories[0].block_id == 0
     assert not trajectories[0].terminated
     assert trajectories[0].rewards == (2.5,) * 5
+
+
+def test_worker_random_warmup_is_seeded_and_stores_uniform_policy() -> None:
+    first_agent = FakeAgent()
+    second_agent = FakeAgent()
+    first_worker = SelfPlayWorker(
+        first_agent,
+        environments=[FakeEnvironment(episode_length=100)],
+        trajectory_length=4,
+        base_seed=7,
+    )
+    second_worker = SelfPlayWorker(
+        second_agent,
+        environments=[FakeEnvironment(episode_length=100)],
+        trajectory_length=4,
+        base_seed=7,
+    )
+
+    first = first_worker.run(4, temperature=0.5, random_actions=True)[0][0]
+    second = second_worker.run(4, temperature=0.5, random_actions=True)[0][0]
+
+    assert first.actions == second.actions
+    assert first.target_policy == ((0.5, 0.5),) * 4
+    assert all(result.visit_counts == (1, 1) for result in first.search_results)
+    assert all(kwargs["temperature"] == 0.5 for kwargs in first_agent.kwargs)
+
+    first_worker.close()
+    second_worker.close()
 
 
 def test_worker_closes_all_environments_and_rejects_further_runs() -> None:

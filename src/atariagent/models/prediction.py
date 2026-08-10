@@ -23,7 +23,7 @@ class _PredictionHead(nn.Module):
 
         self.output_size = output_size
         self.features = nn.Sequential(
-            nn.Conv2d(64, 16, kernel_size=1, bias=False),
+            nn.Conv2d(64, 16, kernel_size=1),
             nn.BatchNorm2d(16, momentum=batch_norm_momentum),
             nn.ReLU(inplace=True),
         )

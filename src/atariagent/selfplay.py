@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+import random
 from typing import Protocol
 
+import gymnasium as gym
 import numpy as np
 
 from .agent import AgentOutput, AtariObservation
@@ -173,6 +175,34 @@ class _TrajectoryBuilder:
         )
 
 
+class EpisodicLifeEnvironment(gym.Wrapper):
+    """Expose life losses as terminals without resetting the underlying game."""
+
+    def __init__(self, environment: gym.Env) -> None:
+        super().__init__(environment)
+        self._lives = 0
+        self._was_real_done = True
+
+    def step(self, action: int):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        self._was_real_done = bool(terminated or truncated)
+        lives = int(self.env.unwrapped.ale.lives())
+        if 0 < lives < self._lives:
+            terminated = True
+        self._lives = lives
+        return observation, reward, terminated, truncated, info
+
+    def reset(self, *, seed: int | None = None, options=None):
+        if self._was_real_done:
+            observation, info = self.env.reset(seed=seed, options=options)
+        else:
+            observation, _, terminated, truncated, info = self.env.step(0)
+            if terminated or truncated:
+                observation, info = self.env.reset(seed=seed, options=options)
+        self._lives = int(self.env.unwrapped.ale.lives())
+        return observation, info
+
+
 def make_atari_environment(
     env_id: str,
     *,
@@ -213,11 +243,13 @@ def make_atari_environment(
         base_environment,
         frame_skip=frame_skip,
         screen_size=screen_size,
-        terminal_on_life_loss=terminal_on_life_loss,
+        terminal_on_life_loss=False,
         grayscale_obs=grayscale_obs,
         scale_obs=False,
     )
     environment = TimeLimit(environment, max_episode_steps=max_episode_steps)
+    if terminal_on_life_loss:
+        environment = EpisodicLifeEnvironment(environment)
     return FrameStackObservation(environment, stack_size=frame_stack)
 
 
@@ -294,6 +326,7 @@ class SelfPlayWorker:
         self.clip_rewards = clip_rewards
         self.add_exploration_noise = add_exploration_noise
         self.temperature = float(temperature)
+        self._rng = random.Random(base_seed)
 
         self.total_vector_steps = 0
         self.total_transitions = 0
@@ -304,12 +337,30 @@ class SelfPlayWorker:
         self._initialized = False
         self._closed = False
 
-    def run(self, steps: int) -> tuple[tuple[GameTrajectory, ...], ...]:
-        """Advance each game by ``steps`` and return blocks grouped by game."""
+    def run(
+        self,
+        steps: int,
+        *,
+        temperature: float | None = None,
+        random_actions: bool = False,
+    ) -> tuple[tuple[GameTrajectory, ...], ...]:
+        """Advance each game and return blocks grouped by game.
+
+        ``random_actions`` uses a seeded uniform behavior policy while retaining
+        MCTS root values and storing a uniform policy target. This matches the
+        EfficientZero replay warmup behavior.
+        """
         if isinstance(steps, bool) or not isinstance(steps, int):
             raise TypeError("steps must be an integer")
         if steps <= 0:
             raise ValueError("steps must be positive")
+        if not isinstance(random_actions, bool):
+            raise TypeError("random_actions must be a boolean")
+        active_temperature = (
+            self.temperature if temperature is None else temperature
+        )
+        if not np.isfinite(active_temperature) or active_temperature < 0.0:
+            raise ValueError("temperature must be finite and non-negative")
         if self._closed:
             raise RuntimeError("cannot run a closed self-play worker")
 
@@ -323,8 +374,10 @@ class SelfPlayWorker:
             agent_output = self.agent.act(
                 self._observations,
                 add_exploration_noise=self.add_exploration_noise,
-                temperature=self.temperature,
+                temperature=float(active_temperature),
             )
+            if random_actions:
+                agent_output = self._uniform_behavior_output(agent_output)
             self._validate_agent_output(agent_output)
 
             for index, environment in enumerate(self.environments):
@@ -443,6 +496,28 @@ class SelfPlayWorker:
             initial_observation=self._observations[index],
         )
 
+    def _uniform_behavior_output(self, output: AgentOutput) -> AgentOutput:
+        """Replace actions and visit targets with a seeded uniform policy."""
+        actions: list[int] = []
+        results: list[SearchResult] = []
+        for result, environment in zip(
+            output.search_results, self.environments, strict=True
+        ):
+            action_count = int(environment.action_space.n)
+            action = self._rng.randrange(action_count)
+            uniform_policy = tuple(1.0 / action_count for _ in range(action_count))
+            actions.append(action)
+            results.append(
+                SearchResult(
+                    action=action,
+                    policy=uniform_policy,
+                    visit_counts=tuple(1 for _ in range(action_count)),
+                    root_value=result.root_value,
+                    root=result.root,
+                )
+            )
+        return AgentOutput(actions=tuple(actions), search_results=tuple(results))
+
     def _validate_agent_output(self, output: AgentOutput) -> None:
         if len(output.actions) != self.num_envs:
             raise ValueError("agent must return one action per environment")
@@ -498,6 +573,7 @@ __all__ = [
     "DiscreteActionSpace",
     "Environment",
     "EnvironmentFactory",
+    "EpisodicLifeEnvironment",
     "GameTrajectory",
     "SelfPlayAgent",
     "SelfPlayWorker",

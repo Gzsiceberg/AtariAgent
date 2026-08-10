@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+import random
 
 import hydra
 import numpy as np
@@ -12,12 +13,14 @@ from omegaconf import OmegaConf
 import torch
 
 from atariagent import AtariAgent, FIFOReplayBuffer, GameTrajectory, SelfPlayWorker
-from atariagent.search import MCTSConfig
+from atariagent.search import MCTS, MCTSConfig
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import MuZeroTrainer
 from atariagent.training.muzero_config import (
     TrainMuZeroConfig,
+    linear_priority_beta,
     register_train_muzero_config,
+    visit_softmax_temperature,
 )
 
 
@@ -52,6 +55,7 @@ def create_environments(config: TrainMuZeroConfig) -> list[Environment]:
                     screen_size=config.environment.screen_size,
                     max_episode_steps=config.environment.max_episode_steps,
                     grayscale_obs=config.environment.grayscale,
+                    terminal_on_life_loss=config.environment.episodic_life,
                 )
             )
     except Exception:
@@ -89,9 +93,21 @@ def main(config: TrainMuZeroConfig) -> None:
     """Alternate self-play collection with updates sampled from replay."""
     if config.training.batch_size < 2:
         raise ValueError("batch_size must be at least 2 for batch normalization")
+    if config.training.steps <= 0:
+        raise ValueError("training.steps must be positive")
+    if config.training.final_steps < 0:
+        raise ValueError("training.final_steps must be non-negative")
+    if config.training.updates_per_iteration <= 0:
+        raise ValueError("updates_per_iteration must be positive")
+    if config.training.log_every <= 0:
+        raise ValueError("log_every must be positive")
 
+    random.seed(config.seed)
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
     device = resolve_device(config.training.device)
     environments = create_environments(config)
 
@@ -105,14 +121,18 @@ def main(config: TrainMuZeroConfig) -> None:
 
         image_channels = 1 if config.environment.grayscale else 3
         discount = config.training.discount ** config.environment.frame_skip
-        agent = AtariAgent(
-            config.environment.frame_stack * image_channels,
-            action_space_size,
-            mcts_config=MCTSConfig(
+        mcts = MCTS(
+            MCTSConfig(
                 num_simulations=config.self_play.num_simulations,
                 discount=discount,
                 value_prefix_horizon=config.training.lstm_horizon,
             ),
+            rng=random.Random(config.seed),
+        )
+        agent = AtariAgent(
+            config.environment.frame_stack * image_channels,
+            action_space_size,
+            mcts=mcts,
         ).to(device)
         trainer = MuZeroTrainer(
             agent.representation_network,
@@ -130,12 +150,62 @@ def main(config: TrainMuZeroConfig) -> None:
             value_weight=config.loss.value_weight,
             reward_weight=config.loss.reward_weight,
             max_gradient_norm=config.training.max_gradient_norm,
+            priority_epsilon=config.replay.priority_epsilon,
         )
         replay = FIFOReplayBuffer(
-            config.replay.max_transitions, seed=config.seed
+            config.replay.max_transitions,
+            seed=config.seed,
+            priority_alpha=config.replay.priority_alpha,
         )
 
         update = 0
+
+        def run_updates(count: int) -> None:
+            nonlocal update
+            total_updates = config.training.steps + config.training.final_steps
+            for _ in range(count):
+                priority_beta = linear_priority_beta(
+                    update,
+                    total_updates,
+                    config.replay.priority_beta_initial,
+                    config.replay.priority_beta_final,
+                )
+                batch = replay.sample(
+                    config.training.batch_size,
+                    unroll_steps=config.training.unroll_steps,
+                    td_steps=config.training.td_steps,
+                    discount=discount,
+                    priority_beta=priority_beta,
+                ).to(device)
+                metrics = trainer.train_step(batch)
+                replay.update_priorities(batch.indices, metrics.priorities)
+                update += 1
+                if update == 1 or update % config.training.log_every == 0:
+                    print(
+                        f"update={update:06d} loss={metrics.loss:.4f} "
+                        f"policy={metrics.policy_loss:.4f} "
+                        f"value={metrics.value_loss:.4f} "
+                        f"reward={metrics.reward_loss:.4f} "
+                        f"grad_norm={metrics.gradient_norm:.4f} "
+                        f"lr={metrics.learning_rate:.6f} "
+                        f"beta={priority_beta:.4f}"
+                    )
+                if (
+                    config.checkpoint.every > 0
+                    and update % config.checkpoint.every == 0
+                ):
+                    save_checkpoint(
+                        Path(config.checkpoint.path),
+                        agent=agent,
+                        trainer=trainer,
+                        update=update,
+                        config=config,
+                    )
+
+        minimum_replay_size = max(
+            config.replay.warmup_transitions,
+            config.training.batch_size,
+        )
         collection_iteration = 0
         with SelfPlayWorker(
             agent,
@@ -145,58 +215,38 @@ def main(config: TrainMuZeroConfig) -> None:
             base_seed=config.seed,
             clip_rewards=config.self_play.clip_rewards,
             add_exploration_noise=config.self_play.add_exploration_noise,
-            temperature=config.self_play.temperature,
         ) as worker:
             while update < config.training.steps:
                 collection_iteration += 1
-                grouped = worker.run(config.self_play.steps_per_iteration)
+                warming_up = len(replay) < minimum_replay_size
+                temperature = visit_softmax_temperature(
+                    update, config.training.steps
+                )
+                grouped = worker.run(
+                    config.self_play.steps_per_iteration,
+                    temperature=temperature,
+                    random_actions=warming_up,
+                )
                 trajectories = tuple(flatten_trajectories(grouped))
                 insertion = replay.extend(trajectories)
                 print(
                     f"collection={collection_iteration:04d} "
                     f"added={insertion.added_transitions} "
-                    f"replay={len(replay)}/{replay.max_transitions}"
+                    f"replay={len(replay)}/{replay.max_transitions} "
+                    f"temperature={temperature:.2f} random={warming_up}"
                 )
 
-                if len(replay) < max(
-                    config.replay.warmup_transitions,
-                    config.training.batch_size,
-                ):
+                if len(replay) < minimum_replay_size:
                     continue
 
-                updates = min(
-                    config.training.updates_per_iteration,
-                    config.training.steps - update,
+                run_updates(
+                    min(
+                        config.training.updates_per_iteration,
+                        config.training.steps - update,
+                    )
                 )
-                for _ in range(updates):
-                    batch = replay.sample(
-                        config.training.batch_size,
-                        unroll_steps=config.training.unroll_steps,
-                        td_steps=config.training.td_steps,
-                        discount=discount,
-                    ).to(device)
-                    metrics = trainer.train_step(batch)
-                    update += 1
-                    if update == 1 or update % config.training.log_every == 0:
-                        print(
-                            f"update={update:06d} loss={metrics.loss:.4f} "
-                            f"policy={metrics.policy_loss:.4f} "
-                            f"value={metrics.value_loss:.4f} "
-                            f"reward={metrics.reward_loss:.4f} "
-                            f"grad_norm={metrics.gradient_norm:.4f} "
-                            f"lr={metrics.learning_rate:.6f}"
-                        )
-                    if (
-                        config.checkpoint.every > 0
-                        and update % config.checkpoint.every == 0
-                    ):
-                        save_checkpoint(
-                            Path(config.checkpoint.path),
-                            agent=agent,
-                            trainer=trainer,
-                            update=update,
-                            config=config,
-                        )
+
+        run_updates(config.training.final_steps)
 
         save_checkpoint(
             Path(config.checkpoint.path),

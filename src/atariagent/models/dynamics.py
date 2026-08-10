@@ -29,7 +29,7 @@ class RewardPredictionNetwork(nn.Module):
     def __init__(self, *, batch_norm_momentum: float = 0.1) -> None:
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(64, 16, kernel_size=1, bias=False),
+            nn.Conv2d(64, 16, kernel_size=1),
             nn.BatchNorm2d(16, momentum=batch_norm_momentum),
             nn.ReLU(inplace=True),
         )

@@ -103,21 +103,13 @@ class RepresentationNetwork(nn.Module):
             64, batch_norm_momentum=batch_norm_momentum
         )
 
-        self.pool_12 = self._pool_stage(64, batch_norm_momentum)
+        self.pool_12 = nn.AvgPool2d(kernel_size=3, stride=2, padding=1)
         self.residual_12 = ResidualBlock(
             64, batch_norm_momentum=batch_norm_momentum
         )
-        self.pool_6 = self._pool_stage(64, batch_norm_momentum)
+        self.pool_6 = nn.AvgPool2d(kernel_size=3, stride=2, padding=1)
         self.residual_6 = ResidualBlock(
             64, batch_norm_momentum=batch_norm_momentum
-        )
-
-    @staticmethod
-    def _pool_stage(channels: int, momentum: float) -> nn.Sequential:
-        return nn.Sequential(
-            nn.AvgPool2d(kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(channels, momentum=momentum),
-            nn.ReLU(inplace=True),
         )
 
     @jaxtyped(typechecker=beartype)

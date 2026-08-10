@@ -85,6 +85,11 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.action_mask.dtype == torch.bool
     assert batch.target_mask.dtype == torch.bool
     assert batch.value_mask.dtype == torch.bool
+    assert batch.indices.shape == (3,)
+    assert batch.indices.dtype == torch.long
+    assert batch.importance_weights.shape == (3,)
+    assert batch.importance_weights.dtype == torch.float32
+    assert batch.importance_weights.max() == pytest.approx(1.0)
 
     sampled_start_values = batch.frames[:, 0, 0, 0, 0]
     assert sorted(sampled_start_values.tolist()) == [0, 1, 2]
@@ -204,6 +209,47 @@ def test_replay_unroll_continues_across_nonterminal_blocks() -> None:
         value_batch.value_mask[crossing_value_sample],
         torch.tensor([True, True, False, False]),
     )
+
+
+def test_prioritized_replay_samples_and_updates_efficientzero_priorities() -> None:
+    replay = FIFOReplayBuffer(max_transitions=10, seed=4, priority_alpha=0.6)
+    replay.add(make_trajectory(3, terminated=True))
+    replay.update_priorities(
+        np.array([0, 1, 2]), np.array([1.0, 4.0, 16.0])
+    )
+
+    batch = replay.sample(batch_size=3, unroll_steps=1, priority_beta=0.4)
+
+    probabilities = np.array([1.0, 4.0, 16.0]) ** 0.6
+    probabilities /= probabilities.sum()
+    expected_weights = (3 * probabilities[batch.indices.numpy()]) ** -0.4
+    expected_weights /= expected_weights.max()
+    np.testing.assert_allclose(
+        batch.importance_weights.numpy(), expected_weights, rtol=1e-6
+    )
+
+    counts = np.zeros(3, dtype=np.int64)
+    for _ in range(300):
+        sampled = replay.sample(1, unroll_steps=1, priority_beta=0.4)
+        counts[int(sampled.indices.item())] += 1
+    assert counts[2] > counts[1] > counts[0]
+
+
+def test_new_replay_transitions_receive_current_max_priority() -> None:
+    replay = FIFOReplayBuffer(max_transitions=10)
+    replay.add(make_trajectory(2, terminated=True))
+    replay.update_priorities([0, 1], [2.0, 5.0])
+
+    replay.add(
+        make_trajectory(
+            1,
+            episode_id=1,
+            initial_value=10,
+            terminated=True,
+        )
+    )
+
+    np.testing.assert_allclose(replay.priorities, np.array([2.0, 5.0, 5.0]))
 
 
 def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:

@@ -48,6 +48,8 @@ class ReplayBatch:
     action_mask: Bool[Tensor, "batch unroll"]
     target_mask: Bool[Tensor, "batch states"]
     value_mask: Bool[Tensor, "batch states"]
+    indices: Int[Tensor, "batch"]
+    importance_weights: Float[Tensor, "batch"]
 
     @property
     def batch_size(self) -> int:
@@ -221,23 +223,35 @@ class ReplayBatch:
 
 
 class FIFOReplayBuffer:
-    """Store self-play trajectories and uniformly sample padded unrolls.
+    """Store trajectories with FIFO eviction and prioritized sampling.
 
-    Capacity is measured in transitions. Eviction removes the oldest complete
-    trajectory blocks until the new block fits; priorities and reanalysis are
-    intentionally outside the scope of this simple buffer.
+    New transitions receive the current maximum priority. Sampled transitions
+    carry normalized importance weights and stable IDs used to update their
+    priorities after training. Reanalysis remains outside this buffer.
     """
 
-    def __init__(self, max_transitions: int, *, seed: int = 0) -> None:
+    def __init__(
+        self,
+        max_transitions: int,
+        *,
+        seed: int = 0,
+        priority_alpha: float = 0.6,
+    ) -> None:
         if isinstance(max_transitions, bool) or not isinstance(
             max_transitions, int
         ):
             raise TypeError("max_transitions must be an integer")
         if max_transitions <= 0:
             raise ValueError("max_transitions must be positive")
+        if not np.isfinite(priority_alpha) or priority_alpha < 0.0:
+            raise ValueError("priority_alpha must be finite and non-negative")
 
         self.max_transitions = max_transitions
+        self.priority_alpha = float(priority_alpha)
         self._trajectories: deque[GameTrajectory] = deque()
+        self._transition_ids = np.empty(0, dtype=np.int64)
+        self._priorities = np.empty(0, dtype=np.float64)
+        self._next_transition_id = 0
         self._trajectory_by_key: dict[tuple[int, int, int], GameTrajectory] = {}
         self._transition_count = 0
         self._action_space_size: int | None = None
@@ -260,6 +274,11 @@ class FIFOReplayBuffer:
     @property
     def utilization(self) -> float:
         return self._transition_count / self.max_transitions
+
+    @property
+    def priorities(self) -> np.ndarray:
+        """Return priorities in the same flat order used for sampling."""
+        return self._priorities.copy()
 
     def add(self, trajectory: GameTrajectory) -> ReplayAddResult:
         """Append one trajectory and evict oldest complete blocks as needed."""
@@ -293,6 +312,29 @@ class FIFOReplayBuffer:
             self._transition_count -= len(evicted)
             evicted_trajectories += 1
             evicted_transitions += len(evicted)
+
+        if evicted_transitions:
+            self._transition_ids = self._transition_ids[evicted_transitions:]
+            self._priorities = self._priorities[evicted_transitions:]
+
+        maximum_priority = (
+            float(self._priorities.max()) if self._priorities.size else 1.0
+        )
+        transition_ids = np.arange(
+            self._next_transition_id,
+            self._next_transition_id + trajectory_length,
+            dtype=np.int64,
+        )
+        self._next_transition_id += trajectory_length
+        self._transition_ids = np.concatenate(
+            (self._transition_ids, transition_ids)
+        )
+        self._priorities = np.concatenate(
+            (
+                self._priorities,
+                np.full(trajectory_length, maximum_priority, dtype=np.float64),
+            )
+        )
 
         self._trajectories.append(trajectory)
         self._trajectory_by_key[key] = trajectory
@@ -330,8 +372,9 @@ class FIFOReplayBuffer:
         unroll_steps: int = 5,
         td_steps: int = 5,
         discount: float = 0.997,
+        priority_beta: float = 0.4,
     ) -> ReplayBatch:
-        """Uniformly sample unique starts and return padded tensor sequences.
+        """Prioritize unique starts and return padded tensor sequences.
 
         A sample at position ``t`` contains ``stack_size + K`` compact frames,
         actions/rewards ``t..t+K-1``, and policy/value targets ``t..t+K``.
@@ -341,13 +384,25 @@ class FIFOReplayBuffer:
         and masked out.
         """
         self._validate_sample_request(
-            batch_size, unroll_steps, td_steps, discount
+            batch_size, unroll_steps, td_steps, discount, priority_beta
         )
         assert self._action_space_size is not None
 
+        priorities = self._priorities
+        probabilities = priorities**self.priority_alpha
+        probabilities /= probabilities.sum()
         flat_indices = self._rng.choice(
-            self._transition_count, size=batch_size, replace=False
+            self._transition_count,
+            size=batch_size,
+            replace=False,
+            p=probabilities,
         )
+        sampled_probabilities = probabilities[flat_indices]
+        importance_weights = (
+            self._transition_count * sampled_probabilities
+        ) ** (-priority_beta)
+        importance_weights /= importance_weights.max()
+        transition_ids = self._transition_ids[flat_indices]
         locations = self._locations_for_indices(flat_indices)
         samples = [
             self._make_sample(
@@ -383,7 +438,56 @@ class FIFOReplayBuffer:
             value_mask=torch.stack(
                 [sample["value_mask"] for sample in samples]
             ),
+            indices=torch.as_tensor(transition_ids, dtype=torch.long),
+            importance_weights=torch.as_tensor(
+                importance_weights, dtype=torch.float32
+            ),
         )
+
+    def update_priorities(
+        self,
+        indices: Tensor | np.ndarray | Iterable[int],
+        priorities: Tensor | np.ndarray | Iterable[float],
+    ) -> None:
+        """Update sampled transition priorities by stable transition ID."""
+        if isinstance(indices, Tensor):
+            index_array = indices.detach().cpu().numpy()
+        else:
+            index_array = np.asarray(
+                tuple(indices) if not isinstance(indices, np.ndarray) else indices
+            )
+        if isinstance(priorities, Tensor):
+            priority_array = priorities.detach().cpu().numpy()
+        else:
+            priority_array = np.asarray(
+                tuple(priorities)
+                if not isinstance(priorities, np.ndarray)
+                else priorities,
+                dtype=np.float64,
+            )
+        index_array = np.asarray(index_array).reshape(-1)
+        priority_array = np.asarray(priority_array, dtype=np.float64).reshape(-1)
+        if index_array.shape != priority_array.shape:
+            raise ValueError("indices and priorities must have the same shape")
+        if not np.issubdtype(index_array.dtype, np.integer):
+            raise TypeError("indices must be integers")
+        if not np.all(np.isfinite(priority_array)) or np.any(
+            priority_array <= 0.0
+        ):
+            raise ValueError("priorities must be finite and positive")
+        if index_array.size == 0:
+            return
+        if self._transition_ids.size == 0:
+            raise KeyError("sampled transitions are no longer in replay")
+        offsets = index_array.astype(np.int64) - self._transition_ids[0]
+        valid = (offsets >= 0) & (offsets < self._transition_ids.size)
+        if np.any(valid):
+            safe_offsets = np.clip(offsets, 0, self._transition_ids.size - 1)
+            valid &= self._transition_ids[safe_offsets] == index_array
+        if not np.all(valid):
+            stale_id = int(index_array[~valid][0])
+            raise KeyError(f"transition ID {stale_id} is no longer in replay")
+        self._priorities[offsets] = priority_array
 
     def _validate_trajectory(self, trajectory: GameTrajectory) -> int:
         action_space_sizes = {
@@ -404,6 +508,7 @@ class FIFOReplayBuffer:
         unroll_steps: int,
         td_steps: int,
         discount: float,
+        priority_beta: float,
     ) -> None:
         for value, name in (
             (batch_size, "batch_size"),
@@ -416,6 +521,8 @@ class FIFOReplayBuffer:
                 raise ValueError(f"{name} must be positive")
         if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be finite and in [0, 1]")
+        if not np.isfinite(priority_beta) or not 0.0 <= priority_beta <= 1.0:
+            raise ValueError("priority_beta must be finite and in [0, 1]")
         if batch_size > self._transition_count:
             raise ValueError(
                 f"cannot sample {batch_size} unique transitions from "
