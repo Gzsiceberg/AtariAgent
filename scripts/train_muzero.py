@@ -6,11 +6,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 import random
+import sys
 
 import hydra
 import numpy as np
 from omegaconf import OmegaConf
+from rich import print as rich_print
 import torch
+from tqdm.auto import tqdm
 
 from atariagent import AtariAgent, FIFOReplayBuffer, GameTrajectory, SelfPlayWorker
 from atariagent.search import MCTS, MCTSConfig
@@ -26,6 +29,12 @@ from atariagent.training.muzero_config import (
 
 
 register_train_muzero_config()
+
+
+def log(message: str) -> None:
+    """Print Rich markup without corrupting active tqdm progress bars."""
+    with tqdm.external_write_mode():
+        rich_print(message)
 
 
 def resolve_device(name: str) -> torch.device:
@@ -169,11 +178,33 @@ def main(config: TrainMuZeroConfig) -> None:
             priority_alpha=config.replay.priority_alpha,
         )
 
+        total_updates = config.training.steps + config.training.final_steps
         update = 0
+        training_progress = tqdm(
+            total=total_updates,
+            desc="Training",
+            unit="update",
+            position=0,
+            dynamic_ncols=True,
+            file=sys.stdout,
+        )
+        self_play_progress = tqdm(
+            total=config.self_play.total_transitions,
+            desc="Self-play",
+            unit="transition",
+            position=1,
+            dynamic_ncols=True,
+            file=sys.stdout,
+        )
+        log(
+            "[bold cyan]MuZero training started[/bold cyan] "
+            f"[dim]env={config.environment.id} device={device} "
+            f"transitions={config.self_play.total_transitions:,} "
+            f"updates={total_updates:,}[/dim]"
+        )
 
         def run_updates(count: int) -> None:
             nonlocal update
-            total_updates = config.training.steps + config.training.final_steps
             for _ in range(count):
                 priority_beta = linear_priority_beta(
                     update,
@@ -192,15 +223,17 @@ def main(config: TrainMuZeroConfig) -> None:
                 replay.update_priorities(batch.indices, metrics.priorities)
                 update += 1
                 if update == 1 or update % config.training.log_every == 0:
-                    print(
-                        f"update={update:06d} loss={metrics.loss:.4f} "
-                        f"policy={metrics.policy_loss:.4f} "
-                        f"value={metrics.value_loss:.4f} "
-                        f"reward={metrics.reward_loss:.4f} "
-                        f"grad_norm={metrics.gradient_norm:.4f} "
-                        f"lr={metrics.learning_rate:.6f} "
-                        f"beta={priority_beta:.4f}"
+                    training_progress.set_postfix(
+                        loss=f"{metrics.loss:.3f}",
+                        policy=f"{metrics.policy_loss:.3f}",
+                        value=f"{metrics.value_loss:.3f}",
+                        reward=f"{metrics.reward_loss:.3f}",
+                        grad=f"{metrics.gradient_norm:.2f}",
+                        lr=f"{metrics.learning_rate:.5f}",
+                        beta=f"{priority_beta:.3f}",
+                        refresh=False,
                     )
+                training_progress.update(1)
                 if (
                     config.checkpoint.every > 0
                     and update % config.checkpoint.every == 0
@@ -211,6 +244,11 @@ def main(config: TrainMuZeroConfig) -> None:
                         trainer=trainer,
                         update=update,
                         config=config,
+                    )
+                    log(
+                        "[green]Checkpoint saved[/green] "
+                        f"[dim]update={update:,} "
+                        f"path={config.checkpoint.path}[/dim]"
                     )
 
         minimum_replay_size = max(
@@ -239,21 +277,30 @@ def main(config: TrainMuZeroConfig) -> None:
                 temperature = visit_softmax_temperature(
                     update, config.training.steps
                 )
+                previous_transitions = worker.total_transitions
                 grouped = worker.run(
                     vector_steps,
                     temperature=temperature,
                     random_actions=warming_up,
                 )
+                self_play_progress.update(
+                    worker.total_transitions - previous_transitions
+                )
                 trajectories = tuple(flatten_trajectories(grouped))
                 insertion = replay.extend(trajectories)
-                print(
-                    f"collection={collection_iteration:04d} "
-                    f"transitions={worker.total_transitions}/"
-                    f"{config.self_play.total_transitions} "
-                    f"added={insertion.added_transitions} "
-                    f"replay={len(replay)}/{replay.max_transitions} "
-                    f"temperature={temperature:.2f} random={warming_up}"
+                self_play_progress.set_postfix(
+                    iteration=collection_iteration,
+                    added=insertion.added_transitions,
+                    replay=f"{len(replay)}/{replay.max_transitions}",
+                    temperature=f"{temperature:.2f}",
+                    mode="random" if warming_up else "MCTS",
+                    refresh=False,
                 )
+                if warming_up and len(replay) >= minimum_replay_size:
+                    log(
+                        "[bold green]Replay warmup complete[/bold green] "
+                        f"[dim]stored={len(replay):,}[/dim]"
+                    )
 
                 if (
                     len(replay) < minimum_replay_size
@@ -274,7 +321,16 @@ def main(config: TrainMuZeroConfig) -> None:
             if final_trajectories:
                 replay.extend(final_trajectories)
 
+        self_play_progress.close()
+        log(
+            "[bold green]Self-play complete[/bold green] "
+            f"[dim]transitions={config.self_play.total_transitions:,}[/dim]"
+        )
         run_updates(config.training.steps - update)
+        log(
+            "[bold yellow]Final learner-only phase[/bold yellow] "
+            f"[dim]updates={config.training.final_steps:,}[/dim]"
+        )
         run_updates(config.training.final_steps)
 
         save_checkpoint(
@@ -284,7 +340,16 @@ def main(config: TrainMuZeroConfig) -> None:
             update=update,
             config=config,
         )
+        training_progress.close()
+        log(
+            "[bold green]Training complete[/bold green] "
+            f"[dim]updates={update:,} checkpoint={config.checkpoint.path}[/dim]"
+        )
     except Exception:
+        for progress_name in ("self_play_progress", "training_progress"):
+            progress = locals().get(progress_name)
+            if progress is not None:
+                progress.close()
         # The worker takes ownership only after its context has been entered.
         for environment in environments:
             environment.close()
