@@ -23,6 +23,7 @@ class SelfPlayConfig:
     """Parallel self-play and MCTS settings."""
 
     num_envs: int = 4
+    total_transitions: int = 100_000
     num_simulations: int = 50
     steps_per_iteration: int = 100
     trajectory_length: int = 400
@@ -95,6 +96,25 @@ class TrainMuZeroConfig:
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
 
+def next_collection_vector_steps(
+    collected_transitions: int,
+    total_transitions: int,
+    num_envs: int,
+    max_vector_steps: int,
+) -> int:
+    """Return vector steps that do not exceed the transition budget."""
+    if num_envs <= 0 or max_vector_steps <= 0:
+        raise ValueError("num_envs and max_vector_steps must be positive")
+    if collected_transitions < 0 or total_transitions <= 0:
+        raise ValueError("collected must be non-negative and total positive")
+    if collected_transitions > total_transitions:
+        raise ValueError("collected_transitions exceeds total_transitions")
+    remaining = total_transitions - collected_transitions
+    if remaining % num_envs != 0:
+        raise ValueError("remaining transitions must be divisible by num_envs")
+    return min(max_vector_steps, remaining // num_envs)
+
+
 def linear_priority_beta(
     trained_steps: int,
     training_steps: int,
@@ -138,6 +158,7 @@ __all__ = [
     "EnvironmentConfig",
     "LossConfig",
     "linear_priority_beta",
+    "next_collection_vector_steps",
     "ReplayConfig",
     "SelfPlayConfig",
     "TrainingConfig",

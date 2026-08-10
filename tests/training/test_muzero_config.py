@@ -2,8 +2,21 @@ import pytest
 
 from atariagent.training.muzero_config import (
     linear_priority_beta,
+    next_collection_vector_steps,
     visit_softmax_temperature,
 )
+
+
+def test_collection_steps_stop_at_exact_transition_budget() -> None:
+    collected = 0
+    while collected < 100_000:
+        vector_steps = next_collection_vector_steps(
+            collected, 100_000, num_envs=4, max_vector_steps=100
+        )
+        collected += vector_steps * 4
+
+    assert collected == 100_000
+    assert next_collection_vector_steps(100_000, 100_000, 4, 100) == 0
 
 
 def test_priority_beta_uses_efficientzero_schedule() -> None:

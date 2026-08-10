@@ -19,6 +19,7 @@ from atariagent.training import MuZeroTrainer
 from atariagent.training.muzero_config import (
     TrainMuZeroConfig,
     linear_priority_beta,
+    next_collection_vector_steps,
     register_train_muzero_config,
     visit_softmax_temperature,
 )
@@ -101,6 +102,16 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("updates_per_iteration must be positive")
     if config.training.log_every <= 0:
         raise ValueError("log_every must be positive")
+    if config.self_play.num_envs <= 0:
+        raise ValueError("self_play.num_envs must be positive")
+    if config.self_play.total_transitions <= 0:
+        raise ValueError("self_play.total_transitions must be positive")
+    if config.self_play.steps_per_iteration <= 0:
+        raise ValueError("self_play.steps_per_iteration must be positive")
+    if config.self_play.total_transitions % config.self_play.num_envs != 0:
+        raise ValueError(
+            "self_play.total_transitions must be divisible by self_play.num_envs"
+        )
 
     random.seed(config.seed)
     torch.manual_seed(config.seed)
@@ -216,14 +227,20 @@ def main(config: TrainMuZeroConfig) -> None:
             clip_rewards=config.self_play.clip_rewards,
             add_exploration_noise=config.self_play.add_exploration_noise,
         ) as worker:
-            while update < config.training.steps:
+            while worker.total_transitions < config.self_play.total_transitions:
                 collection_iteration += 1
+                vector_steps = next_collection_vector_steps(
+                    worker.total_transitions,
+                    config.self_play.total_transitions,
+                    config.self_play.num_envs,
+                    config.self_play.steps_per_iteration,
+                )
                 warming_up = len(replay) < minimum_replay_size
                 temperature = visit_softmax_temperature(
                     update, config.training.steps
                 )
                 grouped = worker.run(
-                    config.self_play.steps_per_iteration,
+                    vector_steps,
                     temperature=temperature,
                     random_actions=warming_up,
                 )
@@ -231,12 +248,17 @@ def main(config: TrainMuZeroConfig) -> None:
                 insertion = replay.extend(trajectories)
                 print(
                     f"collection={collection_iteration:04d} "
+                    f"transitions={worker.total_transitions}/"
+                    f"{config.self_play.total_transitions} "
                     f"added={insertion.added_transitions} "
                     f"replay={len(replay)}/{replay.max_transitions} "
                     f"temperature={temperature:.2f} random={warming_up}"
                 )
 
-                if len(replay) < minimum_replay_size:
+                if (
+                    len(replay) < minimum_replay_size
+                    or update >= config.training.steps
+                ):
                     continue
 
                 run_updates(
@@ -246,6 +268,13 @@ def main(config: TrainMuZeroConfig) -> None:
                     )
                 )
 
+            final_trajectories = tuple(
+                flatten_trajectories(worker.flush())
+            )
+            if final_trajectories:
+                replay.extend(final_trajectories)
+
+        run_updates(config.training.steps - update)
         run_updates(config.training.final_steps)
 
         save_checkpoint(
