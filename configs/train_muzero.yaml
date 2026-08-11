@@ -43,12 +43,12 @@ training:
   unroll_steps: 5
   td_steps: 5
   lstm_horizon: 5
-  # Replace replay value bootstraps with direct delayed-network predictions.
+  # Refresh replay values and policies with the delayed target network.
   use_target_network_reanalysis: true
-  # Fresh target-network MCTS policies for floor(batch_size * ratio) samples.
-  policy_reanalysis_ratio: 0.99
   # Larger native-MCTS root chunks trade about 1.5 GiB for higher throughput.
   policy_reanalysis_chunk_size: 1024
+  # Cache corrected values and MCTS policies by transition and target version.
+  cache_reanalyzed_targets: true
   # Keep replay-stored value and policy targets for the first learner updates.
   reanalysis_start_step: 1000
   # Queue depth and hard limit for pending Ray reanalysis batches.

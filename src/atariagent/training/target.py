@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from copy import deepcopy
-import math
 import random
 from typing import Literal
 
@@ -55,7 +54,6 @@ class ValueTargetNetwork(nn.Module):
         self.support_min = support_min
         self.support_max = support_max
         self.precision: Precision = precision
-        self._selection_rng = random.Random(rng_seed)
         self._mcts: MCTS | None = None
         self._policy_evaluator: BatchedNetworkEvaluator | None = None
         if self.dynamics is not None:
@@ -108,22 +106,19 @@ class ValueTargetNetwork(nn.Module):
         self,
         batch: ReplayBatch,
         *,
-        reanalyze_values: bool,
-        policy_ratio: float,
+        reanalyze_targets: bool,
         policy_chunk_size: int,
     ) -> ReplayBatch:
         """Apply configured value and policy refreshes to one replay batch."""
-        if not isinstance(reanalyze_values, bool):
-            raise TypeError("reanalyze_values must be a boolean")
-        if reanalyze_values:
-            batch = self.reanalyze_values(batch)
-        if policy_ratio > 0.0:
-            batch = self.reanalyze_policies(
-                batch,
-                ratio=policy_ratio,
-                chunk_size=policy_chunk_size,
-            )
-        return batch
+        if not isinstance(reanalyze_targets, bool):
+            raise TypeError("reanalyze_targets must be a boolean")
+        if not reanalyze_targets:
+            return batch
+        batch = self.reanalyze_values(batch)
+        return self.reanalyze_policies(
+            batch,
+            chunk_size=policy_chunk_size,
+        )
 
     @torch.no_grad()
     def reanalyze_values(self, batch: ReplayBatch) -> ReplayBatch:
@@ -134,16 +129,23 @@ class ValueTargetNetwork(nn.Module):
             return batch
         if batch.value_bootstrap_mask is None:
             raise ValueError("batch has no value-bootstrap mask")
+        if batch.value_bootstrap_values is None:
+            raise ValueError("batch has no stored bootstrap values")
+        if not batch.value_bootstrap_mask.any():
+            return batch
 
-        fresh_values = torch.zeros_like(batch.value_targets)
+        fresh_values = batch.value_bootstrap_values.clone()
         with self._autocast_context():
             for offset in range(batch.unroll_steps + 1):
+                rows = batch.value_bootstrap_mask[:, offset].nonzero().flatten()
+                if rows.numel() == 0:
+                    continue
                 observations = batch.normalized_value_bootstrap_observation(
                     offset
-                )
+                )[rows]
                 state = self.representation(observations)
                 _, value_logits = self.prediction(state)
-                fresh_values[:, offset] = categorical_to_scalar(
+                fresh_values[rows, offset] = categorical_to_scalar(
                     value_logits.float(),
                     support_min=self.support_min,
                     support_max=self.support_max,
@@ -155,40 +157,22 @@ class ValueTargetNetwork(nn.Module):
         self,
         batch: ReplayBatch,
         *,
-        ratio: float,
         chunk_size: int,
     ) -> ReplayBatch:
         """Replace selected stored policies with fresh target-network MCTS."""
-        if not math.isfinite(ratio) or not 0.0 <= ratio <= 1.0:
-            raise ValueError("policy reanalysis ratio must be in [0, 1]")
         if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
             raise TypeError("policy reanalysis chunk_size must be an integer")
         if chunk_size <= 0:
             raise ValueError("policy reanalysis chunk_size must be positive")
 
-        reanalyze_count = math.floor(batch.batch_size * ratio)
-        if reanalyze_count == 0:
-            return batch
         if self._mcts is None or self._policy_evaluator is None:
             raise RuntimeError("target network has no policy MCTS components")
 
-        selected_indices = self._selection_rng.sample(
-            range(batch.batch_size), reanalyze_count
-        )
-        selected_mask = torch.zeros(
-            batch.batch_size,
-            dtype=torch.bool,
-            device=batch.policy_targets.device,
-        )
-        selected_mask[selected_indices] = True
-        positions = torch.nonzero(
-            selected_mask[:, None] & batch.policy_mask,
-            as_tuple=False,
-        )
+        positions = torch.nonzero(batch.policy_mask, as_tuple=False)
         if positions.shape[0] == 0:
             return batch
 
-        fresh_policies = torch.zeros_like(batch.policy_targets)
+        fresh_policies = batch.policy_targets.clone()
         with self._autocast_context():
             for start in range(0, positions.shape[0], chunk_size):
                 chunk = positions[start : start + chunk_size]
@@ -202,10 +186,7 @@ class ValueTargetNetwork(nn.Module):
                 policies = visits / visits.sum(dim=1, keepdim=True)
                 fresh_policies[chunk[:, 0], chunk[:, 1]] = policies
 
-        return batch.with_reanalyzed_policy_targets(
-            fresh_policies,
-            selected_mask=selected_mask,
-        )
+        return batch.with_reanalyzed_policy_targets(fresh_policies)
 
     @torch.no_grad()
     def decoded_values(self, observations: Tensor) -> Tensor:

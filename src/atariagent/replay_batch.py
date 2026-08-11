@@ -184,17 +184,12 @@ class ReplayBatch:
     def with_reanalyzed_policy_targets(
         self,
         fresh_policy_targets: Float[Tensor, "batch states actions"],
-        *,
-        selected_mask: Bool[Tensor, "batch"],
     ) -> ReplayBatch:
-        """Use fresh policies for selected samples with valid policy targets."""
+        """Use fresh policies for states with valid policy targets."""
         if fresh_policy_targets.shape != self.policy_targets.shape:
             raise ValueError("fresh policy targets have an invalid shape")
-        if selected_mask.shape != (self.batch_size,):
-            raise ValueError("selected policy mask has an invalid shape")
-        replacement_mask = selected_mask[:, None] & self.policy_mask
         policy_targets = torch.where(
-            replacement_mask[:, :, None],
+            self.policy_mask[:, :, None],
             fresh_policy_targets,
             self.policy_targets,
         )

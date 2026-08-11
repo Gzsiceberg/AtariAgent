@@ -35,7 +35,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unroll-steps", type=int, default=5)
     parser.add_argument("--action-space-size", type=int, default=18)
     parser.add_argument("--num-simulations", type=int, default=50)
-    parser.add_argument("--policy-ratio", type=float, default=0.99)
     parser.add_argument("--chunk-size", type=int, default=1024)
     parser.add_argument("--actor-gpus", type=float, default=0.25)
     parser.add_argument("--actor-threads", type=int, default=4)
@@ -105,12 +104,12 @@ def benchmark_count(
     )
     pipeline = ReanalysisPipeline(
         actors,
-        reanalyze_values=True,
-        policy_ratio=args.policy_ratio,
+        reanalyze_targets=True,
         policy_chunk_size=args.chunk_size,
         prefetch_batches=count,
         timeout_seconds=600.0,
         max_weight_lag=0,
+        cache_targets=False,
     )
     try:
         pipeline.publish_weights(
@@ -184,7 +183,6 @@ def main() -> None:
             "unroll_steps": args.unroll_steps,
             "action_space_size": args.action_space_size,
             "num_simulations": args.num_simulations,
-            "policy_ratio": args.policy_ratio,
             "chunk_size": args.chunk_size,
             "requests": args.requests,
             "actor_gpus": args.actor_gpus,

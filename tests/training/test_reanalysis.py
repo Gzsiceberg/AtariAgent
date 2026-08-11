@@ -5,7 +5,11 @@ import pytest
 import ray
 import torch
 
-from atariagent.models import PredictionNetwork, RepresentationNetwork
+from atariagent.models import (
+    DynamicsNetwork,
+    PredictionNetwork,
+    RepresentationNetwork,
+)
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTSConfig
 from atariagent.training.reanalysis import (
@@ -65,6 +69,7 @@ class _FakeActor:
         self.ray = ray_api
         self.version = -1
         self.request_ids: list[int] = []
+        self.requests: list[Any] = []
         self.set_weights = _RemoteMethod(self._set_weights)
         self.reanalyze = _RemoteMethod(self._reanalyze)
 
@@ -76,11 +81,17 @@ class _FakeActor:
     def _reanalyze(self, request_ref):
         request = self.ray.get(request_ref)
         self.request_ids.append(request.request_id)
+        self.requests.append(request)
+        search_mask = request.batch.policy_mask
+        value_targets = request.batch.value_targets.clone()
+        value_targets[search_mask] += 1.0
+        policy_targets = request.batch.policy_targets.clone()
+        policy_targets[search_mask] = torch.tensor([1.0, 0.0])
         result = ReanalysisResult(
             request_id=request.request_id,
             weight_version=request.weight_version,
-            value_targets=request.batch.value_targets + 1.0,
-            policy_targets=request.batch.policy_targets,
+            value_targets=value_targets,
+            policy_targets=policy_targets,
             actor_duration_ms=2.0,
             transfer_duration_ms=0.5,
             peak_memory_bytes=0,
@@ -110,8 +121,7 @@ def _fake_pipeline(*, max_weight_lag: int = 200):
     ray_api.actors = actors
     pipeline = ReanalysisPipeline(
         actors,
-        reanalyze_values=True,
-        policy_ratio=0.99,
+        reanalyze_targets=True,
         policy_chunk_size=16,
         prefetch_batches=2,
         timeout_seconds=1.0,
@@ -141,13 +151,64 @@ def test_pipeline_enforces_hard_backpressure_and_merges_by_request_id() -> None:
     assert ready.actor_duration_ms == pytest.approx(2.0)
     torch.testing.assert_close(ready.batch.value_targets, torch.ones(2, 2))
     assert pipeline.pending_count == 1
+    assert pipeline.cache_size == 3
     assert pipeline.needs_prefetch
     assert pipeline.submit(_batch()) == 2
+    cached_request = ray_api.actors[0].requests[-1]
+    assert not cached_request.batch.policy_mask.any()
     assert ray_api.actors[0].request_ids == [0, 2]
     assert ray_api.actors[1].request_ids == [1]
     pipeline.close()
     assert ray_api.killed
     assert ray_api.killed_count == 2
+
+
+def test_pipeline_caches_value_and_policy_together() -> None:
+    pipeline, ray_api = _fake_pipeline()
+    batch = replace(
+        _batch(),
+        value_bootstrap_frames=torch.zeros(2, 2, 1, 1, 1, dtype=torch.uint8),
+        value_bootstrap_values=torch.zeros(2, 2),
+        value_bootstrap_discounts=torch.ones(2, 2),
+        value_bootstrap_mask=torch.ones(2, 2, dtype=torch.bool),
+    )
+    pipeline.submit(batch)
+
+    ready = pipeline.wait_next()
+
+    assert pipeline.cache_size == 3
+    assert ready.batch.value_targets[1, 0] == ready.batch.value_targets[0, 1]
+    cached_request_id = pipeline.submit(batch)
+    cached_request = next(
+        request
+        for actor in ray_api.actors
+        for request in actor.requests
+        if request.request_id == cached_request_id
+    )
+    torch.testing.assert_close(
+        cached_request.batch.value_targets,
+        torch.ones_like(batch.value_targets),
+    )
+    torch.testing.assert_close(
+        cached_request.batch.policy_targets[..., 0],
+        torch.ones_like(batch.value_targets),
+    )
+    assert not cached_request.batch.policy_mask.any()
+    assert cached_request.batch.value_bootstrap_mask is not None
+    assert not cached_request.batch.value_bootstrap_mask.any()
+    pipeline.close()
+
+
+def test_pipeline_clears_target_cache_for_new_target_weights() -> None:
+    pipeline, _ = _fake_pipeline()
+    pipeline.submit(_batch())
+    pipeline.wait_next()
+    assert pipeline.cache_size == 3
+
+    pipeline.publish_weights(1, {})
+
+    assert pipeline.cache_size == 0
+    pipeline.close()
 
 
 def test_pipeline_rejects_stale_results_and_times_out() -> None:
@@ -156,6 +217,7 @@ def test_pipeline_rejects_stale_results_and_times_out() -> None:
     pipeline.publish_weights(20, {})
     with pytest.raises(RuntimeError, match="lag 20"):
         pipeline.wait_next()
+    assert pipeline.cache_size == 0
     pipeline.close()
 
     pipeline, ray_api = _fake_pipeline()
@@ -173,12 +235,13 @@ def test_local_ray_actor_reanalyzes_value_targets() -> None:
     try:
         representation = RepresentationNetwork(4)
         prediction = PredictionNetwork(action_space_size=2)
+        dynamics = DynamicsNetwork(action_space_size=2)
         actor = create_reanalysis_actor(
             num_gpus=0.0,
             in_channels=4,
             action_space_size=2,
             mcts_config=MCTSConfig(num_simulations=1),
-            policy_enabled=False,
+            policy_enabled=True,
             rng_seed=3,
             support_min=-300,
             support_max=300,
@@ -186,8 +249,7 @@ def test_local_ray_actor_reanalyzes_value_targets() -> None:
         )
         pipeline = ReanalysisPipeline(
             actor,
-            reanalyze_values=True,
-            policy_ratio=0.0,
+            reanalyze_targets=True,
             policy_chunk_size=2,
             prefetch_batches=1,
             timeout_seconds=60.0,
@@ -195,7 +257,7 @@ def test_local_ray_actor_reanalyzes_value_targets() -> None:
         )
         pipeline.publish_weights(
             0,
-            make_target_state(representation, prediction, None),
+            make_target_state(representation, prediction, dynamics),
             wait=True,
         )
         batch = replace(

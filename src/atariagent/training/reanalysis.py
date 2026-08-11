@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 import logging
 import math
 from time import perf_counter
@@ -29,8 +29,7 @@ class ReanalysisRequest:
     request_id: int
     weight_version: int
     batch: ReplayBatch
-    reanalyze_values: bool
-    policy_ratio: float
+    reanalyze_targets: bool
     policy_chunk_size: int
 
 
@@ -58,6 +57,8 @@ class ReadyReanalysis:
     actor_duration_ms: float
     transfer_duration_ms: float
     peak_memory_bytes: int
+    policy_roots_requested: int = 0
+    policy_roots_searched: int = 0
 
 
 @dataclass(slots=True)
@@ -68,6 +69,9 @@ class _PendingRequest:
     request_ref: Any
     submitted_at: float
     payload_bytes: int
+    cache_misses: dict[int, tuple[tuple[int, int], ...]]
+    policy_roots_requested: int
+    policy_roots_searched: int
 
 
 def replay_batch_nbytes(batch: ReplayBatch) -> int:
@@ -178,8 +182,7 @@ class ReanalysisWorker:
 
         reanalyzed = self.target.reanalyze_batch(
             batch,
-            reanalyze_values=request.reanalyze_values,
-            policy_ratio=request.policy_ratio,
+            reanalyze_targets=request.reanalyze_targets,
             policy_chunk_size=request.policy_chunk_size,
         )
         output_transfer_started = perf_counter()
@@ -212,18 +215,18 @@ class ReanalysisPipeline:
         self,
         actors: Any,
         *,
-        reanalyze_values: bool,
-        policy_ratio: float,
+        reanalyze_targets: bool,
         policy_chunk_size: int,
         prefetch_batches: int,
         timeout_seconds: float,
         max_weight_lag: int,
+        cache_targets: bool = True,
         ray_api: Any = ray,
     ) -> None:
-        if not isinstance(reanalyze_values, bool):
-            raise TypeError("reanalyze_values must be a boolean")
-        if not math.isfinite(policy_ratio) or not 0.0 <= policy_ratio <= 1.0:
-            raise ValueError("policy_ratio must be in [0, 1]")
+        if not isinstance(reanalyze_targets, bool):
+            raise TypeError("reanalyze_targets must be a boolean")
+        if not isinstance(cache_targets, bool):
+            raise TypeError("cache_targets must be a boolean")
         for value, name in (
             (policy_chunk_size, "policy_chunk_size"),
             (prefetch_batches, "prefetch_batches"),
@@ -246,14 +249,15 @@ class ReanalysisPipeline:
         )
         if not self.actors:
             raise ValueError("at least one reanalysis actor is required")
-        self.reanalyze_values = reanalyze_values
-        self.policy_ratio = policy_ratio
+        self.reanalyze_targets = reanalyze_targets
         self.policy_chunk_size = policy_chunk_size
         self.prefetch_batches = prefetch_batches
         self.timeout_seconds = timeout_seconds
         self.max_weight_lag = max_weight_lag
+        self.cache_targets = cache_targets
         self._ray = ray_api
         self._pending: dict[Any, _PendingRequest] = {}
+        self._target_cache: dict[int, tuple[Tensor, Tensor]] = {}
         self._next_request_id = 0
         self._next_actor_index = 0
         self._actor_pending_counts = [0] * len(self.actors)
@@ -277,6 +281,10 @@ class ReanalysisPipeline:
         return self.pending_count < self.prefetch_batches
 
     @property
+    def cache_size(self) -> int:
+        return len(self._target_cache)
+
+    @property
     def weight_version(self) -> int:
         return self._weight_version
 
@@ -295,6 +303,7 @@ class ReanalysisPipeline:
         self._require_open()
         if version <= self._weight_version:
             raise ValueError("target weight version must increase")
+        self._target_cache.clear()
         state_ref = self._ray.put(state)
         update_refs = [
             actor.set_weights.remote(version, state_ref)
@@ -320,12 +329,12 @@ class ReanalysisPipeline:
             raise BufferError("reanalysis prefetch limit reached")
         request_id = self._next_request_id
         self._next_request_id += 1
+        prepared_batch, cache_misses = self._prepare_cache_request(batch)
         request = ReanalysisRequest(
             request_id=request_id,
             weight_version=self._weight_version,
-            batch=batch,
-            reanalyze_values=self.reanalyze_values,
-            policy_ratio=self.policy_ratio,
+            batch=prepared_batch,
+            reanalyze_targets=self.reanalyze_targets,
             policy_chunk_size=self.policy_chunk_size,
         )
         actor_index = self._select_actor()
@@ -338,7 +347,10 @@ class ReanalysisPipeline:
             batch=batch,
             request_ref=request_ref,
             submitted_at=perf_counter(),
-            payload_bytes=replay_batch_nbytes(batch),
+            payload_bytes=replay_batch_nbytes(prepared_batch),
+            cache_misses=cache_misses,
+            policy_roots_requested=self._policy_root_count(batch),
+            policy_roots_searched=self._policy_root_count(prepared_batch),
         )
         self.max_observed_pending = max(
             self.max_observed_pending,
@@ -375,9 +387,13 @@ class ReanalysisPipeline:
             raise RuntimeError(
                 f"reanalysis result target-weight lag {lag} exceeds limit"
             )
+        value_targets, policy_targets = self._resolve_cache_misses(
+            pending,
+            result,
+        )
         batch = pending.batch.with_reanalysis_targets(
-            value_targets=result.value_targets,
-            policy_targets=result.policy_targets,
+            value_targets=value_targets,
+            policy_targets=policy_targets,
         )
         return ReadyReanalysis(
             request_id=result.request_id,
@@ -387,6 +403,8 @@ class ReanalysisPipeline:
             actor_duration_ms=result.actor_duration_ms,
             transfer_duration_ms=result.transfer_duration_ms,
             peak_memory_bytes=result.peak_memory_bytes,
+            policy_roots_requested=pending.policy_roots_requested,
+            policy_roots_searched=pending.policy_roots_searched,
         )
 
     def close(self) -> None:
@@ -395,10 +413,83 @@ class ReanalysisPipeline:
             return
         self._closed = True
         self._pending.clear()
+        self._target_cache.clear()
         self._actor_pending_counts = [0] * len(self.actors)
         self._latest_weight_ref = None
         for actor in self.actors:
             self._ray.kill(actor, no_restart=True)
+
+    def _prepare_cache_request(
+        self,
+        batch: ReplayBatch,
+    ) -> tuple[
+        ReplayBatch,
+        dict[int, tuple[tuple[int, int], ...]],
+    ]:
+        if not self.cache_targets or not self.reanalyze_targets:
+            return batch, {}
+
+        positions_by_id: dict[int, list[tuple[int, int]]] = {}
+        start_ids = batch.indices.detach().cpu()
+        for sample, offset in batch.policy_mask.nonzero().cpu().tolist():
+            state_id = int(start_ids[sample]) + offset
+            positions_by_id.setdefault(state_id, []).append((sample, offset))
+
+        value_targets = batch.value_targets.clone()
+        policy_targets = batch.policy_targets.clone()
+        miss_mask = torch.zeros_like(batch.policy_mask)
+        cache_misses: dict[int, tuple[tuple[int, int], ...]] = {}
+        for state_id, position_list in positions_by_id.items():
+            positions = tuple(position_list)
+            cached = self._target_cache.get(state_id)
+            if cached is None:
+                miss_mask[positions[0]] = True
+                cache_misses[state_id] = positions
+                continue
+            value, policy = cached
+            for position in positions:
+                value_targets[position] = value
+                policy_targets[position] = policy
+
+        bootstrap_mask = batch.value_bootstrap_mask
+        if bootstrap_mask is not None:
+            bootstrap_mask = bootstrap_mask & miss_mask
+        return (
+            replace(
+                batch,
+                value_targets=value_targets,
+                policy_targets=policy_targets,
+                target_mask=batch.target_mask & miss_mask,
+                value_bootstrap_mask=bootstrap_mask,
+            ),
+            cache_misses,
+        )
+
+    def _resolve_cache_misses(
+        self,
+        pending: _PendingRequest,
+        result: ReanalysisResult,
+    ) -> tuple[Tensor, Tensor]:
+        if not pending.cache_misses:
+            return result.value_targets, result.policy_targets
+
+        value_targets = result.value_targets.clone()
+        policy_targets = result.policy_targets.clone()
+        for state_id, positions in pending.cache_misses.items():
+            source = positions[0]
+            value = value_targets[source].clone()
+            policy = policy_targets[source].clone()
+            for position in positions[1:]:
+                value_targets[position] = value
+                policy_targets[position] = policy
+            if result.weight_version == self._weight_version:
+                self._target_cache[state_id] = (value, policy)
+        return value_targets, policy_targets
+
+    def _policy_root_count(self, batch: ReplayBatch) -> int:
+        if not self.reanalyze_targets:
+            return 0
+        return int(batch.policy_mask.sum().item())
 
     def _select_actor(self) -> int:
         minimum_pending = min(self._actor_pending_counts)

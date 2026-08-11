@@ -109,12 +109,12 @@ def main() -> None:
         )
         pipeline = ReanalysisPipeline(
             actors,
-            reanalyze_values=True,
-            policy_ratio=0.99,
+            reanalyze_targets=True,
             policy_chunk_size=1024,
             prefetch_batches=2,
             timeout_seconds=600.0,
             max_weight_lag=200,
+            cache_targets=False,
         )
         pipeline.publish_weights(
             0,
@@ -183,7 +183,6 @@ def main() -> None:
             "num_simulations": args.num_simulations,
             "actor_count": args.actor_count,
             "actor_threads": args.actor_threads,
-            "policy_reanalysis_ratio": 0.99,
             "policy_reanalysis_chunk_size": 1024,
             "prefetch_batches": 2,
             "warmup_updates": args.warmup_updates,

@@ -166,10 +166,10 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("reanalysis_start_step must be non-negative")
     if config.training.target_update_interval <= 0:
         raise ValueError("target_update_interval must be positive")
-    if not 0.0 <= config.training.policy_reanalysis_ratio <= 1.0:
-        raise ValueError("policy_reanalysis_ratio must be in [0, 1]")
     if config.training.policy_reanalysis_chunk_size <= 0:
         raise ValueError("policy_reanalysis_chunk_size must be positive")
+    if not isinstance(config.training.cache_reanalyzed_targets, bool):
+        raise TypeError("cache_reanalyzed_targets must be a boolean")
     if config.training.reanalysis_actor_count <= 0:
         raise ValueError("reanalysis_actor_count must be positive")
     if config.training.reanalysis_actor_num_threads <= 0:
@@ -263,8 +263,8 @@ def main(config: TrainMuZeroConfig) -> None:
             seed=config.seed,
             priority_alpha=config.replay.priority_alpha,
         )
-        policy_reanalysis_enabled = (
-            config.training.policy_reanalysis_ratio > 0.0
+        target_reanalysis_enabled = (
+            config.training.use_target_network_reanalysis
         )
         actors = create_reanalysis_actors(
             count=config.training.reanalysis_actor_count,
@@ -278,7 +278,7 @@ def main(config: TrainMuZeroConfig) -> None:
             in_channels=config.environment.frame_stack * image_channels,
             action_space_size=action_space_size,
             mcts_config=agent.mcts.config,
-            policy_enabled=policy_reanalysis_enabled,
+            policy_enabled=target_reanalysis_enabled,
             rng_seed=config.seed,
             support_min=-300,
             support_max=300,
@@ -286,8 +286,7 @@ def main(config: TrainMuZeroConfig) -> None:
         )
         reanalysis_pipeline = ReanalysisPipeline(
             actors,
-            reanalyze_values=config.training.use_target_network_reanalysis,
-            policy_ratio=config.training.policy_reanalysis_ratio,
+            reanalyze_targets=target_reanalysis_enabled,
             policy_chunk_size=(
                 config.training.policy_reanalysis_chunk_size
             ),
@@ -296,13 +295,14 @@ def main(config: TrainMuZeroConfig) -> None:
             ),
             timeout_seconds=config.training.reanalysis_timeout_seconds,
             max_weight_lag=config.training.reanalysis_max_weight_lag,
+            cache_targets=config.training.cache_reanalyzed_targets,
         )
         initial_target_state = make_target_state(
             agent.representation_network,
             agent.prediction_network,
             (
                 agent.dynamics_network
-                if policy_reanalysis_enabled
+                if target_reanalysis_enabled
                 else None
             ),
         )
@@ -439,6 +439,8 @@ def main(config: TrainMuZeroConfig) -> None:
             *,
             queue_wait_ms: float | None = None,
             actor_duration_ms: float | None = None,
+            policy_roots_requested: int = 0,
+            policy_roots_searched: int = 0,
         ) -> None:
             nonlocal update
             assert reanalysis_pipeline is not None
@@ -460,7 +462,7 @@ def main(config: TrainMuZeroConfig) -> None:
                     agent.prediction_network,
                     (
                         agent.dynamics_network
-                        if policy_reanalysis_enabled
+                        if target_reanalysis_enabled
                         else None
                     ),
                 )
@@ -484,6 +486,16 @@ def main(config: TrainMuZeroConfig) -> None:
                             "pending": str(reanalysis_pipeline.pending_count),
                         }
                     )
+                    if policy_roots_requested > 0:
+                        progress_stats.update(
+                            {
+                                "roots": (
+                                    f"{policy_roots_searched}/"
+                                    f"{policy_roots_requested}"
+                                ),
+                                "cache": str(reanalysis_pipeline.cache_size),
+                            }
+                        )
                 training_progress.set_postfix(progress_stats, refresh=False)
             training_progress.update(1)
 
@@ -539,6 +551,8 @@ def main(config: TrainMuZeroConfig) -> None:
                     priority_beta,
                     queue_wait_ms=ready.queue_wait_ms,
                     actor_duration_ms=ready.actor_duration_ms,
+                    policy_roots_requested=ready.policy_roots_requested,
+                    policy_roots_searched=ready.policy_roots_searched,
                 )
                 completed += 1
 

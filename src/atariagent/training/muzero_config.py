@@ -56,8 +56,8 @@ class TrainingConfig:
     td_steps: int = 5
     lstm_horizon: int = 5
     use_target_network_reanalysis: bool = True
-    policy_reanalysis_ratio: float = 0.99
     policy_reanalysis_chunk_size: int = 1_024
+    cache_reanalyzed_targets: bool = True
     reanalysis_start_step: int = 1_000
     reanalysis_prefetch_batches: int = 2
     reanalysis_timeout_seconds: float = 600.0

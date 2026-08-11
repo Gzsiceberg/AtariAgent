@@ -108,10 +108,9 @@ def test_target_network_reanalyzes_direct_values_without_gradients() -> None:
     assert not target.training
     assert all(not parameter.requires_grad for parameter in target.parameters())
     assert all(parameter.grad is None for parameter in target.parameters())
-    assert target.reanalyze_policies(batch, ratio=0.0, chunk_size=1) is batch
 
 
-def test_target_network_reanalyzes_99_percent_of_policy_samples() -> None:
+def test_target_network_reanalyzes_all_policy_samples() -> None:
     target = ValueTargetNetwork(
         _MeanRepresentation(),
         _PolicyPrediction(),
@@ -147,7 +146,6 @@ def test_target_network_reanalyzes_99_percent_of_policy_samples() -> None:
     ) as search_batch:
         reanalyzed = target.reanalyze_policies(
             batch,
-            ratio=0.99,
             chunk_size=16,
         )
 
@@ -156,10 +154,10 @@ def test_target_network_reanalyzes_99_percent_of_policy_samples() -> None:
         for call in search_batch.call_args_list
     )
     changed_samples = reanalyzed.policy_targets[:, 0].ne(0.5).any(dim=1)
-    assert changed_samples.sum() == 99
+    assert changed_samples.all()
     torch.testing.assert_close(
         reanalyzed.policy_targets[changed_samples, 0].sum(dim=1),
-        torch.ones(99),
+        torch.ones(100),
     )
     torch.testing.assert_close(
         reanalyzed.policy_targets[:, 1],
@@ -190,7 +188,7 @@ def test_policy_reanalysis_runs_with_atari_networks() -> None:
         importance_weights=torch.ones(2),
     )
 
-    reanalyzed = target.reanalyze_policies(batch, ratio=1.0, chunk_size=4)
+    reanalyzed = target.reanalyze_policies(batch, chunk_size=4)
 
     torch.testing.assert_close(
         reanalyzed.policy_targets.sum(dim=-1),

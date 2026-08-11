@@ -28,7 +28,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unroll-steps", type=int, default=5)
     parser.add_argument("--action-space-size", type=int, default=18)
     parser.add_argument("--num-simulations", type=int, default=50)
-    parser.add_argument("--policy-ratio", type=float, default=0.99)
     parser.add_argument("--chunk-size", type=int, default=1024)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--iterations", type=int, default=3)
@@ -105,7 +104,6 @@ def benchmark(
     batch: ReplayBatch,
     *,
     search_method,
-    ratio: float,
     chunk_size: int,
     warmup: int,
     iterations: int,
@@ -114,7 +112,7 @@ def benchmark(
     assert target._mcts is not None
     target._mcts.search_batch = search_method
     for _ in range(warmup):
-        target.reanalyze_policies(batch, ratio=ratio, chunk_size=chunk_size)
+        target.reanalyze_policies(batch, chunk_size=chunk_size)
     synchronize(device)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
@@ -123,7 +121,7 @@ def benchmark(
     for _ in range(iterations):
         synchronize(device)
         started = perf_counter()
-        target.reanalyze_policies(batch, ratio=ratio, chunk_size=chunk_size)
+        target.reanalyze_policies(batch, chunk_size=chunk_size)
         synchronize(device)
         durations.append(perf_counter() - started)
     peak_memory = (
@@ -140,9 +138,6 @@ def main() -> None:
         raise ValueError("batch size and unroll steps must be positive")
     if args.iterations <= 0 or args.warmup < 0:
         raise ValueError("iterations must be positive and warmup non-negative")
-    if not 0.0 <= args.policy_ratio <= 1.0:
-        raise ValueError("policy ratio must be in [0, 1]")
-
     set_runtime_typechecking(False)
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -174,7 +169,6 @@ def main() -> None:
         target,
         batch,
         search_method=native_search,
-        ratio=args.policy_ratio,
         chunk_size=args.chunk_size,
         warmup=args.warmup,
         iterations=args.iterations,
@@ -184,7 +178,6 @@ def main() -> None:
         target,
         batch,
         search_method=python_search,
-        ratio=args.policy_ratio,
         chunk_size=args.chunk_size,
         warmup=args.warmup,
         iterations=args.iterations,
@@ -203,7 +196,6 @@ def main() -> None:
         "unroll_steps": args.unroll_steps,
         "action_space_size": args.action_space_size,
         "num_simulations": args.num_simulations,
-        "policy_ratio": args.policy_ratio,
         "chunk_size": args.chunk_size,
         "warmup": args.warmup,
         "iterations": args.iterations,
