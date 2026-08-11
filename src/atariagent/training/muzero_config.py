@@ -58,6 +58,7 @@ class TrainingConfig:
     use_target_network_reanalysis: bool = True
     policy_reanalysis_ratio: float = 0.99
     policy_reanalysis_chunk_size: int = 256
+    reanalysis_start_step: int = 1_000
     target_update_interval: int = 200
     discount: float = 0.997
     learning_rate: float = 0.2

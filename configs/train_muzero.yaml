@@ -49,6 +49,8 @@ training:
   policy_reanalysis_ratio: 0.99
   # EfficientZero-style root chunks limit synchronous reanalysis GPU memory.
   policy_reanalysis_chunk_size: 256
+  # Keep replay-stored value and policy targets for the first learner updates.
+  reanalysis_start_step: 1000
   # Hard-copy online representation/value weights for direct value reanalysis.
   target_update_interval: 200
   # Per raw frame; training and MCTS use discount ** frame_skip.

@@ -233,6 +233,7 @@ def main(config: TrainMuZeroConfig) -> None:
             action_space_size=action_space_size,
             mcts_config=agent.mcts.config,
             reanalysis_seed=config.seed,
+            reanalysis_start_step=config.training.reanalysis_start_step,
             target_update_interval=config.training.target_update_interval,
             precision=config.training.precision,
             compile_model=config.training.compile_model,

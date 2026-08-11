@@ -84,6 +84,7 @@ class MuZeroTrainer:
         action_space_size: int | None = None,
         mcts_config: MCTSConfig | None = None,
         reanalysis_seed: int = 0,
+        reanalysis_start_step: int = 1_000,
         target_update_interval: int = 200,
         precision: Precision = "fp32",
         compile_model: bool = False,
@@ -134,6 +135,12 @@ class MuZeroTrainer:
             reanalysis_seed, int
         ):
             raise TypeError("reanalysis_seed must be an integer")
+        if isinstance(reanalysis_start_step, bool) or not isinstance(
+            reanalysis_start_step, int
+        ):
+            raise TypeError("reanalysis_start_step must be an integer")
+        if reanalysis_start_step < 0:
+            raise ValueError("reanalysis_start_step must be non-negative")
         if target_update_interval <= 0:
             raise ValueError("target_update_interval must be positive")
         if precision not in ("fp32", "bf16"):
@@ -181,6 +188,7 @@ class MuZeroTrainer:
         self.use_target_network_reanalysis = use_target_network_reanalysis
         self.policy_reanalysis_ratio = policy_reanalysis_ratio
         self.policy_reanalysis_chunk_size = policy_reanalysis_chunk_size
+        self.reanalysis_start_step = reanalysis_start_step
         self.target_update_interval = target_update_interval
         self.learning_rate = learning_rate
         self.lr_warmup_steps = lr_warmup_steps
@@ -238,7 +246,10 @@ class MuZeroTrainer:
         learning_rate = self._adjust_learning_rate()
         self.optimizer.zero_grad(set_to_none=True)
 
-        if self.target_network is not None:
+        if (
+            self.target_network is not None
+            and self._step_count >= self.reanalysis_start_step
+        ):
             batch = self.target_network.reanalyze_batch(
                 batch,
                 reanalyze_values=self.use_target_network_reanalysis,

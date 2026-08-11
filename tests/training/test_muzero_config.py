@@ -13,6 +13,7 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.use_target_network_reanalysis
     assert config.policy_reanalysis_ratio == pytest.approx(0.99)
     assert config.policy_reanalysis_chunk_size == 256
+    assert config.reanalysis_start_step == 1_000
     assert config.target_update_interval == 200
 
 
