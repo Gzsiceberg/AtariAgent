@@ -45,6 +45,10 @@ training:
   lstm_horizon: 5
   # Replace replay value bootstraps with direct delayed-network predictions.
   use_target_network_reanalysis: true
+  # Fresh target-network MCTS policies for floor(batch_size * ratio) samples.
+  policy_reanalysis_ratio: 0.99
+  # EfficientZero-style root chunks limit synchronous reanalysis GPU memory.
+  policy_reanalysis_chunk_size: 64
   # Hard-copy online representation/value weights for direct value reanalysis.
   target_update_interval: 200
   # Per raw frame; training and MCTS use discount ** frame_skip.

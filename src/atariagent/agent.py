@@ -180,13 +180,18 @@ class BatchedNetworkEvaluator(BatchedRecurrentEvaluator):
             value_prefix_logits,
             "value_prefix_decoder",
         )
+        # Transfer each batched result once. Index-by-index conversions would
+        # synchronize the CUDA stream several times per MCTS root.
+        scalar_value_prefixes = value_prefixes.float().cpu().tolist()
+        scalar_values = values.float().cpu().tolist()
+        policy_rows = policy_logits.float().cpu().tolist()
 
         return tuple(
             Evaluation(
                 state=next_states[index],
-                value_prefix=float(value_prefixes[index]),
-                value=float(values[index]),
-                policy_logits=policy_logits[index].tolist(),
+                value_prefix=scalar_value_prefixes[index],
+                value=scalar_values[index],
+                policy_logits=policy_rows[index],
                 value_prefix_hidden=(
                     next_hidden[0][:, index : index + 1],
                     next_hidden[1][:, index : index + 1],

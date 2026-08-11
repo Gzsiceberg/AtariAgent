@@ -56,6 +56,8 @@ class TrainingConfig:
     td_steps: int = 5
     lstm_horizon: int = 5
     use_target_network_reanalysis: bool = True
+    policy_reanalysis_ratio: float = 0.99
+    policy_reanalysis_chunk_size: int = 64
     target_update_interval: int = 200
     discount: float = 0.997
     learning_rate: float = 0.2

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+import math
 from time import perf_counter
 from typing import Generator, Literal
 
@@ -16,6 +17,7 @@ from torch import Tensor, nn
 
 from atariagent.agent import categorical_to_scalar
 from atariagent.replay import ReplayBatch
+from atariagent.search import MCTSConfig
 from .target import ValueTargetNetwork
 
 
@@ -76,9 +78,9 @@ class MuZeroTrainer:
 
     Root and recurrent losses are summed and scaled by ``1 / unroll_steps``.
     Recurrent latent-state gradients are halved as in MuZero and EfficientZero.
-    When enabled, value targets replace stored MCTS bootstraps with direct
-    predictions from a periodically hard-copied target network. The default
-    Atari loss coefficients are policy 1, value 0.25, and value-prefix reward 1.
+    A periodically hard-copied target network can refresh direct value
+    bootstraps and selected policy targets through fresh MCTS. The default Atari
+    loss coefficients are policy 1, value 0.25, and value-prefix reward 1.
     """
 
     def __init__(
@@ -103,6 +105,11 @@ class MuZeroTrainer:
         support_max: int = 300,
         priority_epsilon: float = 1e-6,
         use_target_network_reanalysis: bool = True,
+        policy_reanalysis_ratio: float = 0.0,
+        policy_reanalysis_chunk_size: int = 64,
+        action_space_size: int | None = None,
+        mcts_config: MCTSConfig | None = None,
+        reanalysis_seed: int = 0,
         target_update_interval: int = 200,
         precision: Precision = "fp32",
         compile_model: bool = False,
@@ -130,6 +137,29 @@ class MuZeroTrainer:
             raise ValueError("priority_epsilon must be positive")
         if not isinstance(use_target_network_reanalysis, bool):
             raise TypeError("use_target_network_reanalysis must be a boolean")
+        if isinstance(policy_reanalysis_ratio, bool) or not math.isfinite(
+            policy_reanalysis_ratio
+        ):
+            raise ValueError("policy_reanalysis_ratio must be finite")
+        if not 0.0 <= policy_reanalysis_ratio <= 1.0:
+            raise ValueError("policy_reanalysis_ratio must be in [0, 1]")
+        if (
+            isinstance(policy_reanalysis_chunk_size, bool)
+            or not isinstance(policy_reanalysis_chunk_size, int)
+        ):
+            raise TypeError("policy_reanalysis_chunk_size must be an integer")
+        if policy_reanalysis_chunk_size <= 0:
+            raise ValueError("policy_reanalysis_chunk_size must be positive")
+        if policy_reanalysis_ratio > 0.0 and (
+            action_space_size is None or action_space_size <= 0
+        ):
+            raise ValueError(
+                "action_space_size must be positive for policy reanalysis"
+            )
+        if isinstance(reanalysis_seed, bool) or not isinstance(
+            reanalysis_seed, int
+        ):
+            raise TypeError("reanalysis_seed must be an integer")
         if target_update_interval <= 0:
             raise ValueError("target_update_interval must be positive")
         if precision not in ("fp32", "bf16"):
@@ -175,6 +205,8 @@ class MuZeroTrainer:
         self.support_max = support_max
         self.priority_epsilon = priority_epsilon
         self.use_target_network_reanalysis = use_target_network_reanalysis
+        self.policy_reanalysis_ratio = policy_reanalysis_ratio
+        self.policy_reanalysis_chunk_size = policy_reanalysis_chunk_size
         self.target_update_interval = target_update_interval
         self.learning_rate = learning_rate
         self.lr_warmup_steps = lr_warmup_steps
@@ -186,15 +218,22 @@ class MuZeroTrainer:
         self._device = device
         self._step_count = 0
         self._parameters = parameters
+        target_enabled = (
+            use_target_network_reanalysis or policy_reanalysis_ratio > 0.0
+        )
         self.target_network = (
             ValueTargetNetwork(
                 representation,
                 prediction,
+                dynamics=(dynamics if policy_reanalysis_ratio > 0.0 else None),
+                action_space_size=action_space_size,
+                mcts_config=mcts_config,
+                rng_seed=reanalysis_seed,
                 support_min=support_min,
                 support_max=support_max,
                 precision=precision,
             )
-            if use_target_network_reanalysis
+            if target_enabled
             else None
         )
         self.optimizer = torch.optim.SGD(
@@ -228,9 +267,14 @@ class MuZeroTrainer:
         self.optimizer.zero_grad(set_to_none=True)
         timer = _StepTimer(self._device, profile)
 
-        with timer.section("target_reanalysis"):
-            if self.target_network is not None:
-                batch = self.target_network.reanalyze(batch)
+        if self.target_network is not None:
+            batch = self.target_network.reanalyze_batch(
+                batch,
+                reanalyze_values=self.use_target_network_reanalysis,
+                policy_ratio=self.policy_reanalysis_ratio,
+                policy_chunk_size=self.policy_reanalysis_chunk_size,
+                section=timer.section,
+            )
         with timer.section("root_observation"):
             observations = batch.normalized_root_observation()
         with timer.section("target_construction"):
@@ -346,6 +390,7 @@ class MuZeroTrainer:
             self.target_network.synchronize(
                 self.original_representation,
                 self.original_prediction,
+                self.original_dynamics,
             )
 
         return MuZeroTrainMetrics(

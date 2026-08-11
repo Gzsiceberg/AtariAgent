@@ -4,6 +4,7 @@ import torch.nn.functional as functional
 
 from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
 from atariagent.replay import ReplayBatch
+from atariagent.search import MCTSConfig
 from atariagent.training import MuZeroTrainer
 
 
@@ -132,6 +133,10 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
         lr_warmup_steps=0,
         unroll_steps=1,
         lstm_horizon=1,
+        policy_reanalysis_ratio=0.5,
+        policy_reanalysis_chunk_size=2,
+        action_space_size=3,
+        mcts_config=MCTSConfig(num_simulations=1, value_prefix_horizon=1),
         target_update_interval=1,
     )
     policy_output = prediction.policy.projection[-1]
@@ -171,6 +176,7 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
     assert metrics.timings_ms is not None
     assert set(metrics.timings_ms) == {
         "target_reanalysis",
+        "policy_reanalysis",
         "root_observation",
         "target_construction",
         "forward_loss",
@@ -199,6 +205,16 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
     torch.testing.assert_close(target_policy_output.weight, policy_output.weight)
 
 
+def test_policy_reanalysis_requires_an_action_space() -> None:
+    with pytest.raises(ValueError, match="action_space_size"):
+        MuZeroTrainer(
+            RepresentationNetwork(4),
+            DynamicsNetwork(action_space_size=3),
+            PredictionNetwork(action_space_size=3),
+            policy_reanalysis_ratio=0.99,
+        )
+
+
 def test_muzero_target_network_reanalysis_can_be_disabled() -> None:
     trainer = MuZeroTrainer(
         RepresentationNetwork(4),
@@ -209,6 +225,21 @@ def test_muzero_target_network_reanalysis_can_be_disabled() -> None:
 
     assert not trainer.use_target_network_reanalysis
     assert trainer.target_network is None
+
+
+def test_policy_reanalysis_can_run_without_value_reanalysis() -> None:
+    trainer = MuZeroTrainer(
+        RepresentationNetwork(4),
+        DynamicsNetwork(action_space_size=3),
+        PredictionNetwork(action_space_size=3),
+        use_target_network_reanalysis=False,
+        policy_reanalysis_ratio=0.99,
+        action_space_size=3,
+        mcts_config=MCTSConfig(num_simulations=1),
+    )
+
+    assert trainer.target_network is not None
+    assert trainer.target_network.dynamics is not None
 
 
 class _ScalarRepresentation(torch.nn.Module):

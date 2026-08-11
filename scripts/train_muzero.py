@@ -231,6 +231,15 @@ def main(config: TrainMuZeroConfig) -> None:
             use_target_network_reanalysis=(
                 config.training.use_target_network_reanalysis
             ),
+            policy_reanalysis_ratio=(
+                config.training.policy_reanalysis_ratio
+            ),
+            policy_reanalysis_chunk_size=(
+                config.training.policy_reanalysis_chunk_size
+            ),
+            action_space_size=action_space_size,
+            mcts_config=agent.mcts.config,
+            reanalysis_seed=config.seed,
             target_update_interval=config.training.target_update_interval,
             precision=config.training.precision,
             compile_model=config.training.compile_model,
@@ -467,6 +476,8 @@ def main(config: TrainMuZeroConfig) -> None:
                     config.self_play.steps_per_iteration,
                 )
                 warming_up = len(replay) < minimum_replay_size
+                # Temperature affects only rollout behavior/action selection;
+                # training targets always normalize the raw MCTS visit counts.
                 temperature = visit_softmax_temperature(
                     update, config.training.steps
                 )
