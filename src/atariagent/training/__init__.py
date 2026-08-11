@@ -6,14 +6,11 @@ from .checkpoint import (
 )
 from .dynamics import DynamicsTrainer, DynamicsTrainMetrics, scalar_reward_loss
 from .muzero import MuZeroTrainer, MuZeroTrainMetrics
-from .profiling import LearnerProfiler, LearnerTimingSummary
 from .target import ValueTargetNetwork
 
 __all__ = [
     "DynamicsTrainer",
     "DynamicsTrainMetrics",
-    "LearnerProfiler",
-    "LearnerTimingSummary",
     "MuZeroTrainer",
     "MuZeroTrainMetrics",
     "ValueTargetNetwork",

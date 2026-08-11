@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import nullcontext
 from copy import deepcopy
 import math
 import random
@@ -112,24 +111,18 @@ class ValueTargetNetwork(nn.Module):
         reanalyze_values: bool,
         policy_ratio: float,
         policy_chunk_size: int,
-        section: (
-            Callable[[str], AbstractContextManager[None]] | None
-        ) = None,
     ) -> ReplayBatch:
         """Apply configured value and policy refreshes to one replay batch."""
         if not isinstance(reanalyze_values, bool):
             raise TypeError("reanalyze_values must be a boolean")
-        phase = section if section is not None else lambda _: nullcontext()
-        with phase("target_reanalysis"):
-            if reanalyze_values:
-                batch = self.reanalyze_values(batch)
-        with phase("policy_reanalysis"):
-            if policy_ratio > 0.0:
-                batch = self.reanalyze_policies(
-                    batch,
-                    ratio=policy_ratio,
-                    chunk_size=policy_chunk_size,
-                )
+        if reanalyze_values:
+            batch = self.reanalyze_values(batch)
+        if policy_ratio > 0.0:
+            batch = self.reanalyze_policies(
+                batch,
+                ratio=policy_ratio,
+                chunk_size=policy_chunk_size,
+            )
         return batch
 
     @torch.no_grad()

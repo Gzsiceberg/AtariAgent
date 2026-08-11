@@ -171,20 +171,8 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
         value_bootstrap_mask=torch.ones(2, 2, dtype=torch.bool),
     )
 
-    metrics = trainer.train_step(batch, profile=True)
+    metrics = trainer.train_step(batch)
 
-    assert metrics.timings_ms is not None
-    assert set(metrics.timings_ms) == {
-        "target_reanalysis",
-        "policy_reanalysis",
-        "root_observation",
-        "target_construction",
-        "forward_loss",
-        "backward",
-        "gradient_clip",
-        "optimizer",
-    }
-    assert all(duration >= 0.0 for duration in metrics.timings_ms.values())
     assert metrics.loss == pytest.approx(
         metrics.policy_loss
         + 0.25 * metrics.value_loss

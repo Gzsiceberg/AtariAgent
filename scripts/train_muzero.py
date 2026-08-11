@@ -8,7 +8,6 @@ from pathlib import Path
 import random
 import shutil
 import sys
-from time import perf_counter
 
 import hydra
 import numpy as np
@@ -34,12 +33,10 @@ from atariagent.evaluation import (
 from atariagent.search import MCTS, MCTSConfig
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
-    LearnerProfiler,
     MuZeroTrainer,
     representative_checkpoint_path,
     representative_checkpoint_updates,
 )
-from atariagent.training.profiling import synchronize_for_profiling
 from atariagent.typecheck import set_runtime_typechecking
 from atariagent.training.muzero_config import (
     TrainMuZeroConfig,
@@ -159,10 +156,6 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("log_every must be positive")
     if config.training.precision not in ("fp32", "bf16"):
         raise ValueError("training.precision must be fp32 or bf16")
-    if config.training.profile_warmup_steps < 0:
-        raise ValueError("profile_warmup_steps must be non-negative")
-    if config.training.profile_report_every <= 0:
-        raise ValueError("profile_report_every must be positive")
     if config.checkpoint.every < 0:
         raise ValueError("checkpoint.every must be non-negative")
     if config.checkpoint.keep_representative <= 0:
@@ -252,16 +245,6 @@ def main(config: TrainMuZeroConfig) -> None:
         )
 
         total_updates = config.training.steps + config.training.final_steps
-        learner_profiler = (
-            LearnerProfiler(
-                warmup_steps=config.training.profile_warmup_steps,
-                report_every=config.training.profile_report_every,
-                batch_size=config.training.batch_size,
-                device=device,
-            )
-            if config.training.profile
-            else None
-        )
         representative_updates = set(
             representative_checkpoint_updates(
                 total_updates, config.checkpoint.keep_representative
@@ -358,20 +341,14 @@ def main(config: TrainMuZeroConfig) -> None:
             if count <= 0:
                 return
 
-            profiling = config.training.profile
             pin_batches = config.training.pin_memory and device.type == "cuda"
             for _ in range(count):
-                synchronize_for_profiling(device, profiling)
-                update_started = perf_counter() if profiling else 0.0
-                timings_ms: dict[str, float] = {}
-
                 priority_beta = linear_priority_beta(
                     update,
                     total_updates,
                     config.replay.priority_beta_initial,
                     config.replay.priority_beta_final,
                 )
-                sampling_started = perf_counter() if profiling else 0.0
                 cpu_batch = replay.sample(
                     config.training.batch_size,
                     unroll_steps=config.training.unroll_steps,
@@ -382,11 +359,6 @@ def main(config: TrainMuZeroConfig) -> None:
                         config.training.use_target_network_reanalysis
                     ),
                 )
-                if profiling:
-                    timings_ms["replay_sample"] = (
-                        perf_counter() - sampling_started
-                    ) * 1_000.0
-
                 if pin_batches:
                     cpu_batch = cpu_batch.pin_memory()
                 batch = cpu_batch.to(
@@ -395,20 +367,8 @@ def main(config: TrainMuZeroConfig) -> None:
                     keep_indices_on_cpu=True,
                 )
 
-                metrics = trainer.train_step(batch, profile=profiling)
-                if metrics.timings_ms is not None:
-                    timings_ms.update(metrics.timings_ms)
-
-                priority_started = perf_counter() if profiling else 0.0
+                metrics = trainer.train_step(batch)
                 replay.update_priorities(batch.indices, metrics.priorities)
-                if profiling:
-                    timings_ms["priority_update"] = (
-                        perf_counter() - priority_started
-                    ) * 1_000.0
-                    synchronize_for_profiling(device, True)
-                    timings_ms["update_total"] = (
-                        perf_counter() - update_started
-                    ) * 1_000.0
 
                 update += 1
                 if update == 1 or update % config.training.log_every == 0:
@@ -430,28 +390,6 @@ def main(config: TrainMuZeroConfig) -> None:
                 )
                 if regular_checkpoint or update in representative_updates:
                     checkpoint_and_evaluate()
-
-                if learner_profiler is not None:
-                    summary = learner_profiler.record(timings_ms)
-                    if summary is not None:
-                        sections = " ".join(
-                            f"{name}={duration:.2f}ms"
-                            for name, duration in sorted(
-                                summary.mean_sections_ms.items()
-                            )
-                            if name != "update_total"
-                        )
-                        log(
-                            "[bold magenta]Learner profile[/bold magenta] "
-                            f"[dim]updates={summary.updates} "
-                            f"ups={summary.updates_per_second:.2f} "
-                            f"samples/s={summary.samples_per_second:.0f} "
-                            f"update_mean={summary.mean_update_ms:.2f}ms "
-                            f"update_p95={summary.p95_update_ms:.2f}ms "
-                            f"peak_alloc={summary.peak_allocated_mib:.0f}MiB "
-                            f"peak_reserved={summary.peak_reserved_mib:.0f}MiB "
-                            f"{sections}[/dim]"
-                        )
 
         minimum_replay_size = max(
             config.replay.warmup_transitions,

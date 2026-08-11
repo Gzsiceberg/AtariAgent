@@ -73,9 +73,6 @@ class TrainingConfig:
     compile_model: bool = False
     compile_mode: str = "default"
     pin_memory: bool = True
-    profile: bool = False
-    profile_warmup_steps: int = 20
-    profile_report_every: int = 100
     log_every: int = 10
 
 

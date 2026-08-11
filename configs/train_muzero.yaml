@@ -69,10 +69,6 @@ training:
   compile_model: true
   compile_mode: default
   pin_memory: true
-  # Detailed timings synchronize CUDA and must only be used for profiling.
-  profile: false
-  profile_warmup_steps: 20
-  profile_report_every: 100
   log_every: 10
 
 # EfficientZero Atari policy, value, and value-prefix coefficients.

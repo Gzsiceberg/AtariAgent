@@ -6,11 +6,10 @@ accumulated between LSTM resets instead of predicting each immediate reward.
 
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass
 import math
-from time import perf_counter
-from typing import Generator, Literal
+from typing import Literal
 
 import torch
 from torch import Tensor, nn
@@ -41,31 +40,6 @@ class MuZeroTrainMetrics:
     gradient_norm: Tensor
     learning_rate: float
     priorities: Tensor
-    timings_ms: dict[str, float] | None = None
-
-
-class _StepTimer:
-    """Synchronized section timings used only by opt-in profiling."""
-
-    def __init__(self, device: torch.device, enabled: bool) -> None:
-        self.device = device
-        self.enabled = enabled
-        self.timings_ms: dict[str, float] = {}
-
-    def _synchronize(self) -> None:
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
-
-    @contextmanager
-    def section(self, name: str) -> Generator[None, None, None]:
-        if not self.enabled:
-            yield
-            return
-        self._synchronize()
-        started = perf_counter()
-        yield
-        self._synchronize()
-        self.timings_ms[name] = (perf_counter() - started) * 1_000.0
 
 
 def _halve_gradient(gradient: Tensor) -> Tensor:
@@ -255,9 +229,7 @@ class MuZeroTrainer:
                 prediction, dynamic=False, mode=compile_mode
             )
 
-    def train_step(
-        self, batch: ReplayBatch, *, profile: bool = False
-    ) -> MuZeroTrainMetrics:
+    def train_step(self, batch: ReplayBatch) -> MuZeroTrainMetrics:
         """Run one update from policy, n-step value, and value-prefix targets."""
         self._validate_batch(batch)
         for module in self._original_modules():
@@ -265,7 +237,6 @@ class MuZeroTrainer:
                 module.train()
         learning_rate = self._adjust_learning_rate()
         self.optimizer.zero_grad(set_to_none=True)
-        timer = _StepTimer(self._device, profile)
 
         if self.target_network is not None:
             batch = self.target_network.reanalyze_batch(
@@ -273,14 +244,11 @@ class MuZeroTrainer:
                 reanalyze_values=self.use_target_network_reanalysis,
                 policy_ratio=self.policy_reanalysis_ratio,
                 policy_chunk_size=self.policy_reanalysis_chunk_size,
-                section=timer.section,
             )
-        with timer.section("root_observation"):
-            observations = batch.normalized_root_observation()
-        with timer.section("target_construction"):
-            prefix_targets = batch.value_prefix_targets(
-                lstm_horizon=self.lstm_horizon
-            )
+        observations = batch.normalized_root_observation()
+        prefix_targets = batch.value_prefix_targets(
+            lstm_horizon=self.lstm_horizon
+        )
 
         autocast_dtype = (
             torch.bfloat16 if self.precision == "bf16" else None
@@ -293,95 +261,91 @@ class MuZeroTrainer:
                 dtype=autocast_dtype,
             )
         )
-        with timer.section("forward_loss"):
-            with autocast_context:
-                batch_size = batch.batch_size
-                recurrent_policy_loss = observations.new_zeros(batch_size)
-                recurrent_value_loss = observations.new_zeros(batch_size)
-                recurrent_reward_loss = observations.new_zeros(batch_size)
+        with autocast_context:
+            batch_size = batch.batch_size
+            recurrent_policy_loss = observations.new_zeros(batch_size)
+            recurrent_value_loss = observations.new_zeros(batch_size)
+            recurrent_reward_loss = observations.new_zeros(batch_size)
 
-                state = self.representation(observations)
-                policy_logits, value_logits = self.prediction(state)
-                root_policy_loss, root_value_loss = batch.prediction_losses(
-                    policy_logits,
-                    value_logits,
-                    offset=0,
-                    support_min=self.support_min,
-                    support_max=self.support_max,
-                )
-
-                # Decode in FP32 even when the model is autocast. This avoids
-                # low-precision inverse-transform operations in priorities.
-                predicted_root_values = categorical_to_scalar(
-                    value_logits.detach().float(),
-                    support_min=self.support_min,
-                    support_max=self.support_max,
-                )
-                new_priorities = (
-                    predicted_root_values - batch.value_targets[:, 0]
-                ).abs() + self.priority_epsilon
-
-                hidden = None
-                for step in range(self.unroll_steps):
-                    state, hidden, value_prefix_logits = self.dynamics(
-                        state, batch.actions[:, step], hidden
-                    )
-                    recurrent_reward_loss += batch.value_prefix_loss(
-                        value_prefix_logits,
-                        prefix_targets[:, step],
-                        step=step,
-                        support_min=self.support_min,
-                        support_max=self.support_max,
-                    )
-
-                    policy_logits, value_logits = self.prediction(state)
-                    step_policy_loss, step_value_loss = batch.prediction_losses(
-                        policy_logits,
-                        value_logits,
-                        offset=step + 1,
-                        support_min=self.support_min,
-                        support_max=self.support_max,
-                    )
-                    recurrent_policy_loss += step_policy_loss
-                    recurrent_value_loss += step_value_loss
-                    state.register_hook(_halve_gradient)
-
-                    if (step + 1) % self.lstm_horizon == 0:
-                        hidden = None
-
-                loss_scale = 1.0 / self.unroll_steps
-                sample_weights = batch.importance_weights.to(
-                    root_policy_loss.dtype
-                )
-                policy_loss = (
-                    sample_weights
-                    * (root_policy_loss + recurrent_policy_loss)
-                    * loss_scale
-                ).mean()
-                value_loss = (
-                    sample_weights
-                    * (root_value_loss + recurrent_value_loss)
-                    * loss_scale
-                ).mean()
-                reward_loss = (
-                    sample_weights * recurrent_reward_loss * loss_scale
-                ).mean()
-                loss = (
-                    self.policy_weight * policy_loss
-                    + self.value_weight * value_loss
-                    + self.reward_weight * reward_loss
-                )
-
-        with timer.section("backward"):
-            loss.backward()
-
-        with timer.section("gradient_clip"):
-            gradient_norm = nn.utils.clip_grad_norm_(
-                self._parameters, self.max_gradient_norm
+            state = self.representation(observations)
+            policy_logits, value_logits = self.prediction(state)
+            root_policy_loss, root_value_loss = batch.prediction_losses(
+                policy_logits,
+                value_logits,
+                offset=0,
+                support_min=self.support_min,
+                support_max=self.support_max,
             )
 
-        with timer.section("optimizer"):
-            self.optimizer.step()
+            # Decode in FP32 even when the model is autocast. This avoids
+            # low-precision inverse-transform operations in priorities.
+            predicted_root_values = categorical_to_scalar(
+                value_logits.detach().float(),
+                support_min=self.support_min,
+                support_max=self.support_max,
+            )
+            new_priorities = (
+                predicted_root_values - batch.value_targets[:, 0]
+            ).abs() + self.priority_epsilon
+
+            hidden = None
+            for step in range(self.unroll_steps):
+                state, hidden, value_prefix_logits = self.dynamics(
+                    state, batch.actions[:, step], hidden
+                )
+                recurrent_reward_loss += batch.value_prefix_loss(
+                    value_prefix_logits,
+                    prefix_targets[:, step],
+                    step=step,
+                    support_min=self.support_min,
+                    support_max=self.support_max,
+                )
+
+                policy_logits, value_logits = self.prediction(state)
+                step_policy_loss, step_value_loss = batch.prediction_losses(
+                    policy_logits,
+                    value_logits,
+                    offset=step + 1,
+                    support_min=self.support_min,
+                    support_max=self.support_max,
+                )
+                recurrent_policy_loss += step_policy_loss
+                recurrent_value_loss += step_value_loss
+                state.register_hook(_halve_gradient)
+
+                if (step + 1) % self.lstm_horizon == 0:
+                    hidden = None
+
+            loss_scale = 1.0 / self.unroll_steps
+            sample_weights = batch.importance_weights.to(
+                root_policy_loss.dtype
+            )
+            policy_loss = (
+                sample_weights
+                * (root_policy_loss + recurrent_policy_loss)
+                * loss_scale
+            ).mean()
+            value_loss = (
+                sample_weights
+                * (root_value_loss + recurrent_value_loss)
+                * loss_scale
+            ).mean()
+            reward_loss = (
+                sample_weights * recurrent_reward_loss * loss_scale
+            ).mean()
+            loss = (
+                self.policy_weight * policy_loss
+                + self.value_weight * value_loss
+                + self.reward_weight * reward_loss
+            )
+
+        loss.backward()
+
+        gradient_norm = nn.utils.clip_grad_norm_(
+            self._parameters, self.max_gradient_norm
+        )
+
+        self.optimizer.step()
         self._step_count += 1
         if (
             self.target_network is not None
@@ -401,7 +365,6 @@ class MuZeroTrainer:
             gradient_norm=gradient_norm.detach(),
             learning_rate=learning_rate,
             priorities=new_priorities.detach(),
-            timings_ms=timer.timings_ms if profile else None,
         )
 
     def _original_modules(self) -> tuple[nn.Module, ...]:
