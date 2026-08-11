@@ -42,6 +42,7 @@ def make_trajectory(
         search_results=results,
         terminated=terminated,
         truncated=False,
+        full_episode_done=terminated,
     )
 
 

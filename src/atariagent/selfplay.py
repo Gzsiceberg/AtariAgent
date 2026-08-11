@@ -50,6 +50,11 @@ class SelfPlayAgent(Protocol):
 
 EnvironmentFactory = Callable[[int], Environment]
 
+# Episodic-life training emits an artificial terminal when a life is lost.
+# Preserve the underlying environment boundary in ``info`` so score tracking
+# can use the same full-episode return definition as evaluation.
+FULL_EPISODE_DONE_KEY = "atariagent.full_episode_done"
+
 
 @dataclass(frozen=True, slots=True)
 class GameTrajectory:
@@ -58,7 +63,9 @@ class GameTrajectory:
     ``frames`` stores the initial frame-stack context once, followed by one
     new processed frame per action. For stack size ``S`` and ``T`` actions,
     its length is ``S + T``. State ``i`` is reconstructed from
-    ``frames[i : i + S]``.
+    ``frames[i : i + S]``. ``terminated`` may represent an artificial
+    episodic-life terminal, while ``full_episode_done`` is true only at the
+    full-game boundary used by evaluation scoring.
     """
 
     environment_index: int
@@ -72,9 +79,14 @@ class GameTrajectory:
     search_results: tuple[SearchResult, ...]
     terminated: bool
     truncated: bool
+    full_episode_done: bool
 
     def __post_init__(self) -> None:
         transition_count = len(self.actions)
+        if self.full_episode_done and not (self.terminated or self.truncated):
+            raise ValueError(
+                "a full episode can end only at a terminal or truncated state"
+            )
         if self.stack_size <= 0:
             raise ValueError("stack_size must be positive")
         if len(self.frames) != transition_count + self.stack_size:
@@ -159,7 +171,13 @@ class _TrajectoryBuilder:
     def __len__(self) -> int:
         return len(self.actions)
 
-    def finalize(self, *, terminated: bool, truncated: bool) -> GameTrajectory:
+    def finalize(
+        self,
+        *,
+        terminated: bool,
+        truncated: bool,
+        full_episode_done: bool,
+    ) -> GameTrajectory:
         return GameTrajectory(
             environment_index=self.environment_index,
             episode_id=self.episode_id,
@@ -172,6 +190,7 @@ class _TrajectoryBuilder:
             search_results=tuple(self.search_results),
             terminated=terminated,
             truncated=truncated,
+            full_episode_done=full_episode_done,
         )
 
 
@@ -186,6 +205,8 @@ class EpisodicLifeEnvironment(gym.Wrapper):
     def step(self, action: int):
         observation, reward, terminated, truncated, info = self.env.step(action)
         self._was_real_done = bool(terminated or truncated)
+        info = dict(info)
+        info[FULL_EPISODE_DONE_KEY] = self._was_real_done
         lives = int(self.env.unwrapped.ale.lives())
         if 0 < lives < self._lives:
             terminated = True
@@ -254,20 +275,20 @@ def make_atari_environment(
 
 
 class EpisodeRewardTracker:
-    """Accumulate raw rewards across blocks and emit completed episode scores."""
+    """Emit full-game raw returns using the same score definition as evaluation."""
 
     def __init__(self) -> None:
         self._partial_rewards: dict[tuple[int, int], float] = {}
 
     def add(self, trajectories: Sequence[GameTrajectory]) -> tuple[float, ...]:
-        """Add trajectory blocks and return scores for newly completed episodes."""
+        """Accumulate life/block rewards and return completed full-game scores."""
         completed_rewards: list[float] = []
         for trajectory in trajectories:
             episode_key = (trajectory.environment_index, trajectory.episode_id)
             episode_reward = self._partial_rewards.get(episode_key, 0.0) + sum(
                 trajectory.raw_rewards
             )
-            if trajectory.terminated or trajectory.truncated:
+            if trajectory.full_episode_done:
                 completed_rewards.append(episode_reward)
                 self._partial_rewards.pop(episode_key, None)
             else:
@@ -280,9 +301,9 @@ class SelfPlayWorker:
 
     ``run(steps)`` advances every environment by exactly ``steps`` transitions,
     batching one agent call across all environments at each step. Blocks are
-    finalized only at a true episode boundary or ``trajectory_length``;
-    partial builders persist across calls so worker scheduling does not create
-    artificial replay boundaries.
+    finalized at environment terminals (including configured life losses) or
+    ``trajectory_length``; partial builders persist across calls so worker
+    scheduling does not create artificial replay boundaries.
     """
 
     def __init__(
@@ -404,7 +425,7 @@ class SelfPlayWorker:
 
             for index, environment in enumerate(self.environments):
                 action = agent_output.actions[index]
-                next_observation, raw_reward, terminated, truncated, _ = (
+                next_observation, raw_reward, terminated, truncated, info = (
                     environment.step(action)
                 )
                 raw_reward = float(raw_reward)
@@ -424,15 +445,25 @@ class SelfPlayWorker:
                 self.total_transitions += 1
 
                 episode_done = bool(terminated or truncated)
+                full_episode_done = bool(
+                    info.get(FULL_EPISODE_DONE_KEY, episode_done)
+                )
+                if full_episode_done and not episode_done:
+                    raise ValueError(
+                        f"{FULL_EPISODE_DONE_KEY} requires a terminal or "
+                        "truncated transition"
+                    )
                 if episode_done:
                     completed[index].append(
                         builders[index].finalize(
                             terminated=bool(terminated),
                             truncated=bool(truncated),
+                            full_episode_done=full_episode_done,
                         )
                     )
                     self._next_block_ids[index] += 1
-                    self._episode_ids[index] += 1
+                    if full_episode_done:
+                        self._episode_ids[index] += 1
                     self._observations[index] = self._reset_environment(
                         index, seed=None
                     )
@@ -442,6 +473,7 @@ class SelfPlayWorker:
                         builders[index].finalize(
                             terminated=False,
                             truncated=False,
+                            full_episode_done=False,
                         )
                     )
                     self._next_block_ids[index] += 1
@@ -468,7 +500,11 @@ class SelfPlayWorker:
             if len(builder) == 0:
                 continue
             completed[index].append(
-                builder.finalize(terminated=False, truncated=False)
+                builder.finalize(
+                    terminated=False,
+                    truncated=False,
+                    full_episode_done=False,
+                )
             )
             self._next_block_ids[index] += 1
             self._builders[index] = self._new_builder(index)
@@ -596,6 +632,7 @@ __all__ = [
     "Environment",
     "EnvironmentFactory",
     "EpisodicLifeEnvironment",
+    "FULL_EPISODE_DONE_KEY",
     "GameTrajectory",
     "SelfPlayAgent",
     "SelfPlayWorker",

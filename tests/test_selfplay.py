@@ -15,6 +15,7 @@ from atariagent.search import Node, SearchResult
 from atariagent.selfplay import (
     EpisodeRewardTracker,
     EpisodicLifeEnvironment,
+    FULL_EPISODE_DONE_KEY,
     SelfPlayWorker,
 )
 
@@ -24,7 +25,9 @@ class DiscreteActionSpace:
 
 
 class LifeLossEnvironment(gym.Env):
-    observation_space = gym.spaces.Box(0, 255, shape=(1,), dtype=np.uint8)
+    observation_space = gym.spaces.Box(
+        0, 255, shape=(2, 2, 3), dtype=np.uint8
+    )
     action_space = gym.spaces.Discrete(2)
 
     def __init__(self) -> None:
@@ -36,27 +39,31 @@ class LifeLossEnvironment(gym.Env):
     def lives(self) -> int:
         return self.current_lives
 
+    def _observation(self) -> np.ndarray:
+        return np.full(
+            self.observation_space.shape,
+            self.step_calls,
+            dtype=np.uint8,
+        )
+
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         self.reset_calls += 1
         self.current_lives = 3
-        return np.array([self.step_calls], dtype=np.uint8), {}
+        return self._observation(), {}
 
     def step(self, action):
         self.step_calls += 1
         terminated = False
+        reward = 0.0
         if self.step_calls == 1:
             self.current_lives = 2
+            reward = 10.0
         elif self.step_calls == 3:
             self.current_lives = 0
             terminated = True
-        return (
-            np.array([self.step_calls], dtype=np.uint8),
-            0.0,
-            terminated,
-            False,
-            {},
-        )
+            reward = 20.0
+        return self._observation(), reward, terminated, False, {}
 
 
 class FakeEnvironment:
@@ -127,18 +134,20 @@ def test_episodic_life_continues_after_life_loss_and_resets_on_game_over() -> No
     environment = EpisodicLifeEnvironment(base)
 
     environment.reset(seed=3)
-    _, _, terminated, truncated, _ = environment.step(1)
+    _, _, terminated, truncated, info = environment.step(1)
 
     assert terminated
     assert not truncated
+    assert info[FULL_EPISODE_DONE_KEY] is False
     assert base.reset_calls == 1
 
     environment.reset()
     assert base.reset_calls == 1
     assert base.step_calls == 2
 
-    _, _, terminated, _, _ = environment.step(1)
+    _, _, terminated, _, info = environment.step(1)
     assert terminated
+    assert info[FULL_EPISODE_DONE_KEY] is True
     environment.reset()
     assert base.reset_calls == 2
 
@@ -241,6 +250,31 @@ def test_episode_reward_tracker_accumulates_raw_rewards_across_blocks() -> None:
 
     assert tracker.add(first_blocks) == ()
     assert tracker.add(final_blocks) == (12.5,)
+    worker.close()
+
+
+def test_episode_reward_tracker_accumulates_across_life_losses() -> None:
+    base = LifeLossEnvironment()
+    episodic_life = EpisodicLifeEnvironment(base)
+    environment = gym.wrappers.FrameStackObservation(
+        episodic_life, stack_size=4
+    )
+    worker = SelfPlayWorker(
+        FakeAgent(),
+        environments=[environment],
+        clip_rewards=True,
+    )
+    tracker = EpisodeRewardTracker()
+
+    life_blocks = worker.run(2)[0]
+
+    assert len(life_blocks) == 2
+    assert life_blocks[0].terminated
+    assert not life_blocks[0].full_episode_done
+    assert life_blocks[1].terminated
+    assert life_blocks[1].full_episode_done
+    assert [block.episode_id for block in life_blocks] == [0, 0]
+    assert tracker.add(life_blocks) == (30.0,)
     worker.close()
 
 
