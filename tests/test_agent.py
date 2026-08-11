@@ -89,7 +89,10 @@ def test_agent_batches_root_and_recurrent_network_inference() -> None:
     assert len(output.actions) == 3
     assert all(action in range(4) for action in output.actions)
     assert len(output.search_results) == 3
-    assert all(result.root.visit_count == simulations + 1 for result in output.search_results)
+    assert all(
+        sum(result.visit_counts) == simulations
+        for result in output.search_results
+    )
     assert representation.batch_sizes == [3]
     assert dynamics.batch_sizes == [3] * simulations
     assert prediction.batch_sizes == [3] * (simulations + 1)

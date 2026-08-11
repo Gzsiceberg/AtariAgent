@@ -13,7 +13,7 @@ import torch
 from torch import Tensor, nn
 
 from atariagent.agent import BatchedNetworkEvaluator, categorical_to_scalar
-from atariagent.replay import ReplayBatch
+from atariagent.replay_batch import ReplayBatch
 from atariagent.search import Evaluation, MCTS, MCTSConfig, SearchResult
 
 
@@ -201,11 +201,12 @@ class ValueTargetNetwork(nn.Module):
                 chunk = positions[start : start + chunk_size]
                 observations = self._policy_observations(batch, chunk)
                 results = self._search_policies(observations)
-                policies = torch.as_tensor(
-                    tuple(result.policy for result in results),
+                visits = torch.as_tensor(
+                    tuple(result.visit_counts for result in results),
                     dtype=fresh_policies.dtype,
                     device=fresh_policies.device,
                 )
+                policies = visits / visits.sum(dim=1, keepdim=True)
                 fresh_policies[chunk[:, 0], chunk[:, 1]] = policies
 
         return batch.with_reanalyzed_policy_targets(

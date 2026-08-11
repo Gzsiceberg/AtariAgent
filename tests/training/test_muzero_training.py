@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as functional
 
 from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
-from atariagent.replay import ReplayBatch
+from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTSConfig
 from atariagent.training import MuZeroTrainer
 

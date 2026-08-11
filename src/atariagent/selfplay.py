@@ -563,15 +563,12 @@ class SelfPlayWorker:
         ):
             action_count = int(environment.action_space.n)
             action = self._rng.randrange(action_count)
-            uniform_policy = tuple(1.0 / action_count for _ in range(action_count))
             actions.append(action)
             results.append(
                 SearchResult(
                     action=action,
-                    policy=uniform_policy,
                     visit_counts=tuple(1 for _ in range(action_count)),
                     root_value=result.root_value,
-                    root=result.root,
                 )
             )
         return AgentOutput(actions=tuple(actions), search_results=tuple(results))

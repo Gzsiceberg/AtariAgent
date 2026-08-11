@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from atariagent.replay import FIFOReplayBuffer, ReplayBatch
-from atariagent.search import Node, SearchResult
+from atariagent.search import SearchResult
 from atariagent.selfplay import GameTrajectory
 
 
@@ -23,10 +23,8 @@ def make_trajectory(
     results = tuple(
         SearchResult(
             action=step % 2,
-            policy=(0.25, 0.75),
             visit_counts=(1, 3),
             root_value=float(initial_value + step),
-            root=Node(prior=1.0),
         )
         for step in range(length)
     )

@@ -11,7 +11,7 @@ from atariagent.agent import (
     atari_observation_tensor,
     batch_atari_observations,
 )
-from atariagent.search import Node, SearchResult
+from atariagent.search import SearchResult
 from atariagent.selfplay import (
     EpisodeRewardTracker,
     EpisodicLifeEnvironment,
@@ -115,10 +115,8 @@ class FakeAgent:
         results = tuple(
             SearchResult(
                 action=1,
-                policy=(0.25, 0.75),
                 visit_counts=(1, 3),
                 root_value=float(self.calls + index),
-                root=Node(prior=1.0),
             )
             for index in range(len(observations))
         )

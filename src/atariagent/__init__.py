@@ -7,7 +7,8 @@ from .agent import (
     BatchedNetworkEvaluator,
     categorical_to_scalar,
 )
-from .replay import FIFOReplayBuffer, ReplayAddResult, ReplayBatch
+from .replay import FIFOReplayBuffer, ReplayAddResult
+from .replay_batch import ReplayBatch
 from .selfplay import EpisodeRewardTracker, GameTrajectory, SelfPlayWorker
 
 __all__ = [

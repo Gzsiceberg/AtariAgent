@@ -16,7 +16,7 @@ import torch
 from torch import Tensor, nn
 
 from atariagent.agent import categorical_to_scalar
-from atariagent.replay import ReplayBatch
+from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTSConfig
 from .target import ValueTargetNetwork
 

@@ -1,4 +1,3 @@
-import math
 import random
 
 import pytest
@@ -57,14 +56,10 @@ def test_default_mcts_with_random_policy_and_zero_value() -> None:
 
     assert evaluator.calls == 50
     assert sum(result.visit_counts) == 50
-    assert result.root.visit_count == 51
+    assert not hasattr(result, "root")
     assert result.action in range(4)
     assert result.root_value == pytest.approx(0.0)
-    assert sum(result.policy) == pytest.approx(1.0)
-    assert all(math.isfinite(probability) for probability in result.policy)
-    assert result.policy == pytest.approx(
-        tuple(visit / 50 for visit in result.visit_counts)
-    )
+    assert not hasattr(result, "policy")
     assert MCTSConfig().value_prefix_horizon == 5
 
 
@@ -101,7 +96,6 @@ def test_value_prefix_horizon_resets_evaluator_hidden_state() -> None:
     result = MCTS(config, rng=random.Random(0)).search(root, evaluator)
 
     assert hidden_inputs == [0, 1, None]
-    assert result.root.children[0].children[0].reset_value_prefix
     assert result.root_value == pytest.approx(1.5)
 
 
@@ -118,7 +112,7 @@ def test_soft_min_max_normalization_uses_minimum_delta() -> None:
     assert stats.normalize(0.5) == pytest.approx(0.5)
 
 
-def test_temperature_zero_returns_greedy_visit_policy() -> None:
+def test_temperature_zero_returns_greedy_action() -> None:
     evaluator = RandomPolicyDefaultValue(action_space_size=2)
     result = MCTS(
         MCTSConfig(num_simulations=4), rng=random.Random(0)
@@ -128,8 +122,10 @@ def test_temperature_zero_returns_greedy_visit_policy() -> None:
         temperature=0.0,
     )
 
-    assert sum(result.policy) == 1.0
-    assert result.policy[result.action] == 1.0
+    assert result.action == max(
+        range(len(result.visit_counts)),
+        key=result.visit_counts.__getitem__,
+    )
 
 
 def test_temperature_policy_is_used_to_sample_action() -> None:
@@ -143,7 +139,6 @@ def test_temperature_policy_is_used_to_sample_action() -> None:
     )
 
     assert result.visit_counts == (1, 1)
-    assert result.policy == pytest.approx((0.5, 0.5))
     assert result.action == 1
 
 
@@ -199,5 +194,5 @@ def test_root_prediction_remains_the_first_value_estimate() -> None:
         Evaluation(0, 0.0, 10.0, [0.0]), evaluator
     )
 
-    assert result.root.visit_count == 2
+    assert sum(result.visit_counts) == 1
     assert result.root_value == pytest.approx(5.0)

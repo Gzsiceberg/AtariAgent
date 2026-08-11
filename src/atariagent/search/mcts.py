@@ -202,10 +202,8 @@ class SearchResult:
     """Outputs of a completed root search."""
 
     action: int
-    policy: tuple[float, ...]
     visit_counts: tuple[int, ...]
     root_value: float
-    root: Node
 
 
 class MCTS:
@@ -380,13 +378,23 @@ class MCTS:
         action = self.rng.choices(
             range(len(policy)), weights=policy, k=1
         )[0]
-        return SearchResult(
+        result = SearchResult(
             action=action,
-            policy=policy,
             visit_counts=visit_counts,
             root_value=root.value,
-            root=root,
         )
+        self._break_parent_cycles(root)
+        return result
+
+    @staticmethod
+    def _break_parent_cycles(root: Node) -> None:
+        """Allow completed search trees and latent tensors to release promptly."""
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            for child in node.children.values():
+                child.parent = None
+                stack.append(child)
 
     def _select_path(self, root: Node, stats: MinMaxStats) -> list[Node]:
         node = root
