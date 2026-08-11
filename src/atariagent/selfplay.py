@@ -253,6 +253,28 @@ def make_atari_environment(
     return FrameStackObservation(environment, stack_size=frame_stack)
 
 
+class EpisodeRewardTracker:
+    """Accumulate raw rewards across blocks and emit completed episode scores."""
+
+    def __init__(self) -> None:
+        self._partial_rewards: dict[tuple[int, int], float] = {}
+
+    def add(self, trajectories: Sequence[GameTrajectory]) -> tuple[float, ...]:
+        """Add trajectory blocks and return scores for newly completed episodes."""
+        completed_rewards: list[float] = []
+        for trajectory in trajectories:
+            episode_key = (trajectory.environment_index, trajectory.episode_id)
+            episode_reward = self._partial_rewards.get(episode_key, 0.0) + sum(
+                trajectory.raw_rewards
+            )
+            if trajectory.terminated or trajectory.truncated:
+                completed_rewards.append(episode_reward)
+                self._partial_rewards.pop(episode_key, None)
+            else:
+                self._partial_rewards[episode_key] = episode_reward
+        return tuple(completed_rewards)
+
+
 class SelfPlayWorker:
     """Generate replay-ready trajectory blocks from persistent Atari games.
 

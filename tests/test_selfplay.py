@@ -12,7 +12,11 @@ from atariagent.agent import (
     batch_atari_observations,
 )
 from atariagent.search import Node, SearchResult
-from atariagent.selfplay import EpisodicLifeEnvironment, SelfPlayWorker
+from atariagent.selfplay import (
+    EpisodeRewardTracker,
+    EpisodicLifeEnvironment,
+    SelfPlayWorker,
+)
 
 
 class DiscreteActionSpace:
@@ -221,6 +225,23 @@ def test_worker_uses_fixed_block_size_across_run_calls() -> None:
     assert trajectories[0].block_id == 0
     assert not trajectories[0].terminated
     assert trajectories[0].rewards == (2.5,) * 5
+
+
+def test_episode_reward_tracker_accumulates_raw_rewards_across_blocks() -> None:
+    worker = SelfPlayWorker(
+        FakeAgent(),
+        environments=[FakeEnvironment(episode_length=5, reward=2.5)],
+        trajectory_length=2,
+        clip_rewards=True,
+    )
+    tracker = EpisodeRewardTracker()
+
+    first_blocks = worker.run(2)[0]
+    final_blocks = worker.run(3)[0]
+
+    assert tracker.add(first_blocks) == ()
+    assert tracker.add(final_blocks) == (12.5,)
+    worker.close()
 
 
 def test_worker_random_warmup_is_seeded_and_stores_uniform_policy() -> None:

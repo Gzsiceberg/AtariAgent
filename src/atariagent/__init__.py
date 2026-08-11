@@ -8,13 +8,14 @@ from .agent import (
     categorical_to_scalar,
 )
 from .replay import FIFOReplayBuffer, ReplayAddResult, ReplayBatch
-from .selfplay import GameTrajectory, SelfPlayWorker
+from .selfplay import EpisodeRewardTracker, GameTrajectory, SelfPlayWorker
 
 __all__ = [
     "Agent",
     "AgentOutput",
     "AtariAgent",
     "BatchedNetworkEvaluator",
+    "EpisodeRewardTracker",
     "FIFOReplayBuffer",
     "GameTrajectory",
     "ReplayAddResult",

@@ -16,9 +16,16 @@ from rich import print as rich_print
 import torch
 from tqdm.auto import tqdm
 
-from atariagent import AtariAgent, FIFOReplayBuffer, GameTrajectory, SelfPlayWorker
+from atariagent import (
+    AtariAgent,
+    EpisodeRewardTracker,
+    FIFOReplayBuffer,
+    GameTrajectory,
+    SelfPlayWorker,
+)
 from atariagent.evaluation import (
     EvaluationRecord,
+    EvaluationStats,
     evaluate_agent,
     plot_evaluation_history,
     write_evaluation_history,
@@ -216,6 +223,8 @@ def main(config: TrainMuZeroConfig) -> None:
         )
         evaluation_records: list[EvaluationRecord] = []
         checkpointed_updates: set[int] = set()
+        reward_tracker = EpisodeRewardTracker()
+        self_play_episode_rewards: list[float] = []
         latest_checkpoint_path = Path(config.checkpoint.path)
         update = 0
         if config.evaluation.enabled:
@@ -369,15 +378,45 @@ def main(config: TrainMuZeroConfig) -> None:
                     worker.total_transitions - previous_transitions
                 )
                 trajectories = tuple(flatten_trajectories(grouped))
+                completed_rewards = reward_tracker.add(trajectories)
+                self_play_episode_rewards.extend(completed_rewards)
                 insertion = replay.extend(trajectories)
+                progress_stats: dict[str, object] = {
+                    "iteration": collection_iteration,
+                    "added": insertion.added_transitions,
+                    "replay": f"{len(replay)}/{replay.max_transitions}",
+                    "temperature": f"{temperature:.2f}",
+                    "mode": "random" if warming_up else "MCTS",
+                }
+                if self_play_episode_rewards:
+                    recent_stats = EvaluationStats.from_rewards(
+                        tuple(self_play_episode_rewards[-100:])
+                    )
+                    progress_stats["episodes"] = len(self_play_episode_rewards)
+                    progress_stats["reward100"] = f"{recent_stats.mean:.2f}"
                 self_play_progress.set_postfix(
-                    iteration=collection_iteration,
-                    added=insertion.added_transitions,
-                    replay=f"{len(replay)}/{replay.max_transitions}",
-                    temperature=f"{temperature:.2f}",
-                    mode="random" if warming_up else "MCTS",
+                    progress_stats,
                     refresh=False,
                 )
+                if completed_rewards:
+                    recent_rewards = self_play_episode_rewards[-100:]
+                    recent_stats = EvaluationStats.from_rewards(
+                        tuple(recent_rewards)
+                    )
+                    log(
+                        "[bold cyan]Self-play raw reward statistics[/bold cyan] "
+                        f"[dim]update={update:,} iteration={collection_iteration} "
+                        f"new_episodes={len(completed_rewards)} "
+                        f"total_episodes={len(self_play_episode_rewards):,} "
+                        f"window={len(recent_rewards)} "
+                        f"mean={recent_stats.mean:.2f} "
+                        f"median={recent_stats.median:.2f} "
+                        f"std={recent_stats.std:.2f} "
+                        f"min={min(recent_rewards):.2f} "
+                        f"max={max(recent_rewards):.2f} "
+                        f"latest={completed_rewards[-1]:.2f} "
+                        f"mode={'random' if warming_up else 'MCTS'}[/dim]"
+                    )
                 if warming_up and len(replay) >= minimum_replay_size:
                     log(
                         "[bold green]Replay warmup complete[/bold green] "
@@ -404,9 +443,21 @@ def main(config: TrainMuZeroConfig) -> None:
                 replay.extend(final_trajectories)
 
         self_play_progress.close()
+        if self_play_episode_rewards:
+            recent_rewards = self_play_episode_rewards[-100:]
+            recent_stats = EvaluationStats.from_rewards(tuple(recent_rewards))
+            reward_summary = (
+                f"episodes={len(self_play_episode_rewards):,} "
+                f"reward100_mean={recent_stats.mean:.2f} "
+                f"reward100_median={recent_stats.median:.2f} "
+                f"reward100_std={recent_stats.std:.2f}"
+            )
+        else:
+            reward_summary = "episodes=0"
         log(
             "[bold green]Self-play complete[/bold green] "
-            f"[dim]transitions={config.self_play.total_transitions:,}[/dim]"
+            f"[dim]transitions={config.self_play.total_transitions:,} "
+            f"{reward_summary}[/dim]"
         )
         run_updates(config.training.steps - update)
         log(
