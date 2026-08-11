@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields
 
 from jaxtyping import Bool, Float, Int, UInt8
@@ -437,60 +437,20 @@ class FIFOReplayBuffer:
         )
         assert self._action_space_size is not None
 
-        probabilities = self._priorities**self.priority_alpha
-        probabilities /= probabilities.sum()
-        flat_indices = self._rng.choice(
-            self._transition_count,
-            size=batch_size,
-            replace=False,
-            p=probabilities,
+        locations, transition_ids, importance_weights = self._sample_context(
+            batch_size, priority_beta
         )
-        sampled_probabilities = probabilities[flat_indices]
-        importance_weights = (
-            self._transition_count * sampled_probabilities
-        ) ** (-priority_beta)
-        importance_weights /= importance_weights.max()
-        transition_ids = self._transition_ids[flat_indices]
-        locations = self._locations_for_indices(flat_indices)
-        samples = [
-            self._make_sample(
-                trajectory,
-                position,
-                unroll_steps,
-                td_steps,
-                discount,
-            )
-            for trajectory, position in locations
-        ]
-
-        frames = torch.stack([sample["frames"] for sample in samples])
-        return ReplayBatch(
-            frames=frames,
-            actions=torch.stack([sample["actions"] for sample in samples]),
-            rewards=torch.stack([sample["rewards"] for sample in samples]),
-            policy_targets=torch.stack(
-                [sample["policy_targets"] for sample in samples]
-            ),
-            root_values=torch.stack(
-                [sample["root_values"] for sample in samples]
-            ),
-            value_targets=torch.stack(
-                [sample["value_targets"] for sample in samples]
-            ),
-            action_mask=torch.stack(
-                [sample["action_mask"] for sample in samples]
-            ),
-            target_mask=torch.stack(
-                [sample["target_mask"] for sample in samples]
-            ),
-            value_mask=torch.stack(
-                [sample["value_mask"] for sample in samples]
-            ),
-            indices=torch.as_tensor(transition_ids, dtype=torch.long),
-            importance_weights=torch.as_tensor(
-                importance_weights, dtype=torch.float32
-            ),
+        arrays = self._allocate_batch_arrays(batch_size, unroll_steps)
+        self._fill_batch_arrays(
+            arrays,
+            locations,
+            transition_ids=transition_ids,
+            importance_weights=importance_weights,
+            unroll_steps=unroll_steps,
+            td_steps=td_steps,
+            discount=discount,
         )
+        return self._batch_from_arrays(arrays)
 
     def update_priorities(
         self,
@@ -577,6 +537,92 @@ class FIFOReplayBuffer:
                 f"a replay buffer containing {self._transition_count}"
             )
 
+    def _sample_context(
+        self, batch_size: int, priority_beta: float
+    ) -> tuple[
+        list[tuple[GameTrajectory, int]],
+        np.ndarray,
+        np.ndarray,
+    ]:
+        probabilities = self._priorities**self.priority_alpha
+        probabilities /= probabilities.sum()
+        flat_indices = self._rng.choice(
+            self._transition_count,
+            size=batch_size,
+            replace=False,
+            p=probabilities,
+        )
+        sampled_probabilities = probabilities[flat_indices]
+        importance_weights = (
+            self._transition_count * sampled_probabilities
+        ) ** (-priority_beta)
+        importance_weights /= importance_weights.max()
+        return (
+            self._locations_for_indices(flat_indices),
+            self._transition_ids[flat_indices],
+            importance_weights,
+        )
+
+    def _batch_array_specs(
+        self, batch_size: int, unroll_steps: int
+    ) -> dict[str, tuple[tuple[int, ...], np.dtype]]:
+        assert self._action_space_size is not None
+        assert self._stack_size is not None
+        assert self._frame_shape is not None
+        states = unroll_steps + 1
+        return {
+            "frames": (
+                (
+                    batch_size,
+                    self._stack_size + unroll_steps,
+                    *self._frame_shape,
+                ),
+                np.dtype(np.uint8),
+            ),
+            "actions": (
+                (batch_size, unroll_steps, 1),
+                np.dtype(np.int64),
+            ),
+            "rewards": ((batch_size, unroll_steps), np.dtype(np.float32)),
+            "policy_targets": (
+                (batch_size, states, self._action_space_size),
+                np.dtype(np.float32),
+            ),
+            "root_values": ((batch_size, states), np.dtype(np.float32)),
+            "value_targets": ((batch_size, states), np.dtype(np.float32)),
+            "action_mask": ((batch_size, unroll_steps), np.dtype(np.bool_)),
+            "target_mask": ((batch_size, states), np.dtype(np.bool_)),
+            "value_mask": ((batch_size, states), np.dtype(np.bool_)),
+            "indices": ((batch_size,), np.dtype(np.int64)),
+            "importance_weights": ((batch_size,), np.dtype(np.float32)),
+        }
+
+    def _allocate_batch_arrays(
+        self, batch_size: int, unroll_steps: int
+    ) -> dict[str, np.ndarray]:
+        return {
+            name: np.empty(shape, dtype=dtype)
+            for name, (shape, dtype) in self._batch_array_specs(
+                batch_size, unroll_steps
+            ).items()
+        }
+
+    @staticmethod
+    def _batch_from_arrays(arrays: Mapping[str, np.ndarray]) -> ReplayBatch:
+        return ReplayBatch(
+            frames=torch.from_numpy(arrays["frames"]),
+            actions=torch.from_numpy(arrays["actions"]),
+            rewards=torch.from_numpy(arrays["rewards"]),
+            policy_targets=torch.from_numpy(arrays["policy_targets"]),
+            root_values=torch.from_numpy(arrays["root_values"]),
+            value_targets=torch.from_numpy(arrays["value_targets"]),
+            action_mask=torch.from_numpy(arrays["action_mask"]),
+            target_mask=torch.from_numpy(arrays["target_mask"]),
+            value_mask=torch.from_numpy(arrays["value_mask"]),
+            indices=torch.from_numpy(arrays["indices"]),
+            importance_weights=torch.from_numpy(arrays["importance_weights"]),
+        )
+
     def _locations_for_indices(
         self, flat_indices: np.ndarray
     ) -> list[tuple[GameTrajectory, int]]:
@@ -607,131 +653,157 @@ class FIFOReplayBuffer:
             raise RuntimeError("failed to resolve sampled replay indices")
         return [location for location in resolved if location is not None]
 
-    def _make_sample(
+    def _fill_batch_arrays(
         self,
-        trajectory: GameTrajectory,
-        start: int,
+        arrays: Mapping[str, np.ndarray],
+        locations: list[tuple[GameTrajectory, int]],
+        *,
+        transition_ids: np.ndarray,
+        importance_weights: np.ndarray,
         unroll_steps: int,
         td_steps: int,
         discount: float,
-    ) -> dict[str, Tensor]:
-        assert self._action_space_size is not None
-        stack_size = trajectory.stack_size
-        frame_sequence = [
-            torch.as_tensor(frame, dtype=torch.uint8)
-            for frame in trajectory.frames[start : start + stack_size]
-        ]
+    ) -> None:
+        """Fill a complete batch in reusable NumPy arrays."""
+        assert self._stack_size is not None
 
-        policy_targets = torch.zeros(
-            unroll_steps + 1, self._action_space_size, dtype=torch.float32
-        )
-        root_values = torch.zeros(unroll_steps + 1, dtype=torch.float32)
-        value_targets = torch.zeros(unroll_steps + 1, dtype=torch.float32)
-        target_mask = torch.zeros(unroll_steps + 1, dtype=torch.bool)
-        value_mask = torch.zeros(unroll_steps + 1, dtype=torch.bool)
-        actions = torch.zeros(unroll_steps, 1, dtype=torch.long)
-        rewards = torch.zeros(unroll_steps, dtype=torch.float32)
-        action_mask = torch.zeros(unroll_steps, dtype=torch.bool)
-
-        block: GameTrajectory | None = trajectory
-        position = start
-        target_locations: list[tuple[GameTrajectory, int] | None] = [
-            (trajectory, start)
-        ]
-        terminal_target_offsets: set[int] = set()
-        self._set_stored_target(
+        stack_size = self._stack_size
+        state_count = unroll_steps + 1
+        frames = arrays["frames"]
+        actions = arrays["actions"]
+        rewards = arrays["rewards"]
+        policy_targets = arrays["policy_targets"]
+        root_values = arrays["root_values"]
+        value_targets = arrays["value_targets"]
+        action_mask = arrays["action_mask"]
+        target_mask = arrays["target_mask"]
+        value_mask = arrays["value_mask"]
+        for array in (
+            actions,
+            rewards,
             policy_targets,
             root_values,
+            value_targets,
+            action_mask,
             target_mask,
-            target_offset=0,
-            trajectory=trajectory,
-            position=start,
-        )
+            value_mask,
+        ):
+            array.fill(0)
 
-        for offset in range(unroll_steps):
-            if block is None or position >= len(block):
-                break
-
-            actions[offset, 0] = block.actions[position]
-            rewards[offset] = block.rewards[position]
-            action_mask[offset] = True
-            frame_sequence.append(
-                torch.as_tensor(
-                    block.frames[position + block.stack_size],
-                    dtype=torch.uint8,
-                )
+        for batch_index, (trajectory, start) in enumerate(locations):
+            frames[batch_index, :stack_size] = np.asarray(
+                trajectory.frames[start : start + stack_size],
+                dtype=np.uint8,
             )
-            position += 1
-
-            if position < len(block):
-                target_locations.append((block, position))
-                self._set_stored_target(
-                    policy_targets,
-                    root_values,
-                    target_mask,
-                    target_offset=offset + 1,
-                    trajectory=block,
-                    position=position,
-                )
-                continue
-
-            if block.terminated:
-                # No policy exists at a true terminal state, but value zero is
-                # valid supervision for the recurrent state reached here.
-                target_locations.append(None)
-                terminal_target_offsets.add(offset + 1)
-                target_mask[offset + 1] = True
-                break
-
-            next_block = self._next_trajectory(block)
-            if next_block is None:
-                target_locations.append(None)
-                break
-
-            block = next_block
-            position = 0
-            target_locations.append((block, position))
-            self._set_stored_target(
+            frame_count = stack_size
+            block: GameTrajectory | None = trajectory
+            position = start
+            target_locations: list[tuple[GameTrajectory, int] | None] = [
+                None
+            ] * state_count
+            target_locations[0] = (trajectory, start)
+            terminal_target_offsets: set[int] = set()
+            self._set_stored_target_array(
                 policy_targets,
                 root_values,
                 target_mask,
-                target_offset=offset + 1,
-                trajectory=block,
-                position=position,
+                batch_index=batch_index,
+                target_offset=0,
+                trajectory=trajectory,
+                position=start,
             )
 
-        while len(target_locations) < unroll_steps + 1:
-            target_locations.append(None)
+            for offset in range(unroll_steps):
+                if block is None or position >= len(block):
+                    break
 
-        for target_offset, location in enumerate(target_locations):
-            if target_offset in terminal_target_offsets:
-                value_mask[target_offset] = True
-                continue
-            if location is None:
-                continue
-            value_target, valid = self._n_step_value_target(
-                *location,
-                td_steps=td_steps,
-                discount=discount,
-            )
-            if valid:
-                value_targets[target_offset] = value_target
-                value_mask[target_offset] = True
+                actions[batch_index, offset, 0] = block.actions[position]
+                rewards[batch_index, offset] = block.rewards[position]
+                action_mask[batch_index, offset] = True
+                frames[batch_index, frame_count] = block.frames[
+                    position + block.stack_size
+                ]
+                frame_count += 1
+                position += 1
+                target_offset = offset + 1
 
-        while len(frame_sequence) < stack_size + unroll_steps:
-            frame_sequence.append(frame_sequence[-1])
+                if position < len(block):
+                    target_locations[target_offset] = (block, position)
+                    self._set_stored_target_array(
+                        policy_targets,
+                        root_values,
+                        target_mask,
+                        batch_index=batch_index,
+                        target_offset=target_offset,
+                        trajectory=block,
+                        position=position,
+                    )
+                    continue
 
-        return {
-            "frames": torch.stack(frame_sequence),
-            "actions": actions,
-            "rewards": rewards,
-            "policy_targets": policy_targets,
-            "root_values": root_values,
-            "value_targets": value_targets,
-            "action_mask": action_mask,
-            "target_mask": target_mask,
-            "value_mask": value_mask,
-        }
+                if block.terminated:
+                    # Terminal states have valid zero value but no policy.
+                    terminal_target_offsets.add(target_offset)
+                    target_mask[batch_index, target_offset] = True
+                    break
+
+                next_block = self._next_trajectory(block)
+                if next_block is None:
+                    break
+
+                block = next_block
+                position = 0
+                target_locations[target_offset] = (block, position)
+                self._set_stored_target_array(
+                    policy_targets,
+                    root_values,
+                    target_mask,
+                    batch_index=batch_index,
+                    target_offset=target_offset,
+                    trajectory=block,
+                    position=position,
+                )
+
+            if frame_count < stack_size + unroll_steps:
+                frames[batch_index, frame_count:] = frames[
+                    batch_index, frame_count - 1
+                ]
+
+            for target_offset, location in enumerate(target_locations):
+                if target_offset in terminal_target_offsets:
+                    value_mask[batch_index, target_offset] = True
+                    continue
+                if location is None:
+                    continue
+                value_target, valid = self._n_step_value_target(
+                    *location,
+                    td_steps=td_steps,
+                    discount=discount,
+                )
+                if valid:
+                    value_targets[batch_index, target_offset] = value_target
+                    value_mask[batch_index, target_offset] = True
+
+        arrays["indices"][:] = transition_ids
+        arrays["importance_weights"][:] = importance_weights
+
+    @staticmethod
+    def _set_stored_target_array(
+        policy_targets: np.ndarray,
+        root_values: np.ndarray,
+        target_mask: np.ndarray,
+        *,
+        batch_index: int,
+        target_offset: int,
+        trajectory: GameTrajectory,
+        position: int,
+    ) -> None:
+        search_result = trajectory.search_results[position]
+        visit_counts = np.asarray(search_result.visit_counts, dtype=np.float32)
+        policy_targets[batch_index, target_offset] = (
+            visit_counts / visit_counts.sum()
+        )
+        root_values[batch_index, target_offset] = search_result.root_value
+        target_mask[batch_index, target_offset] = True
 
     def _n_step_value_target(
         self,
@@ -764,24 +836,6 @@ class FIFOReplayBuffer:
 
         bootstrap_value = block.search_results[position].root_value
         return value + discount_power * bootstrap_value, True
-
-    def _set_stored_target(
-        self,
-        policy_targets: Tensor,
-        root_values: Tensor,
-        target_mask: Tensor,
-        *,
-        target_offset: int,
-        trajectory: GameTrajectory,
-        position: int,
-    ) -> None:
-        search_result = trajectory.search_results[position]
-        visit_counts = torch.tensor(
-            search_result.visit_counts, dtype=torch.float32
-        )
-        policy_targets[target_offset] = visit_counts / visit_counts.sum()
-        root_values[target_offset] = search_result.root_value
-        target_mask[target_offset] = True
 
     def _next_trajectory(
         self, trajectory: GameTrajectory
