@@ -45,6 +45,56 @@ def test_scalar_categorical_loss_interpolates_transformed_target() -> None:
     torch.testing.assert_close(loss, expected)
 
 
+def test_optimized_scalar_loss_matches_double_cross_entropy_and_gradients() -> None:
+    logits = torch.randn(7, 601, requires_grad=True)
+    reference_logits = logits.detach().clone().requires_grad_()
+    targets = torch.tensor([-1e9, -2.5, 0.0, 1.0, 3.25, 300.0, 1e9])
+
+    actual = ReplayBatch._scalar_loss(
+        logits,
+        targets,
+        support_min=-300,
+        support_max=300,
+    )
+    transformed = (
+        targets.sign() * (torch.sqrt(targets.abs() + 1.0) - 1.0)
+        + 0.001 * targets
+    ).clamp(-300, 300) + 300
+    lower = transformed.floor().long()
+    upper = transformed.ceil().long()
+    upper_weight = transformed - lower
+    expected = (
+        (1.0 - upper_weight)
+        * functional.cross_entropy(reference_logits, lower, reduction="none")
+        + upper_weight
+        * functional.cross_entropy(reference_logits, upper, reduction="none")
+    )
+
+    actual_gradient = torch.autograd.grad(actual.sum(), logits)[0]
+    expected_gradient = torch.autograd.grad(expected.sum(), reference_logits)[0]
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(actual_gradient, expected_gradient)
+
+
+def test_optimized_scalar_loss_is_safe_under_bfloat16_autocast() -> None:
+    logits = torch.randn(4, 601, requires_grad=True)
+    targets = torch.tensor([-300.0, 0.0, 1.5, 300.0])
+
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        loss = ReplayBatch._scalar_loss(
+            logits,
+            targets,
+            support_min=-300,
+            support_max=300,
+        )
+    loss.mean().backward()
+
+    assert loss.dtype == torch.float32
+    assert torch.all(torch.isfinite(loss))
+    assert logits.grad is not None
+    assert torch.all(torch.isfinite(logits.grad))
+
+
 def test_value_prefix_targets_reset_at_lstm_horizon_and_respect_mask() -> None:
     rewards = torch.tensor([[1.0, 2.0, 4.0, 8.0], [1.0, 2.0, 4.0, 8.0]])
     mask = torch.tensor(
@@ -109,8 +159,18 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
         importance_weights=torch.ones(2),
     )
 
-    metrics = trainer.train_step(batch)
+    metrics = trainer.train_step(batch, profile=True)
 
+    assert metrics.timings_ms is not None
+    assert set(metrics.timings_ms) == {
+        "root_observation",
+        "target_construction",
+        "forward_loss",
+        "backward",
+        "gradient_clip",
+        "optimizer",
+    }
+    assert all(duration >= 0.0 for duration in metrics.timings_ms.values())
     assert metrics.loss == pytest.approx(
         metrics.policy_loss
         + 0.25 * metrics.value_loss
@@ -160,6 +220,26 @@ def test_muzero_root_losses_keep_full_weight() -> None:
     assert metrics.reward_loss == pytest.approx(
         torch.log(torch.tensor(601.0)).item()
     )
+
+
+def test_fp16_precision_is_not_supported() -> None:
+    with pytest.raises(ValueError, match="fp32 or bf16"):
+        MuZeroTrainer(
+            RepresentationNetwork(4),
+            DynamicsNetwork(action_space_size=3),
+            PredictionNetwork(action_space_size=3),
+            precision="fp16",  # type: ignore[arg-type]
+        )
+
+
+def test_bf16_precision_requires_cuda() -> None:
+    with pytest.raises(ValueError, match="requires a CUDA device"):
+        MuZeroTrainer(
+            RepresentationNetwork(4),
+            DynamicsNetwork(action_space_size=3),
+            PredictionNetwork(action_space_size=3),
+            precision="bf16",
+        )
 
 
 def test_muzero_trainer_uses_efficientzero_v1_optimizer_and_schedule() -> None:

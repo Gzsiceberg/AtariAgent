@@ -2,9 +2,8 @@
 
 from dataclasses import dataclass
 
-from beartype import beartype
 from einops import rearrange
-from jaxtyping import Float, Int, jaxtyped
+from jaxtyping import Float, Int
 import torch
 import torch.nn.functional as functional
 from torch import Tensor, nn
@@ -12,9 +11,10 @@ from torch import Tensor, nn
 from atariagent.models.consistency import ConsistencyNetwork, consist_loss_func
 from atariagent.models.dynamics import DynamicsNetwork, LSTMHidden
 from atariagent.models.representation import RepresentationNetwork
+from atariagent.typecheck import runtime_typed
 
 
-@jaxtyped(typechecker=beartype)
+@runtime_typed
 def scalar_reward_loss(
     logits: Float[Tensor, "batch support"],
     target: Float[Tensor, "batch"],
@@ -87,7 +87,7 @@ class DynamicsTrainer:
             state.shape[0], device=state.device, dtype=state.dtype
         )
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def train_step(
         self,
         observations: Float[Tensor, "batch sequence channels 96 96"],

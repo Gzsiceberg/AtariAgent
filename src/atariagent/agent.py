@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TypeAlias
 
 from einops import rearrange
@@ -49,6 +50,22 @@ def batch_atari_observations(
     return torch.stack(tuple(atari_observation_tensor(obs) for obs in observations))
 
 
+@lru_cache(maxsize=32)
+def _categorical_support(
+    support_min: int,
+    support_max: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tensor:
+    """Cache the small immutable support used by repeated scalar decoding."""
+    return torch.arange(
+        support_min,
+        support_max + 1,
+        device=device,
+        dtype=dtype,
+    )
+
+
 @torch.no_grad()
 def categorical_to_scalar(
     logits: Tensor,
@@ -76,11 +93,11 @@ def categorical_to_scalar(
         )
 
     probabilities = torch.softmax(logits, dim=-1)
-    support = torch.arange(
+    support = _categorical_support(
         support_min,
-        support_max + 1,
-        device=logits.device,
-        dtype=logits.dtype,
+        support_max,
+        logits.device,
+        logits.dtype,
     )
     transformed = (probabilities * support).sum(dim=-1)
 

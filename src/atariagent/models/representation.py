@@ -2,9 +2,10 @@
 
 from collections.abc import Sequence
 
-from beartype import beartype
-from jaxtyping import Float, jaxtyped
+from jaxtyping import Float
 from torch import Tensor, nn
+
+from atariagent.typecheck import runtime_typed
 
 
 def conv3x3(in_channels: int, out_channels: int, stride: int = 1) -> nn.Conv2d:
@@ -44,7 +45,7 @@ class ResidualBlock(nn.Module):
         else:
             self.skip = nn.Identity()
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def forward(
         self, x: Float[Tensor, "batch in_channels height width"]
     ) -> Float[Tensor, "batch out_channels out_height out_width"]:
@@ -112,7 +113,7 @@ class RepresentationNetwork(nn.Module):
             64, batch_norm_momentum=batch_norm_momentum
         )
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def forward(
         self, observation: Float[Tensor, "batch channels 96 96"]
     ) -> Float[Tensor, "batch 64 6 6"]:

@@ -1,9 +1,10 @@
 """Policy and categorical value prediction for EfficientZero."""
 
-from beartype import beartype
 from einops import rearrange
-from jaxtyping import Float, jaxtyped
+from jaxtyping import Float
 from torch import Tensor, nn
+
+from atariagent.typecheck import runtime_typed
 
 from .representation import ResidualBlock
 
@@ -38,7 +39,7 @@ class _PredictionHead(nn.Module):
         nn.init.zeros_(output_layer.weight)
         nn.init.zeros_(output_layer.bias)
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def forward(
         self, state: Float[Tensor, "batch 64 6 6"]
     ) -> Float[Tensor, "batch output"]:
@@ -110,7 +111,7 @@ class PredictionNetwork(nn.Module):
             batch_norm_momentum=batch_norm_momentum,
         )
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def forward(
         self, state: Float[Tensor, "batch 64 6 6"]
     ) -> tuple[

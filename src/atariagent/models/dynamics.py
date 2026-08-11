@@ -1,10 +1,11 @@
 """Recurrent dynamics and value-prefix prediction for EfficientZero."""
 
-from beartype import beartype
 from einops import rearrange, repeat
-from jaxtyping import Float, Int, jaxtyped
+from jaxtyping import Float, Int
 import torch
 from torch import Tensor, nn
+
+from atariagent.typecheck import runtime_typed
 
 from .representation import ResidualBlock, conv3x3
 
@@ -61,7 +62,7 @@ class RewardPredictionNetwork(nn.Module):
         cell = torch.zeros(shape, device=device, dtype=dtype)
         return hidden, cell
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def forward(
         self,
         state: Float[Tensor, "batch 64 6 6"],
@@ -118,7 +119,7 @@ class DynamicsNetwork(nn.Module):
             batch_norm_momentum=batch_norm_momentum
         )
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def forward(
         self,
         state: Float[Tensor, "batch 64 6 6"],

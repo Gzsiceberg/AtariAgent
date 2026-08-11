@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from atariagent.replay import FIFOReplayBuffer
+from atariagent.replay import FIFOReplayBuffer, ReplayBatch
 from atariagent.search import Node, SearchResult
 from atariagent.selfplay import GameTrajectory
 
@@ -163,6 +163,44 @@ def test_replay_reconstructs_overlapping_stacks_from_compact_frames() -> None:
         observations[first_sample, 1, :, 0, 0],
         torch.tensor([1, 2, 3, 4], dtype=torch.uint8),
     )
+
+
+@pytest.mark.parametrize(
+    ("channels", "stack_size", "unroll_steps"),
+    [(1, 1, 1), (1, 4, 3), (3, 4, 5)],
+)
+def test_root_normalization_exactly_matches_full_root_slice(
+    channels: int, stack_size: int, unroll_steps: int
+) -> None:
+    batch_size = 2
+    states = unroll_steps + 1
+    frames = torch.randint(
+        0,
+        256,
+        (batch_size, stack_size + unroll_steps, channels, 3, 2),
+        dtype=torch.uint8,
+    )
+    batch = ReplayBatch(
+        frames=frames,
+        actions=torch.zeros(batch_size, unroll_steps, 1, dtype=torch.long),
+        rewards=torch.zeros(batch_size, unroll_steps),
+        policy_targets=torch.zeros(batch_size, states, 2),
+        root_values=torch.zeros(batch_size, states),
+        value_targets=torch.zeros(batch_size, states),
+        action_mask=torch.ones(batch_size, unroll_steps, dtype=torch.bool),
+        target_mask=torch.ones(batch_size, states, dtype=torch.bool),
+        value_mask=torch.ones(batch_size, states, dtype=torch.bool),
+        indices=torch.arange(batch_size),
+        importance_weights=torch.ones(batch_size),
+    )
+
+    root = batch.normalized_root_observation()
+
+    assert root.shape == (batch_size, stack_size * channels, 3, 2)
+    assert root.dtype == torch.float32
+    assert root.device == frames.device
+    assert 0.0 <= root.min() <= root.max() <= 1.0
+    torch.testing.assert_close(root, batch.normalized_observations()[:, 0])
 
 
 def test_replay_unroll_continues_across_nonterminal_blocks() -> None:

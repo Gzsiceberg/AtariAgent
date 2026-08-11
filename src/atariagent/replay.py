@@ -6,14 +6,14 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, fields
 
-from beartype import beartype
-from jaxtyping import Bool, Float, Int, UInt8, jaxtyped
+from jaxtyping import Bool, Float, Int, UInt8
 import numpy as np
 import torch
 import torch.nn.functional as functional
 from torch import Tensor
 
 from .selfplay import GameTrajectory
+from .typecheck import runtime_typed
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +63,28 @@ class ReplayBatch:
     def stack_size(self) -> int:
         return self.frames.shape[1] - self.unroll_steps
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
+    def normalized_root_observation(
+        self,
+        device: torch.device | str | None = None,
+        *,
+        non_blocking: bool = False,
+    ) -> Float[Tensor, "batch stacked_channels height width"]:
+        """Reconstruct and normalize only the initial frame stack."""
+        batch_size, _, channels, height, width = self.frames.shape
+        root = self.frames[:, : self.stack_size].reshape(
+            batch_size,
+            self.stack_size * channels,
+            height,
+            width,
+        )
+        return root.to(
+            device=device,
+            dtype=torch.float32,
+            non_blocking=non_blocking,
+        ).div_(255.0)
+
+    @runtime_typed
     def stacked_observations(
         self,
     ) -> UInt8[Tensor, "batch states stacked_channels height width"]:
@@ -82,7 +103,7 @@ class ReplayBatch:
             dim=1,
         )
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def normalized_observations(
         self, device: torch.device | str | None = None
     ) -> Float[Tensor, "batch states stacked_channels height width"]:
@@ -91,7 +112,7 @@ class ReplayBatch:
             device=device, dtype=torch.float32
         ).div_(255.0)
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def prediction_losses(
         self,
         policy_logits: Float[Tensor, "batch actions"],
@@ -120,7 +141,7 @@ class ReplayBatch:
         ) * self.value_mask[:, offset].to(value_logits.dtype)
         return policy_loss, value_loss
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def value_prefix_loss(
         self,
         logits: Float[Tensor, "batch support"],
@@ -139,7 +160,7 @@ class ReplayBatch:
         ) * self.action_mask[:, step].to(logits.dtype)
 
     @staticmethod
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def _policy_cross_entropy(
         logits: Float[Tensor, "batch actions"],
         target: Float[Tensor, "batch actions"],
@@ -149,7 +170,7 @@ class ReplayBatch:
         return -(target * functional.log_softmax(logits, dim=-1)).sum(dim=-1)
 
     @staticmethod
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def _scalar_loss(
         logits: Float[Tensor, "batch support"],
         target: Float[Tensor, "batch"],
@@ -181,15 +202,27 @@ class ReplayBatch:
         upper = transformed.ceil().long()
         upper_weight = transformed - lower
         lower_weight = 1.0 - upper_weight
-        lower_loss = functional.cross_entropy(
-            logits, lower, reduction="none"
+
+        # Cross entropy against an index is -log_softmax(logits)[index].
+        # Compute the support-wide reduction once, then gather both adjacent
+        # support atoms. Low-precision logits are reduced in FP32 for safety.
+        reduction_dtype = (
+            torch.float32
+            if logits.dtype in (torch.float16, torch.bfloat16)
+            else logits.dtype
         )
-        upper_loss = functional.cross_entropy(
-            logits, upper, reduction="none"
+        log_probabilities = functional.log_softmax(
+            logits, dim=-1, dtype=reduction_dtype
         )
+        lower_loss = -log_probabilities.gather(
+            -1, lower.unsqueeze(-1)
+        ).squeeze(-1)
+        upper_loss = -log_probabilities.gather(
+            -1, upper.unsqueeze(-1)
+        ).squeeze(-1)
         return lower_weight * lower_loss + upper_weight * upper_loss
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def value_prefix_targets(
         self, *, lstm_horizon: int
     ) -> Float[Tensor, "batch unroll"]:
@@ -212,12 +245,36 @@ class ReplayBatch:
                 prefix = torch.zeros_like(prefix)
         return torch.stack(targets, dim=1)
 
-    def to(self, device: torch.device | str) -> ReplayBatch:
-        """Move every batch tensor to ``device``."""
+    def pin_memory(self) -> ReplayBatch:
+        """Copy CPU tensors into page-locked memory for asynchronous transfer."""
         return ReplayBatch(
             **{
-                field.name: getattr(self, field.name).to(device)
+                field.name: (
+                    value.pin_memory() if isinstance(value, Tensor) else value
+                )
                 for field in fields(self)
+                for value in (getattr(self, field.name),)
+            }
+        )
+
+    def to(
+        self,
+        device: torch.device | str,
+        *,
+        non_blocking: bool = False,
+        keep_indices_on_cpu: bool = False,
+    ) -> ReplayBatch:
+        """Move batch tensors to ``device``, optionally with async copies."""
+        return ReplayBatch(
+            **{
+                field.name: (
+                    value
+                    if not isinstance(value, Tensor)
+                    or (field.name == "indices" and keep_indices_on_cpu)
+                    else value.to(device, non_blocking=non_blocking)
+                )
+                for field in fields(self)
+                for value in (getattr(self, field.name),)
             }
         )
 
@@ -374,22 +431,13 @@ class FIFOReplayBuffer:
         discount: float = 0.997,
         priority_beta: float = 0.4,
     ) -> ReplayBatch:
-        """Prioritize unique starts and return padded tensor sequences.
-
-        A sample at position ``t`` contains ``stack_size + K`` compact frames,
-        actions/rewards ``t..t+K-1``, and policy/value targets ``t..t+K``.
-        Value targets use a fixed ``td_steps`` discounted reward return,
-        bootstrapped from the stored MCTS root value. Consecutive nonterminal
-        blocks are traversed when available; missing continuation is padded
-        and masked out.
-        """
+        """Prioritize unique starts and return full padded frame sequences."""
         self._validate_sample_request(
             batch_size, unroll_steps, td_steps, discount, priority_beta
         )
         assert self._action_space_size is not None
 
-        priorities = self._priorities
-        probabilities = priorities**self.priority_alpha
+        probabilities = self._priorities**self.priority_alpha
         probabilities /= probabilities.sum()
         flat_indices = self._rng.choice(
             self._transition_count,

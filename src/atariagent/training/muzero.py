@@ -6,26 +6,63 @@ accumulated between LSTM resets instead of predicting each immediate reward.
 
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from time import perf_counter
+from typing import Generator, Literal
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 
 from atariagent.agent import categorical_to_scalar
 from atariagent.replay import ReplayBatch
 
 
+Precision = Literal["fp32", "bf16"]
+
+
 @dataclass(frozen=True, slots=True)
 class MuZeroTrainMetrics:
-    """Scalar metrics from one optimizer update."""
+    """Detached metrics from one optimizer update.
 
-    loss: float
-    policy_loss: float
-    value_loss: float
-    reward_loss: float
-    gradient_norm: float
+    Scalar values stay as tensors so ordinary updates do not synchronize the
+    CUDA stream merely to produce logging data. Convert or format them only on
+    logging/profiling updates. Replay priorities intentionally remain a tensor
+    until the CPU replay update performs its required transfer.
+    """
+
+    loss: Tensor
+    policy_loss: Tensor
+    value_loss: Tensor
+    reward_loss: Tensor
+    gradient_norm: Tensor
     learning_rate: float
-    priorities: tuple[float, ...]
+    priorities: Tensor
+    timings_ms: dict[str, float] | None = None
+
+
+class _StepTimer:
+    """Synchronized section timings used only by opt-in profiling."""
+
+    def __init__(self, device: torch.device, enabled: bool) -> None:
+        self.device = device
+        self.enabled = enabled
+        self.timings_ms: dict[str, float] = {}
+
+    def _synchronize(self) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+
+    @contextmanager
+    def section(self, name: str) -> Generator[None, None, None]:
+        if not self.enabled:
+            yield
+            return
+        self._synchronize()
+        started = perf_counter()
+        yield
+        self._synchronize()
+        self.timings_ms[name] = (perf_counter() - started) * 1_000.0
 
 
 class MuZeroTrainer:
@@ -58,6 +95,9 @@ class MuZeroTrainer:
         support_min: int = -300,
         support_max: int = 300,
         priority_epsilon: float = 1e-6,
+        precision: Precision = "fp32",
+        compile_model: bool = False,
+        compile_mode: str = "default",
     ) -> None:
         if unroll_steps <= 0:
             raise ValueError("unroll_steps must be positive")
@@ -79,6 +119,10 @@ class MuZeroTrainer:
             raise ValueError("max_gradient_norm must be positive")
         if priority_epsilon <= 0.0:
             raise ValueError("priority_epsilon must be positive")
+        if precision not in ("fp32", "bf16"):
+            raise ValueError("precision must be fp32 or bf16")
+        if not compile_mode:
+            raise ValueError("compile_mode must not be empty")
         for weight, name in (
             (policy_weight, "policy_weight"),
             (value_weight, "value_weight"),
@@ -87,6 +131,24 @@ class MuZeroTrainer:
             if weight < 0.0:
                 raise ValueError(f"{name} must be non-negative")
 
+        original_modules = (representation, dynamics, prediction)
+        parameters = [
+            parameter
+            for module in original_modules
+            for parameter in module.parameters()
+        ]
+        parameter = next(iter(parameters), None)
+        device = parameter.device if parameter is not None else torch.device("cpu")
+        if precision == "bf16" and device.type != "cuda":
+            raise ValueError("bf16 learner precision requires a CUDA device")
+        if precision == "bf16" and not torch.cuda.is_bf16_supported():
+            raise RuntimeError(
+                "bf16 learner precision is unsupported by the selected CUDA device"
+            )
+
+        self.original_representation = representation
+        self.original_dynamics = dynamics
+        self.original_prediction = prediction
         self.representation = representation
         self.dynamics = dynamics
         self.prediction = prediction
@@ -103,12 +165,11 @@ class MuZeroTrainer:
         self.lr_warmup_steps = lr_warmup_steps
         self.lr_decay_rate = lr_decay_rate
         self.lr_decay_steps = lr_decay_steps
+        self.precision: Precision = precision
+        self.compile_model = compile_model
+        self.compile_mode = compile_mode
+        self._device = device
         self._step_count = 0
-
-        modules = (representation, dynamics, prediction)
-        parameters = [
-            parameter for module in modules for parameter in module.parameters()
-        ]
         self._parameters = parameters
         self.optimizer = torch.optim.SGD(
             parameters,
@@ -116,108 +177,157 @@ class MuZeroTrainer:
             momentum=momentum,
             weight_decay=weight_decay,
         )
+        # Compile wrappers share the original parameters. Keeping the original
+        # modules on the agent preserves checkpoint state-dict keys.
+        if compile_model:
+            self.representation = torch.compile(
+                representation, dynamic=False, mode=compile_mode
+            )
+            self.dynamics = torch.compile(
+                dynamics, dynamic=False, mode=compile_mode
+            )
+            self.prediction = torch.compile(
+                prediction, dynamic=False, mode=compile_mode
+            )
 
-    def train_step(self, batch: ReplayBatch) -> MuZeroTrainMetrics:
+    def train_step(
+        self, batch: ReplayBatch, *, profile: bool = False
+    ) -> MuZeroTrainMetrics:
         """Run one update from policy, n-step value, and value-prefix targets."""
         self._validate_batch(batch)
-        for module in self._modules():
-            module.train()
+        for module in self._original_modules():
+            if not module.training:
+                module.train()
         learning_rate = self._adjust_learning_rate()
         self.optimizer.zero_grad(set_to_none=True)
+        timer = _StepTimer(self._device, profile)
 
-        observations = batch.normalized_observations()
-        prefix_targets = batch.value_prefix_targets(
-            lstm_horizon=self.lstm_horizon
-        )
-        batch_size = batch.batch_size
-        recurrent_policy_loss = observations.new_zeros(batch_size)
-        recurrent_value_loss = observations.new_zeros(batch_size)
-        recurrent_reward_loss = observations.new_zeros(batch_size)
-
-        state = self.representation(observations[:, 0])
-        policy_logits, value_logits = self.prediction(state)
-        root_policy_loss, root_value_loss = batch.prediction_losses(
-            policy_logits,
-            value_logits,
-            offset=0,
-            support_min=self.support_min,
-            support_max=self.support_max,
-        )
-        predicted_root_values = categorical_to_scalar(
-            value_logits.detach(),
-            support_min=self.support_min,
-            support_max=self.support_max,
-        )
-        new_priorities = (
-            predicted_root_values - batch.value_targets[:, 0]
-        ).abs() + self.priority_epsilon
-
-        hidden = None
-        for step in range(self.unroll_steps):
-            state, hidden, value_prefix_logits = self.dynamics(
-                state, batch.actions[:, step], hidden
+        with timer.section("root_observation"):
+            observations = batch.normalized_root_observation()
+        with timer.section("target_construction"):
+            prefix_targets = batch.value_prefix_targets(
+                lstm_horizon=self.lstm_horizon
             )
 
-            recurrent_reward_loss += batch.value_prefix_loss(
-                value_prefix_logits,
-                prefix_targets[:, step],
-                step=step,
-                support_min=self.support_min,
-                support_max=self.support_max,
+        autocast_dtype = (
+            torch.bfloat16 if self.precision == "bf16" else None
+        )
+        autocast_context = (
+            nullcontext()
+            if autocast_dtype is None
+            else torch.autocast(
+                device_type=self._device.type,
+                dtype=autocast_dtype,
             )
+        )
+        with timer.section("forward_loss"):
+            with autocast_context:
+                batch_size = batch.batch_size
+                recurrent_policy_loss = observations.new_zeros(batch_size)
+                recurrent_value_loss = observations.new_zeros(batch_size)
+                recurrent_reward_loss = observations.new_zeros(batch_size)
 
-            policy_logits, value_logits = self.prediction(state)
-            target_offset = step + 1
-            step_policy_loss, step_value_loss = batch.prediction_losses(
-                policy_logits,
-                value_logits,
-                offset=target_offset,
-                support_min=self.support_min,
-                support_max=self.support_max,
-            )
-            recurrent_policy_loss += step_policy_loss
-            recurrent_value_loss += step_value_loss
+                state = self.representation(observations)
+                policy_logits, value_logits = self.prediction(state)
+                root_policy_loss, root_value_loss = batch.prediction_losses(
+                    policy_logits,
+                    value_logits,
+                    offset=0,
+                    support_min=self.support_min,
+                    support_max=self.support_max,
+                )
 
-            if (step + 1) % self.lstm_horizon == 0:
+                # Decode in FP32 even when the model is autocast. This avoids
+                # low-precision inverse-transform operations in priorities.
+                predicted_root_values = categorical_to_scalar(
+                    value_logits.detach().float(),
+                    support_min=self.support_min,
+                    support_max=self.support_max,
+                )
+                new_priorities = (
+                    predicted_root_values - batch.value_targets[:, 0]
+                ).abs() + self.priority_epsilon
+
                 hidden = None
+                for step in range(self.unroll_steps):
+                    state, hidden, value_prefix_logits = self.dynamics(
+                        state, batch.actions[:, step], hidden
+                    )
+                    recurrent_reward_loss += batch.value_prefix_loss(
+                        value_prefix_logits,
+                        prefix_targets[:, step],
+                        step=step,
+                        support_min=self.support_min,
+                        support_max=self.support_max,
+                    )
 
-        recurrent_scale = 1.0 / self.unroll_steps
-        sample_weights = batch.importance_weights.to(root_policy_loss.dtype)
-        policy_loss = (
-            sample_weights
-            * (root_policy_loss + recurrent_policy_loss * recurrent_scale)
-        ).mean()
-        value_loss = (
-            sample_weights
-            * (root_value_loss + recurrent_value_loss * recurrent_scale)
-        ).mean()
-        reward_loss = (
-            sample_weights * recurrent_reward_loss * recurrent_scale
-        ).mean()
-        loss = (
-            self.policy_weight * policy_loss
-            + self.value_weight * value_loss
-            + self.reward_weight * reward_loss
-        )
-        loss.backward()
-        gradient_norm = nn.utils.clip_grad_norm_(
-            self._parameters, self.max_gradient_norm
-        )
-        self.optimizer.step()
+                    policy_logits, value_logits = self.prediction(state)
+                    step_policy_loss, step_value_loss = batch.prediction_losses(
+                        policy_logits,
+                        value_logits,
+                        offset=step + 1,
+                        support_min=self.support_min,
+                        support_max=self.support_max,
+                    )
+                    recurrent_policy_loss += step_policy_loss
+                    recurrent_value_loss += step_value_loss
+
+                    if (step + 1) % self.lstm_horizon == 0:
+                        hidden = None
+
+                recurrent_scale = 1.0 / self.unroll_steps
+                sample_weights = batch.importance_weights.to(
+                    root_policy_loss.dtype
+                )
+                policy_loss = (
+                    sample_weights
+                    * (
+                        root_policy_loss
+                        + recurrent_policy_loss * recurrent_scale
+                    )
+                ).mean()
+                value_loss = (
+                    sample_weights
+                    * (root_value_loss + recurrent_value_loss * recurrent_scale)
+                ).mean()
+                reward_loss = (
+                    sample_weights * recurrent_reward_loss * recurrent_scale
+                ).mean()
+                loss = (
+                    self.policy_weight * policy_loss
+                    + self.value_weight * value_loss
+                    + self.reward_weight * reward_loss
+                )
+
+        with timer.section("backward"):
+            loss.backward()
+
+        with timer.section("gradient_clip"):
+            gradient_norm = nn.utils.clip_grad_norm_(
+                self._parameters, self.max_gradient_norm
+            )
+
+        with timer.section("optimizer"):
+            self.optimizer.step()
         self._step_count += 1
 
         return MuZeroTrainMetrics(
-            loss=float(loss.detach()),
-            policy_loss=float(policy_loss.detach()),
-            value_loss=float(value_loss.detach()),
-            reward_loss=float(reward_loss.detach()),
-            gradient_norm=float(gradient_norm.detach()),
+            loss=loss.detach(),
+            policy_loss=policy_loss.detach(),
+            value_loss=value_loss.detach(),
+            reward_loss=reward_loss.detach(),
+            gradient_norm=gradient_norm.detach(),
             learning_rate=learning_rate,
-            priorities=tuple(new_priorities.detach().cpu().tolist()),
+            priorities=new_priorities.detach(),
+            timings_ms=timer.timings_ms if profile else None,
         )
 
-    def _modules(self) -> tuple[nn.Module, ...]:
-        return self.representation, self.dynamics, self.prediction
+    def _original_modules(self) -> tuple[nn.Module, ...]:
+        return (
+            self.original_representation,
+            self.original_dynamics,
+            self.original_prediction,
+        )
 
     def _adjust_learning_rate(self) -> float:
         if self._step_count < self.lr_warmup_steps:
@@ -260,4 +370,5 @@ class MuZeroTrainer:
 __all__ = [
     "MuZeroTrainer",
     "MuZeroTrainMetrics",
+    "Precision",
 ]

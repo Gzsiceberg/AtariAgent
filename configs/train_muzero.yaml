@@ -53,6 +53,18 @@ training:
   lr_decay_rate: 0.1
   lr_decay_steps: 100000
   max_gradient_norm: 5.0
+  # FP32 is the deterministic baseline; BF16 is the optimized CUDA mode.
+  precision: bf16  # fp32 or bf16
+  deterministic: false
+  # Disable these checks in production after validating with them enabled.
+  runtime_type_checks: false
+  compile_model: true
+  compile_mode: default
+  pin_memory: true
+  # Detailed timings synchronize CUDA and must only be used for profiling.
+  profile: false
+  profile_warmup_steps: 20
+  profile_report_every: 100
   log_every: 10
 
 # EfficientZero Atari policy, value, and value-prefix coefficients.

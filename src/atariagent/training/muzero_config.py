@@ -63,6 +63,15 @@ class TrainingConfig:
     lr_decay_rate: float = 0.1
     lr_decay_steps: int = 100_000
     max_gradient_norm: float = 5.0
+    precision: str = "fp32"
+    deterministic: bool = True
+    runtime_type_checks: bool = True
+    compile_model: bool = False
+    compile_mode: str = "default"
+    pin_memory: bool = True
+    profile: bool = False
+    profile_warmup_steps: int = 20
+    profile_report_every: int = 100
     log_every: int = 10
 
 

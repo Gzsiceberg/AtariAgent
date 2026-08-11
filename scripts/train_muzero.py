@@ -8,6 +8,7 @@ from pathlib import Path
 import random
 import shutil
 import sys
+from time import perf_counter
 
 import hydra
 import numpy as np
@@ -33,10 +34,13 @@ from atariagent.evaluation import (
 from atariagent.search import MCTS, MCTSConfig
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
+    LearnerProfiler,
     MuZeroTrainer,
     representative_checkpoint_path,
     representative_checkpoint_updates,
 )
+from atariagent.training.profiling import synchronize_for_profiling
+from atariagent.typecheck import set_runtime_typechecking
 from atariagent.training.muzero_config import (
     TrainMuZeroConfig,
     linear_priority_beta,
@@ -60,6 +64,17 @@ def resolve_device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(name)
+
+
+def configure_training_backend(deterministic: bool) -> None:
+    """Select reproducible kernels or faster cuDNN/TF32 execution."""
+    if not torch.cuda.is_available():
+        return
+    torch.backends.cudnn.benchmark = not deterministic
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.allow_tf32 = not deterministic
+    torch.backends.cuda.matmul.allow_tf32 = not deterministic
+    torch.set_float32_matmul_precision("highest" if deterministic else "high")
 
 
 def flatten_trajectories(
@@ -116,17 +131,15 @@ def save_checkpoint(
 ) -> None:
     """Persist every trainable component and optimizer state."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "update": update,
-            "representation": agent.representation_network.state_dict(),
-            "dynamics": agent.dynamics_network.state_dict(),
-            "prediction": agent.prediction_network.state_dict(),
-            "optimizer": trainer.optimizer.state_dict(),
-            "config": OmegaConf.to_container(config, resolve=True),
-        },
-        path,
-    )
+    checkpoint = {
+        "update": update,
+        "representation": agent.representation_network.state_dict(),
+        "dynamics": agent.dynamics_network.state_dict(),
+        "prediction": agent.prediction_network.state_dict(),
+        "optimizer": trainer.optimizer.state_dict(),
+        "config": OmegaConf.to_container(config, resolve=True),
+    }
+    torch.save(checkpoint, path)
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="train_muzero")
@@ -142,6 +155,12 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("updates_per_iteration must be positive")
     if config.training.log_every <= 0:
         raise ValueError("log_every must be positive")
+    if config.training.precision not in ("fp32", "bf16"):
+        raise ValueError("training.precision must be fp32 or bf16")
+    if config.training.profile_warmup_steps < 0:
+        raise ValueError("profile_warmup_steps must be non-negative")
+    if config.training.profile_report_every <= 0:
+        raise ValueError("profile_report_every must be positive")
     if config.checkpoint.every < 0:
         raise ValueError("checkpoint.every must be non-negative")
     if config.checkpoint.keep_representative <= 0:
@@ -162,9 +181,8 @@ def main(config: TrainMuZeroConfig) -> None:
     random.seed(config.seed)
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
-    if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
+    configure_training_backend(config.training.deterministic)
+    set_runtime_typechecking(config.training.runtime_type_checks)
     device = resolve_device(config.training.device)
     environments = create_environments(config)
 
@@ -208,6 +226,9 @@ def main(config: TrainMuZeroConfig) -> None:
             reward_weight=config.loss.reward_weight,
             max_gradient_norm=config.training.max_gradient_norm,
             priority_epsilon=config.replay.priority_epsilon,
+            precision=config.training.precision,
+            compile_model=config.training.compile_model,
+            compile_mode=config.training.compile_mode,
         )
         replay = FIFOReplayBuffer(
             config.replay.max_transitions,
@@ -216,6 +237,16 @@ def main(config: TrainMuZeroConfig) -> None:
         )
 
         total_updates = config.training.steps + config.training.final_steps
+        learner_profiler = (
+            LearnerProfiler(
+                warmup_steps=config.training.profile_warmup_steps,
+                report_every=config.training.profile_report_every,
+                batch_size=config.training.batch_size,
+                device=device,
+            )
+            if config.training.profile
+            else None
+        )
         representative_updates = set(
             representative_checkpoint_updates(
                 total_updates, config.checkpoint.keep_representative
@@ -252,6 +283,9 @@ def main(config: TrainMuZeroConfig) -> None:
         log(
             "[bold cyan]MuZero training started[/bold cyan] "
             f"[dim]env={config.environment.id} device={device} "
+            f"precision={config.training.precision} "
+            f"deterministic={config.training.deterministic} "
+            f"compile={config.training.compile_model} "
             f"transitions={config.self_play.total_transitions:,} "
             f"updates={total_updates:,}[/dim]"
         )
@@ -306,22 +340,58 @@ def main(config: TrainMuZeroConfig) -> None:
 
         def run_updates(count: int) -> None:
             nonlocal update
+            if count <= 0:
+                return
+
+            profiling = config.training.profile
+            pin_batches = config.training.pin_memory and device.type == "cuda"
             for _ in range(count):
+                synchronize_for_profiling(device, profiling)
+                update_started = perf_counter() if profiling else 0.0
+                timings_ms: dict[str, float] = {}
+
                 priority_beta = linear_priority_beta(
                     update,
                     total_updates,
                     config.replay.priority_beta_initial,
                     config.replay.priority_beta_final,
                 )
-                batch = replay.sample(
+                sampling_started = perf_counter() if profiling else 0.0
+                cpu_batch = replay.sample(
                     config.training.batch_size,
                     unroll_steps=config.training.unroll_steps,
                     td_steps=config.training.td_steps,
                     discount=discount,
                     priority_beta=priority_beta,
-                ).to(device)
-                metrics = trainer.train_step(batch)
+                )
+                if profiling:
+                    timings_ms["replay_sample"] = (
+                        perf_counter() - sampling_started
+                    ) * 1_000.0
+
+                if pin_batches:
+                    cpu_batch = cpu_batch.pin_memory()
+                batch = cpu_batch.to(
+                    device,
+                    non_blocking=pin_batches,
+                    keep_indices_on_cpu=True,
+                )
+
+                metrics = trainer.train_step(batch, profile=profiling)
+                if metrics.timings_ms is not None:
+                    timings_ms.update(metrics.timings_ms)
+
+                priority_started = perf_counter() if profiling else 0.0
                 replay.update_priorities(batch.indices, metrics.priorities)
+                if profiling:
+                    timings_ms["priority_update"] = (
+                        perf_counter() - priority_started
+                    ) * 1_000.0
+                    synchronize_for_profiling(device, True)
+                    timings_ms["update_total"] = (
+                        perf_counter() - update_started
+                    ) * 1_000.0
+
                 update += 1
                 if update == 1 or update % config.training.log_every == 0:
                     training_progress.set_postfix(
@@ -335,12 +405,35 @@ def main(config: TrainMuZeroConfig) -> None:
                         refresh=False,
                     )
                 training_progress.update(1)
+
                 regular_checkpoint = (
                     config.checkpoint.every > 0
                     and update % config.checkpoint.every == 0
                 )
                 if regular_checkpoint or update in representative_updates:
                     checkpoint_and_evaluate()
+
+                if learner_profiler is not None:
+                    summary = learner_profiler.record(timings_ms)
+                    if summary is not None:
+                        sections = " ".join(
+                            f"{name}={duration:.2f}ms"
+                            for name, duration in sorted(
+                                summary.mean_sections_ms.items()
+                            )
+                            if name != "update_total"
+                        )
+                        log(
+                            "[bold magenta]Learner profile[/bold magenta] "
+                            f"[dim]updates={summary.updates} "
+                            f"ups={summary.updates_per_second:.2f} "
+                            f"samples/s={summary.samples_per_second:.0f} "
+                            f"update_mean={summary.mean_update_ms:.2f}ms "
+                            f"update_p95={summary.p95_update_ms:.2f}ms "
+                            f"peak_alloc={summary.peak_allocated_mib:.0f}MiB "
+                            f"peak_reserved={summary.peak_reserved_mib:.0f}MiB "
+                            f"{sections}[/dim]"
+                        )
 
         minimum_replay_size = max(
             config.replay.warmup_transitions,

@@ -1,11 +1,12 @@
 """SimSiam-style projection networks for latent-state consistency."""
 
-from beartype import beartype
 from einops import rearrange
-from jaxtyping import Float, jaxtyped
+from jaxtyping import Float
 import torch
 import torch.nn.functional as functional
 from torch import Tensor, nn
+
+from atariagent.typecheck import runtime_typed
 
 
 class Projector(nn.Module):
@@ -29,7 +30,7 @@ class Projector(nn.Module):
             nn.BatchNorm1d(output_dim),
         )
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def forward(
         self, state: Float[Tensor, "batch 64 6 6"]
     ) -> Float[Tensor, "batch embedding"]:
@@ -54,7 +55,7 @@ class Predictor(nn.Module):
             nn.Linear(hidden_dim, output_dim),
         )
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def forward(
         self, projection: Float[Tensor, "batch input_dim"]
     ) -> Float[Tensor, "batch output_dim"]:
@@ -82,7 +83,7 @@ class ConsistencyNetwork(nn.Module):
             output_dim=projection_dim,
         )
 
-    @jaxtyped(typechecker=beartype)
+    @runtime_typed
     def forward(
         self,
         predicted_state: Float[Tensor, "batch 64 6 6"],
@@ -97,7 +98,7 @@ class ConsistencyNetwork(nn.Module):
         return prediction, target
 
 
-@jaxtyped(typechecker=beartype)
+@runtime_typed
 def consist_loss_func(
     prediction: Float[Tensor, "batch embedding"],
     target: Float[Tensor, "batch embedding"],
