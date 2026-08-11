@@ -43,6 +43,8 @@ training:
   unroll_steps: 5
   td_steps: 5
   lstm_horizon: 5
+  # Replace replay value bootstraps with direct delayed-network predictions.
+  use_target_network_reanalysis: true
   # Hard-copy online representation/value weights for direct value reanalysis.
   target_update_interval: 200
   # Per raw frame; training and MCTS use discount ** frame_skip.

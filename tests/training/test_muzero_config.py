@@ -9,7 +9,9 @@ from atariagent.training.muzero_config import (
 
 
 def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
-    assert TrainingConfig().target_update_interval == 200
+    config = TrainingConfig()
+    assert config.use_target_network_reanalysis
+    assert config.target_update_interval == 200
 
 
 def test_collection_steps_stop_at_exact_transition_budget() -> None:

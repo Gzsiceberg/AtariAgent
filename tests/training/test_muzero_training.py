@@ -192,10 +192,23 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
     assert not torch.equal(policy_output.weight, initial_policy)
     assert not torch.equal(value_output.weight, initial_value)
     assert not torch.equal(reward_output.weight, initial_reward)
+    assert trainer.target_network is not None
     target_policy_output = (
         trainer.target_network.prediction.policy.projection[-1]
     )
     torch.testing.assert_close(target_policy_output.weight, policy_output.weight)
+
+
+def test_muzero_target_network_reanalysis_can_be_disabled() -> None:
+    trainer = MuZeroTrainer(
+        RepresentationNetwork(4),
+        DynamicsNetwork(action_space_size=3),
+        PredictionNetwork(action_space_size=3),
+        use_target_network_reanalysis=False,
+    )
+
+    assert not trainer.use_target_network_reanalysis
+    assert trainer.target_network is None
 
 
 class _ScalarRepresentation(torch.nn.Module):

@@ -76,9 +76,9 @@ class MuZeroTrainer:
 
     Root and recurrent losses are summed and scaled by ``1 / unroll_steps``.
     Recurrent latent-state gradients are halved as in MuZero and EfficientZero.
-    Value targets replace stored MCTS bootstraps with direct predictions from a
-    periodically hard-copied target network. The three default Atari loss
-    coefficients are policy 1, value 0.25, and value-prefix reward 1.
+    When enabled, value targets replace stored MCTS bootstraps with direct
+    predictions from a periodically hard-copied target network. The default
+    Atari loss coefficients are policy 1, value 0.25, and value-prefix reward 1.
     """
 
     def __init__(
@@ -102,6 +102,7 @@ class MuZeroTrainer:
         support_min: int = -300,
         support_max: int = 300,
         priority_epsilon: float = 1e-6,
+        use_target_network_reanalysis: bool = True,
         target_update_interval: int = 200,
         precision: Precision = "fp32",
         compile_model: bool = False,
@@ -127,6 +128,8 @@ class MuZeroTrainer:
             raise ValueError("max_gradient_norm must be positive")
         if priority_epsilon <= 0.0:
             raise ValueError("priority_epsilon must be positive")
+        if not isinstance(use_target_network_reanalysis, bool):
+            raise TypeError("use_target_network_reanalysis must be a boolean")
         if target_update_interval <= 0:
             raise ValueError("target_update_interval must be positive")
         if precision not in ("fp32", "bf16"):
@@ -171,6 +174,7 @@ class MuZeroTrainer:
         self.support_min = support_min
         self.support_max = support_max
         self.priority_epsilon = priority_epsilon
+        self.use_target_network_reanalysis = use_target_network_reanalysis
         self.target_update_interval = target_update_interval
         self.learning_rate = learning_rate
         self.lr_warmup_steps = lr_warmup_steps
@@ -182,12 +186,16 @@ class MuZeroTrainer:
         self._device = device
         self._step_count = 0
         self._parameters = parameters
-        self.target_network = ValueTargetNetwork(
-            representation,
-            prediction,
-            support_min=support_min,
-            support_max=support_max,
-            precision=precision,
+        self.target_network = (
+            ValueTargetNetwork(
+                representation,
+                prediction,
+                support_min=support_min,
+                support_max=support_max,
+                precision=precision,
+            )
+            if use_target_network_reanalysis
+            else None
         )
         self.optimizer = torch.optim.SGD(
             parameters,
@@ -221,7 +229,8 @@ class MuZeroTrainer:
         timer = _StepTimer(self._device, profile)
 
         with timer.section("target_reanalysis"):
-            batch = self.target_network.reanalyze(batch)
+            if self.target_network is not None:
+                batch = self.target_network.reanalyze(batch)
         with timer.section("root_observation"):
             observations = batch.normalized_root_observation()
         with timer.section("target_construction"):
@@ -330,7 +339,10 @@ class MuZeroTrainer:
         with timer.section("optimizer"):
             self.optimizer.step()
         self._step_count += 1
-        if self._step_count % self.target_update_interval == 0:
+        if (
+            self.target_network is not None
+            and self._step_count % self.target_update_interval == 0
+        ):
             self.target_network.synchronize(
                 self.original_representation,
                 self.original_prediction,

@@ -129,17 +129,18 @@ def save_checkpoint(
     update: int,
     config: TrainMuZeroConfig,
 ) -> None:
-    """Persist online/target networks and optimizer state."""
+    """Persist online networks, optional target network, and optimizer."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    checkpoint = {
+    checkpoint: dict[str, object] = {
         "update": update,
         "representation": agent.representation_network.state_dict(),
         "dynamics": agent.dynamics_network.state_dict(),
         "prediction": agent.prediction_network.state_dict(),
-        "target_network": trainer.target_network.state_dict(),
         "optimizer": trainer.optimizer.state_dict(),
         "config": OmegaConf.to_container(config, resolve=True),
     }
+    if trainer.target_network is not None:
+        checkpoint["target_network"] = trainer.target_network.state_dict()
     torch.save(checkpoint, path)
 
 
@@ -227,6 +228,9 @@ def main(config: TrainMuZeroConfig) -> None:
             reward_weight=config.loss.reward_weight,
             max_gradient_norm=config.training.max_gradient_norm,
             priority_epsilon=config.replay.priority_epsilon,
+            use_target_network_reanalysis=(
+                config.training.use_target_network_reanalysis
+            ),
             target_update_interval=config.training.target_update_interval,
             precision=config.training.precision,
             compile_model=config.training.compile_model,
@@ -365,6 +369,9 @@ def main(config: TrainMuZeroConfig) -> None:
                     td_steps=config.training.td_steps,
                     discount=discount,
                     priority_beta=priority_beta,
+                    include_value_bootstraps=(
+                        config.training.use_target_network_reanalysis
+                    ),
                 )
                 if profiling:
                     timings_ms["replay_sample"] = (
@@ -503,7 +510,7 @@ def main(config: TrainMuZeroConfig) -> None:
                         tuple(recent_rewards)
                     )
                     log(
-                        "[bold cyan]Self-play full-game raw reward statistics"
+                        "[bold cyan]Self-play reward statistics"
                         "[/bold cyan] "
                         f"[dim]update={update:,} iteration={collection_iteration} "
                         f"new_episodes={len(completed_rewards)} "

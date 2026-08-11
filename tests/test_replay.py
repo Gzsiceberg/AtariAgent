@@ -132,6 +132,22 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     )
 
 
+def test_replay_can_skip_target_network_bootstrap_metadata() -> None:
+    replay = FIFOReplayBuffer(max_transitions=10, seed=3)
+    replay.add(make_trajectory(3, terminated=True))
+
+    batch = replay.sample(
+        batch_size=3,
+        unroll_steps=2,
+        include_value_bootstraps=False,
+    )
+
+    assert batch.value_bootstrap_frames is None
+    assert batch.value_bootstrap_values is None
+    assert batch.value_bootstrap_discounts is None
+    assert batch.value_bootstrap_mask is None
+
+
 def test_replay_builds_fixed_n_step_values_from_stored_root_values() -> None:
     replay = FIFOReplayBuffer(max_transitions=10, seed=3)
     replay.add(make_trajectory(3, terminated=True))

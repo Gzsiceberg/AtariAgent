@@ -498,17 +498,24 @@ class FIFOReplayBuffer:
         td_steps: int = 5,
         discount: float = 0.997,
         priority_beta: float = 0.4,
+        include_value_bootstraps: bool = True,
     ) -> ReplayBatch:
         """Prioritize unique starts and return full padded frame sequences."""
         self._validate_sample_request(
             batch_size, unroll_steps, td_steps, discount, priority_beta
         )
+        if not isinstance(include_value_bootstraps, bool):
+            raise TypeError("include_value_bootstraps must be a boolean")
         assert self._action_space_size is not None
 
         locations, transition_ids, importance_weights = self._sample_context(
             batch_size, priority_beta
         )
-        arrays = self._allocate_batch_arrays(batch_size, unroll_steps)
+        arrays = self._allocate_batch_arrays(
+            batch_size,
+            unroll_steps,
+            include_value_bootstraps=include_value_bootstraps,
+        )
         self._fill_batch_arrays(
             arrays,
             locations,
@@ -632,13 +639,17 @@ class FIFOReplayBuffer:
         )
 
     def _batch_array_specs(
-        self, batch_size: int, unroll_steps: int
+        self,
+        batch_size: int,
+        unroll_steps: int,
+        *,
+        include_value_bootstraps: bool,
     ) -> dict[str, tuple[tuple[int, ...], np.dtype]]:
         assert self._action_space_size is not None
         assert self._stack_size is not None
         assert self._frame_shape is not None
         states = unroll_steps + 1
-        return {
+        specs = {
             "frames": (
                 (
                     batch_size,
@@ -684,19 +695,38 @@ class FIFOReplayBuffer:
             "indices": ((batch_size,), np.dtype(np.int64)),
             "importance_weights": ((batch_size,), np.dtype(np.float32)),
         }
+        if not include_value_bootstraps:
+            for name in (
+                "value_bootstrap_frames",
+                "value_bootstrap_values",
+                "value_bootstrap_discounts",
+                "value_bootstrap_mask",
+            ):
+                del specs[name]
+        return specs
 
     def _allocate_batch_arrays(
-        self, batch_size: int, unroll_steps: int
+        self,
+        batch_size: int,
+        unroll_steps: int,
+        *,
+        include_value_bootstraps: bool,
     ) -> dict[str, np.ndarray]:
         return {
             name: np.empty(shape, dtype=dtype)
             for name, (shape, dtype) in self._batch_array_specs(
-                batch_size, unroll_steps
+                batch_size,
+                unroll_steps,
+                include_value_bootstraps=include_value_bootstraps,
             ).items()
         }
 
     @staticmethod
     def _batch_from_arrays(arrays: Mapping[str, np.ndarray]) -> ReplayBatch:
+        def optional_tensor(name: str) -> Tensor | None:
+            array = arrays.get(name)
+            return None if array is None else torch.from_numpy(array)
+
         return ReplayBatch(
             frames=torch.from_numpy(arrays["frames"]),
             actions=torch.from_numpy(arrays["actions"]),
@@ -709,18 +739,12 @@ class FIFOReplayBuffer:
             value_mask=torch.from_numpy(arrays["value_mask"]),
             indices=torch.from_numpy(arrays["indices"]),
             importance_weights=torch.from_numpy(arrays["importance_weights"]),
-            value_bootstrap_frames=torch.from_numpy(
-                arrays["value_bootstrap_frames"]
+            value_bootstrap_frames=optional_tensor("value_bootstrap_frames"),
+            value_bootstrap_values=optional_tensor("value_bootstrap_values"),
+            value_bootstrap_discounts=optional_tensor(
+                "value_bootstrap_discounts"
             ),
-            value_bootstrap_values=torch.from_numpy(
-                arrays["value_bootstrap_values"]
-            ),
-            value_bootstrap_discounts=torch.from_numpy(
-                arrays["value_bootstrap_discounts"]
-            ),
-            value_bootstrap_mask=torch.from_numpy(
-                arrays["value_bootstrap_mask"]
-            ),
+            value_bootstrap_mask=optional_tensor("value_bootstrap_mask"),
         )
 
     def _locations_for_indices(
@@ -778,11 +802,11 @@ class FIFOReplayBuffer:
         action_mask = arrays["action_mask"]
         target_mask = arrays["target_mask"]
         value_mask = arrays["value_mask"]
-        value_bootstrap_frames = arrays["value_bootstrap_frames"]
-        value_bootstrap_values = arrays["value_bootstrap_values"]
-        value_bootstrap_discounts = arrays["value_bootstrap_discounts"]
-        value_bootstrap_mask = arrays["value_bootstrap_mask"]
-        for array in (
+        value_bootstrap_frames = arrays.get("value_bootstrap_frames")
+        value_bootstrap_values = arrays.get("value_bootstrap_values")
+        value_bootstrap_discounts = arrays.get("value_bootstrap_discounts")
+        value_bootstrap_mask = arrays.get("value_bootstrap_mask")
+        arrays_to_clear = (
             actions,
             rewards,
             policy_targets,
@@ -791,11 +815,18 @@ class FIFOReplayBuffer:
             action_mask,
             target_mask,
             value_mask,
-            value_bootstrap_frames,
-            value_bootstrap_values,
-            value_bootstrap_discounts,
-            value_bootstrap_mask,
-        ):
+        )
+        if value_bootstrap_frames is not None:
+            assert value_bootstrap_values is not None
+            assert value_bootstrap_discounts is not None
+            assert value_bootstrap_mask is not None
+            arrays_to_clear += (
+                value_bootstrap_frames,
+                value_bootstrap_values,
+                value_bootstrap_discounts,
+                value_bootstrap_mask,
+            )
+        for array in arrays_to_clear:
             array.fill(0)
 
         for batch_index, (trajectory, start) in enumerate(locations):
@@ -890,7 +921,13 @@ class FIFOReplayBuffer:
                 if target.valid:
                     value_targets[batch_index, target_offset] = target.value
                     value_mask[batch_index, target_offset] = True
-                if target.bootstrap_location is not None:
+                if (
+                    target.bootstrap_location is not None
+                    and value_bootstrap_frames is not None
+                ):
+                    assert value_bootstrap_values is not None
+                    assert value_bootstrap_discounts is not None
+                    assert value_bootstrap_mask is not None
                     bootstrap_block, bootstrap_position = (
                         target.bootstrap_location
                     )
