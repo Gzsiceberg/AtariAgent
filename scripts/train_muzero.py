@@ -470,11 +470,11 @@ def main(config: TrainMuZeroConfig) -> None:
 
             if update == 1 or update % config.training.log_every == 0:
                 progress_stats: dict[str, str] = {
-                    "loss": f"{metrics.loss:.3f}",
-                    "policy": f"{metrics.policy_loss:.3f}",
-                    "value": f"{metrics.value_loss:.3f}",
-                    "reward": f"{metrics.reward_loss:.3f}",
-                    "grad": f"{metrics.gradient_norm:.2f}",
+                    # "loss": f"{metrics.loss:.3f}",
+                    # "policy": f"{metrics.policy_loss:.3f}",
+                    # "value": f"{metrics.value_loss:.3f}",
+                    # "reward": f"{metrics.reward_loss:.3f}",
+                    # "grad": f"{metrics.gradient_norm:.2f}",
                     "lr": f"{metrics.learning_rate:.5f}",
                     "beta": f"{priority_beta:.3f}",
                 }
@@ -482,8 +482,7 @@ def main(config: TrainMuZeroConfig) -> None:
                     progress_stats.update(
                         {
                             "reanalyze": f"{actor_duration_ms:.0f}ms",
-                            "queue": f"{queue_wait_ms:.0f}ms",
-                            "pending": str(reanalysis_pipeline.pending_count),
+                            "queue": f"{queue_wait_ms:.0f}ms"
                         }
                     )
                     if policy_roots_requested > 0:
