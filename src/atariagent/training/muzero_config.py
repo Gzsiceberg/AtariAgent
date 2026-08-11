@@ -55,6 +55,7 @@ class TrainingConfig:
     unroll_steps: int = 5
     td_steps: int = 5
     lstm_horizon: int = 5
+    target_update_interval: int = 200
     discount: float = 0.997
     learning_rate: float = 0.2
     momentum: float = 0.9

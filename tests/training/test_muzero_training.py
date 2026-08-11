@@ -132,6 +132,7 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
         lr_warmup_steps=0,
         unroll_steps=1,
         lstm_horizon=1,
+        target_update_interval=1,
     )
     policy_output = prediction.policy.projection[-1]
     value_output = prediction.value.projection[-1]
@@ -157,12 +158,19 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
         value_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
+        value_bootstrap_frames=torch.randint(
+            0, 256, (2, 5, 1, 96, 96), dtype=torch.uint8
+        ),
+        value_bootstrap_values=torch.zeros(2, 2),
+        value_bootstrap_discounts=torch.ones(2, 2),
+        value_bootstrap_mask=torch.ones(2, 2, dtype=torch.bool),
     )
 
     metrics = trainer.train_step(batch, profile=True)
 
     assert metrics.timings_ms is not None
     assert set(metrics.timings_ms) == {
+        "target_reanalysis",
         "root_observation",
         "target_construction",
         "forward_loss",
@@ -184,6 +192,10 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
     assert not torch.equal(policy_output.weight, initial_policy)
     assert not torch.equal(value_output.weight, initial_value)
     assert not torch.equal(reward_output.weight, initial_reward)
+    target_policy_output = (
+        trainer.target_network.prediction.policy.projection[-1]
+    )
+    torch.testing.assert_close(target_policy_output.weight, policy_output.weight)
 
 
 class _ScalarRepresentation(torch.nn.Module):

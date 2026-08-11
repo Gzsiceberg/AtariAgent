@@ -1,10 +1,15 @@
 import pytest
 
 from atariagent.training.muzero_config import (
+    TrainingConfig,
     linear_priority_beta,
     next_collection_vector_steps,
     visit_softmax_temperature,
 )
+
+
+def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
+    assert TrainingConfig().target_update_interval == 200
 
 
 def test_collection_steps_stop_at_exact_transition_budget() -> None:

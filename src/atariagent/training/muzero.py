@@ -16,6 +16,7 @@ from torch import Tensor, nn
 
 from atariagent.agent import categorical_to_scalar
 from atariagent.replay import ReplayBatch
+from .target import ValueTargetNetwork
 
 
 Precision = Literal["fp32", "bf16"]
@@ -75,8 +76,9 @@ class MuZeroTrainer:
 
     Root and recurrent losses are summed and scaled by ``1 / unroll_steps``.
     Recurrent latent-state gradients are halved as in MuZero and EfficientZero.
-    The three default Atari loss coefficients are policy 1, value 0.25, and
-    value-prefix reward 1.
+    Value targets replace stored MCTS bootstraps with direct predictions from a
+    periodically hard-copied target network. The three default Atari loss
+    coefficients are policy 1, value 0.25, and value-prefix reward 1.
     """
 
     def __init__(
@@ -100,6 +102,7 @@ class MuZeroTrainer:
         support_min: int = -300,
         support_max: int = 300,
         priority_epsilon: float = 1e-6,
+        target_update_interval: int = 200,
         precision: Precision = "fp32",
         compile_model: bool = False,
         compile_mode: str = "default",
@@ -124,6 +127,8 @@ class MuZeroTrainer:
             raise ValueError("max_gradient_norm must be positive")
         if priority_epsilon <= 0.0:
             raise ValueError("priority_epsilon must be positive")
+        if target_update_interval <= 0:
+            raise ValueError("target_update_interval must be positive")
         if precision not in ("fp32", "bf16"):
             raise ValueError("precision must be fp32 or bf16")
         if not compile_mode:
@@ -166,6 +171,7 @@ class MuZeroTrainer:
         self.support_min = support_min
         self.support_max = support_max
         self.priority_epsilon = priority_epsilon
+        self.target_update_interval = target_update_interval
         self.learning_rate = learning_rate
         self.lr_warmup_steps = lr_warmup_steps
         self.lr_decay_rate = lr_decay_rate
@@ -176,6 +182,13 @@ class MuZeroTrainer:
         self._device = device
         self._step_count = 0
         self._parameters = parameters
+        self.target_network = ValueTargetNetwork(
+            representation,
+            prediction,
+            support_min=support_min,
+            support_max=support_max,
+            precision=precision,
+        )
         self.optimizer = torch.optim.SGD(
             parameters,
             lr=learning_rate,
@@ -207,6 +220,8 @@ class MuZeroTrainer:
         self.optimizer.zero_grad(set_to_none=True)
         timer = _StepTimer(self._device, profile)
 
+        with timer.section("target_reanalysis"):
+            batch = self.target_network.reanalyze(batch)
         with timer.section("root_observation"):
             observations = batch.normalized_root_observation()
         with timer.section("target_construction"):
@@ -315,6 +330,11 @@ class MuZeroTrainer:
         with timer.section("optimizer"):
             self.optimizer.step()
         self._step_count += 1
+        if self._step_count % self.target_update_interval == 0:
+            self.target_network.synchronize(
+                self.original_representation,
+                self.original_prediction,
+            )
 
         return MuZeroTrainMetrics(
             loss=loss.detach(),
@@ -366,6 +386,31 @@ class MuZeroTrainer:
             raise ValueError("value_targets has an invalid shape")
         if batch.value_mask.shape != target_shape:
             raise ValueError("value_mask has an invalid shape")
+        bootstrap_metadata = (
+            batch.value_bootstrap_frames,
+            batch.value_bootstrap_values,
+            batch.value_bootstrap_discounts,
+            batch.value_bootstrap_mask,
+        )
+        has_bootstrap_metadata = tuple(
+            value is not None for value in bootstrap_metadata
+        )
+        if any(has_bootstrap_metadata) and not all(has_bootstrap_metadata):
+            raise ValueError("value-bootstrap metadata is incomplete")
+        if all(has_bootstrap_metadata):
+            assert batch.value_bootstrap_frames is not None
+            assert batch.value_bootstrap_values is not None
+            assert batch.value_bootstrap_discounts is not None
+            assert batch.value_bootstrap_mask is not None
+            if batch.value_bootstrap_frames.shape != batch.frames.shape:
+                raise ValueError("value_bootstrap_frames has an invalid shape")
+            for value in (
+                batch.value_bootstrap_values,
+                batch.value_bootstrap_discounts,
+                batch.value_bootstrap_mask,
+            ):
+                if value.shape != target_shape:
+                    raise ValueError("value-bootstrap metadata has an invalid shape")
         if batch.indices.shape != (batch.batch_size,):
             raise ValueError("indices has an invalid shape")
         if batch.importance_weights.shape != (batch.batch_size,):

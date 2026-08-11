@@ -43,6 +43,8 @@ training:
   unroll_steps: 5
   td_steps: 5
   lstm_horizon: 5
+  # Hard-copy online representation/value weights for direct value reanalysis.
+  target_update_interval: 200
   # Per raw frame; training and MCTS use discount ** frame_skip.
   discount: 0.997
   # EfficientZero V1 Atari optimizer and step learning-rate schedule.

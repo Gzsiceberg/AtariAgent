@@ -7,6 +7,7 @@ from .checkpoint import (
 from .dynamics import DynamicsTrainer, DynamicsTrainMetrics, scalar_reward_loss
 from .muzero import MuZeroTrainer, MuZeroTrainMetrics
 from .profiling import LearnerProfiler, LearnerTimingSummary
+from .target import ValueTargetNetwork
 
 __all__ = [
     "DynamicsTrainer",
@@ -15,6 +16,7 @@ __all__ = [
     "LearnerTimingSummary",
     "MuZeroTrainer",
     "MuZeroTrainMetrics",
+    "ValueTargetNetwork",
     "representative_checkpoint_path",
     "representative_checkpoint_updates",
     "scalar_reward_loss",

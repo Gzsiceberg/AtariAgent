@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 
 from jaxtyping import Bool, Float, Int, UInt8
 import numpy as np
@@ -27,6 +27,17 @@ class ReplayAddResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _ValueTarget:
+    """Replay value target and optional fixed-horizon bootstrap metadata."""
+
+    value: float
+    valid: bool
+    bootstrap_location: tuple[GameTrajectory, int] | None = None
+    bootstrap_value: float = 0.0
+    bootstrap_discount: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayBatch:
     """A padded EfficientZero-style unroll batch.
 
@@ -36,7 +47,9 @@ class ReplayBatch:
     action/reward steps. ``target_mask`` identifies states with stored search
     targets. ``value_mask`` identifies states whose fixed-horizon return can
     be computed; a true terminal state has a valid zero-value target without
-    an MCTS policy.
+    an MCTS policy. Value-bootstrap fields carry compact real observations and
+    stored bootstrap terms so the learner can substitute fresh target-network
+    values without changing stored replay data.
     """
 
     frames: UInt8[Tensor, "batch frames channels height width"]
@@ -50,6 +63,12 @@ class ReplayBatch:
     value_mask: Bool[Tensor, "batch states"]
     indices: Int[Tensor, "batch"]
     importance_weights: Float[Tensor, "batch"]
+    value_bootstrap_frames: (
+        UInt8[Tensor, "batch bootstrap_frames channels height width"] | None
+    ) = None
+    value_bootstrap_values: Float[Tensor, "batch states"] | None = None
+    value_bootstrap_discounts: Float[Tensor, "batch states"] | None = None
+    value_bootstrap_mask: Bool[Tensor, "batch states"] | None = None
 
     @property
     def batch_size(self) -> int:
@@ -111,6 +130,55 @@ class ReplayBatch:
         return self.stacked_observations().to(
             device=device, dtype=torch.float32
         ).div_(255.0)
+
+    def normalized_value_bootstrap_observation(
+        self,
+        offset: int,
+    ) -> Float[Tensor, "batch stacked_channels height width"]:
+        """Return actual observations used for target-network bootstrapping."""
+        if self.value_bootstrap_frames is None:
+            raise ValueError("batch has no value-bootstrap observations")
+        if not 0 <= offset <= self.unroll_steps:
+            raise ValueError("bootstrap offset is outside the unroll")
+        batch_size, _, channels, height, width = (
+            self.value_bootstrap_frames.shape
+        )
+        observation = self.value_bootstrap_frames[
+            :, offset : offset + self.stack_size
+        ].reshape(
+            batch_size,
+            self.stack_size * channels,
+            height,
+            width,
+        )
+        return observation.to(dtype=torch.float32).div_(255.0)
+
+    def with_reanalyzed_value_targets(
+        self,
+        fresh_bootstrap_values: Float[Tensor, "batch states"],
+    ) -> ReplayBatch:
+        """Replace stored MCTS bootstraps with fresh target-network values."""
+        metadata = (
+            self.value_bootstrap_values,
+            self.value_bootstrap_discounts,
+            self.value_bootstrap_mask,
+        )
+        if any(value is None for value in metadata):
+            raise ValueError("batch has no value-bootstrap metadata")
+        if fresh_bootstrap_values.shape != self.value_targets.shape:
+            raise ValueError("fresh bootstrap values have an invalid shape")
+        assert self.value_bootstrap_values is not None
+        assert self.value_bootstrap_discounts is not None
+        assert self.value_bootstrap_mask is not None
+        bootstrap_delta = (
+            fresh_bootstrap_values - self.value_bootstrap_values
+        ) * self.value_bootstrap_discounts
+        targets = torch.where(
+            self.value_bootstrap_mask,
+            self.value_targets + bootstrap_delta,
+            self.value_targets,
+        )
+        return replace(self, value_targets=targets)
 
     @runtime_typed
     def prediction_losses(
@@ -593,6 +661,26 @@ class FIFOReplayBuffer:
             "action_mask": ((batch_size, unroll_steps), np.dtype(np.bool_)),
             "target_mask": ((batch_size, states), np.dtype(np.bool_)),
             "value_mask": ((batch_size, states), np.dtype(np.bool_)),
+            "value_bootstrap_frames": (
+                (
+                    batch_size,
+                    self._stack_size + unroll_steps,
+                    *self._frame_shape,
+                ),
+                np.dtype(np.uint8),
+            ),
+            "value_bootstrap_values": (
+                (batch_size, states),
+                np.dtype(np.float32),
+            ),
+            "value_bootstrap_discounts": (
+                (batch_size, states),
+                np.dtype(np.float32),
+            ),
+            "value_bootstrap_mask": (
+                (batch_size, states),
+                np.dtype(np.bool_),
+            ),
             "indices": ((batch_size,), np.dtype(np.int64)),
             "importance_weights": ((batch_size,), np.dtype(np.float32)),
         }
@@ -621,6 +709,18 @@ class FIFOReplayBuffer:
             value_mask=torch.from_numpy(arrays["value_mask"]),
             indices=torch.from_numpy(arrays["indices"]),
             importance_weights=torch.from_numpy(arrays["importance_weights"]),
+            value_bootstrap_frames=torch.from_numpy(
+                arrays["value_bootstrap_frames"]
+            ),
+            value_bootstrap_values=torch.from_numpy(
+                arrays["value_bootstrap_values"]
+            ),
+            value_bootstrap_discounts=torch.from_numpy(
+                arrays["value_bootstrap_discounts"]
+            ),
+            value_bootstrap_mask=torch.from_numpy(
+                arrays["value_bootstrap_mask"]
+            ),
         )
 
     def _locations_for_indices(
@@ -678,6 +778,10 @@ class FIFOReplayBuffer:
         action_mask = arrays["action_mask"]
         target_mask = arrays["target_mask"]
         value_mask = arrays["value_mask"]
+        value_bootstrap_frames = arrays["value_bootstrap_frames"]
+        value_bootstrap_values = arrays["value_bootstrap_values"]
+        value_bootstrap_discounts = arrays["value_bootstrap_discounts"]
+        value_bootstrap_mask = arrays["value_bootstrap_mask"]
         for array in (
             actions,
             rewards,
@@ -687,6 +791,10 @@ class FIFOReplayBuffer:
             action_mask,
             target_mask,
             value_mask,
+            value_bootstrap_frames,
+            value_bootstrap_values,
+            value_bootstrap_discounts,
+            value_bootstrap_mask,
         ):
             array.fill(0)
 
@@ -774,14 +882,34 @@ class FIFOReplayBuffer:
                     continue
                 if location is None:
                     continue
-                value_target, valid = self._n_step_value_target(
+                target = self._n_step_value_target(
                     *location,
                     td_steps=td_steps,
                     discount=discount,
                 )
-                if valid:
-                    value_targets[batch_index, target_offset] = value_target
+                if target.valid:
+                    value_targets[batch_index, target_offset] = target.value
                     value_mask[batch_index, target_offset] = True
+                if target.bootstrap_location is not None:
+                    bootstrap_block, bootstrap_position = (
+                        target.bootstrap_location
+                    )
+                    value_bootstrap_frames[
+                        batch_index,
+                        target_offset : target_offset + stack_size,
+                    ] = np.asarray(
+                        bootstrap_block.frames[
+                            bootstrap_position : bootstrap_position + stack_size
+                        ],
+                        dtype=np.uint8,
+                    )
+                    value_bootstrap_values[
+                        batch_index, target_offset
+                    ] = target.bootstrap_value
+                    value_bootstrap_discounts[
+                        batch_index, target_offset
+                    ] = target.bootstrap_discount
+                    value_bootstrap_mask[batch_index, target_offset] = True
 
         arrays["indices"][:] = transition_ids
         arrays["importance_weights"][:] = importance_weights
@@ -812,8 +940,8 @@ class FIFOReplayBuffer:
         *,
         td_steps: int,
         discount: float,
-    ) -> tuple[float, bool]:
-        """Return a fixed-horizon reward return and stored-root bootstrap."""
+    ) -> _ValueTarget:
+        """Return reward return plus stored bootstrap and its observation."""
         value = 0.0
         discount_power = 1.0
         block = trajectory
@@ -826,16 +954,22 @@ class FIFOReplayBuffer:
             if position < len(block):
                 continue
             if block.terminated:
-                return value, True
+                return _ValueTarget(value=value, valid=True)
 
             next_block = self._next_trajectory(block)
             if next_block is None:
-                return 0.0, False
+                return _ValueTarget(value=0.0, valid=False)
             block = next_block
             position = 0
 
         bootstrap_value = block.search_results[position].root_value
-        return value + discount_power * bootstrap_value, True
+        return _ValueTarget(
+            value=value + discount_power * bootstrap_value,
+            valid=True,
+            bootstrap_location=(block, position),
+            bootstrap_value=bootstrap_value,
+            bootstrap_discount=discount_power,
+        )
 
     def _next_trajectory(
         self, trajectory: GameTrajectory

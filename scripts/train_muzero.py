@@ -129,13 +129,14 @@ def save_checkpoint(
     update: int,
     config: TrainMuZeroConfig,
 ) -> None:
-    """Persist every trainable component and optimizer state."""
+    """Persist online/target networks and optimizer state."""
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
         "update": update,
         "representation": agent.representation_network.state_dict(),
         "dynamics": agent.dynamics_network.state_dict(),
         "prediction": agent.prediction_network.state_dict(),
+        "target_network": trainer.target_network.state_dict(),
         "optimizer": trainer.optimizer.state_dict(),
         "config": OmegaConf.to_container(config, resolve=True),
     }
@@ -226,6 +227,7 @@ def main(config: TrainMuZeroConfig) -> None:
             reward_weight=config.loss.reward_weight,
             max_gradient_norm=config.training.max_gradient_norm,
             priority_epsilon=config.replay.priority_epsilon,
+            target_update_interval=config.training.target_update_interval,
             precision=config.training.precision,
             compile_model=config.training.compile_model,
             compile_mode=config.training.compile_mode,

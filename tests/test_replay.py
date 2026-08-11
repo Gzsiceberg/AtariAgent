@@ -86,6 +86,14 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.action_mask.dtype == torch.bool
     assert batch.target_mask.dtype == torch.bool
     assert batch.value_mask.dtype == torch.bool
+    assert batch.value_bootstrap_frames is not None
+    assert batch.value_bootstrap_frames.shape == batch.frames.shape
+    assert batch.value_bootstrap_values is not None
+    assert batch.value_bootstrap_values.shape == (3, 6)
+    assert batch.value_bootstrap_discounts is not None
+    assert batch.value_bootstrap_discounts.shape == (3, 6)
+    assert batch.value_bootstrap_mask is not None
+    assert batch.value_bootstrap_mask.shape == (3, 6)
     assert batch.indices.shape == (3,)
     assert batch.indices.dtype == torch.long
     assert batch.importance_weights.shape == (3,)
@@ -143,6 +151,29 @@ def test_replay_builds_fixed_n_step_values_from_stored_root_values() -> None:
     torch.testing.assert_close(
         batch.value_mask[start_zero],
         torch.tensor([True, True, True, True]),
+    )
+    assert batch.value_bootstrap_mask is not None
+    assert batch.value_bootstrap_values is not None
+    assert batch.value_bootstrap_discounts is not None
+    torch.testing.assert_close(
+        batch.value_bootstrap_mask[start_zero],
+        torch.tensor([True, False, False, False]),
+    )
+    assert batch.value_bootstrap_values[start_zero, 0] == 2.0
+    assert batch.value_bootstrap_discounts[start_zero, 0] == 0.25
+    bootstrap = batch.normalized_value_bootstrap_observation(0)
+    torch.testing.assert_close(
+        bootstrap[start_zero],
+        torch.full((1, 2, 2), 2.0 / 255.0),
+    )
+
+    fresh_bootstraps = torch.zeros_like(batch.value_targets)
+    fresh_bootstraps[start_zero, 0] = 10.0
+    reanalyzed = batch.with_reanalyzed_value_targets(fresh_bootstraps)
+    assert reanalyzed.value_targets[start_zero, 0] == 4.5
+    torch.testing.assert_close(
+        reanalyzed.value_targets[start_zero, 1:],
+        batch.value_targets[start_zero, 1:],
     )
 
 
