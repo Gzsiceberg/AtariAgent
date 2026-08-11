@@ -27,7 +27,9 @@ class _FakeRay:
         self.objects: dict[_FakeRef, Any] = {}
         self.next_identifier = 0
         self.killed = False
+        self.killed_count = 0
         self.time_out = False
+        self.actors: list[Any] = []
 
     def put(self, value: Any) -> _FakeRef:
         reference = _FakeRef(self.next_identifier)
@@ -47,6 +49,7 @@ class _FakeRay:
     def kill(self, actor, *, no_restart):
         del actor, no_restart
         self.killed = True
+        self.killed_count += 1
 
 
 class _RemoteMethod:
@@ -61,6 +64,7 @@ class _FakeActor:
     def __init__(self, ray_api: _FakeRay) -> None:
         self.ray = ray_api
         self.version = -1
+        self.request_ids: list[int] = []
         self.set_weights = _RemoteMethod(self._set_weights)
         self.reanalyze = _RemoteMethod(self._reanalyze)
 
@@ -71,6 +75,7 @@ class _FakeActor:
 
     def _reanalyze(self, request_ref):
         request = self.ray.get(request_ref)
+        self.request_ids.append(request.request_id)
         result = ReanalysisResult(
             request_id=request.request_id,
             weight_version=request.weight_version,
@@ -101,9 +106,10 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
 
 def _fake_pipeline(*, max_weight_lag: int = 200):
     ray_api = _FakeRay()
-    actor = _FakeActor(ray_api)
+    actors = [_FakeActor(ray_api), _FakeActor(ray_api)]
+    ray_api.actors = actors
     pipeline = ReanalysisPipeline(
-        actor,
+        actors,
         reanalyze_values=True,
         policy_ratio=0.99,
         policy_chunk_size=16,
@@ -137,8 +143,11 @@ def test_pipeline_enforces_hard_backpressure_and_merges_by_request_id() -> None:
     assert pipeline.pending_count == 1
     assert pipeline.needs_prefetch
     assert pipeline.submit(_batch()) == 2
+    assert ray_api.actors[0].request_ids == [0, 2]
+    assert ray_api.actors[1].request_ids == [1]
     pipeline.close()
     assert ray_api.killed
+    assert ray_api.killed_count == 2
 
 
 def test_pipeline_rejects_stale_results_and_times_out() -> None:

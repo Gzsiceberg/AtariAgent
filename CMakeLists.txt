@@ -14,6 +14,7 @@ else()
 endif()
 if(OpenMP_CXX_FOUND)
     target_link_libraries(_mcts_native PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_definitions(_mcts_native PRIVATE ATARIAGENT_HAS_OPENMP=1)
 endif()
 
 install(TARGETS _mcts_native DESTINATION atariagent/search)

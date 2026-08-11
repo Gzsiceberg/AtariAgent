@@ -56,8 +56,12 @@ training:
   reanalysis_timeout_seconds: 600.0
   # Accept at most one target-copy interval of queued target staleness.
   reanalysis_max_weight_lag: 200
-  # One local actor shares the single learner GPU by default.
+  # Two actors overlap native tree work and GPU inference on one local GPU.
+  reanalysis_actor_count: 2
+  # Fractional GPU reservation is per actor; both share the learner GPU.
   reanalysis_actor_num_gpus: 0.25
+  # Cap each actor's OpenMP tree traversal to avoid CPU oversubscription.
+  reanalysis_actor_num_threads: 4
   # Null lets Ray size the local /dev/shm object store automatically.
   ray_object_store_memory: null
   # Hard-copy online representation/value weights for direct value reanalysis.

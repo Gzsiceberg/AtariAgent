@@ -1,4 +1,4 @@
-"""Single-machine asynchronous target reanalysis using one Ray actor."""
+"""Single-machine asynchronous target reanalysis using local Ray actors."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from torch import Tensor, nn
 from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTSConfig
+from atariagent.search._mcts_native import set_num_threads
 from .target import Precision, ValueTargetNetwork
 
 
@@ -62,6 +63,7 @@ class ReadyReanalysis:
 @dataclass(slots=True)
 class _PendingRequest:
     request_id: int
+    actor_index: int
     batch: ReplayBatch
     request_ref: Any
     submitted_at: float
@@ -112,7 +114,13 @@ class ReanalysisWorker:
         support_min: int,
         support_max: int,
         precision: Precision,
+        mcts_threads: int,
     ) -> None:
+        if isinstance(mcts_threads, bool) or not isinstance(mcts_threads, int):
+            raise TypeError("mcts_threads must be an integer")
+        if mcts_threads <= 0:
+            raise ValueError("mcts_threads must be positive")
+        set_num_threads(mcts_threads)
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
@@ -202,7 +210,7 @@ class ReanalysisPipeline:
 
     def __init__(
         self,
-        actor: Any,
+        actors: Any,
         *,
         reanalyze_values: bool,
         policy_ratio: float,
@@ -231,7 +239,13 @@ class ReanalysisPipeline:
         if max_weight_lag < 0:
             raise ValueError("max_weight_lag must be non-negative")
 
-        self.actor = actor
+        self.actors = (
+            tuple(actors)
+            if isinstance(actors, (list, tuple))
+            else (actors,)
+        )
+        if not self.actors:
+            raise ValueError("at least one reanalysis actor is required")
         self.reanalyze_values = reanalyze_values
         self.policy_ratio = policy_ratio
         self.policy_chunk_size = policy_chunk_size
@@ -241,6 +255,8 @@ class ReanalysisPipeline:
         self._ray = ray_api
         self._pending: dict[Any, _PendingRequest] = {}
         self._next_request_id = 0
+        self._next_actor_index = 0
+        self._actor_pending_counts = [0] * len(self.actors)
         self._weight_version = -1
         self._latest_target_state: TargetState | None = None
         self._latest_weight_ref: Any = None
@@ -280,11 +296,17 @@ class ReanalysisPipeline:
         if version <= self._weight_version:
             raise ValueError("target weight version must increase")
         state_ref = self._ray.put(state)
-        update_ref = self.actor.set_weights.remote(version, state_ref)
+        update_refs = [
+            actor.set_weights.remote(version, state_ref)
+            for actor in self.actors
+        ]
         if wait:
-            loaded_version = self._ray.get(update_ref)
-            if loaded_version != version:
-                raise RuntimeError("actor acknowledged an invalid weight version")
+            for update_ref in update_refs:
+                loaded_version = self._ray.get(update_ref)
+                if loaded_version != version:
+                    raise RuntimeError(
+                        "actor acknowledged an invalid weight version"
+                    )
         self._latest_target_state = state
         self._latest_weight_ref = state_ref
         self._weight_version = version
@@ -306,10 +328,13 @@ class ReanalysisPipeline:
             policy_ratio=self.policy_ratio,
             policy_chunk_size=self.policy_chunk_size,
         )
+        actor_index = self._select_actor()
         request_ref = self._ray.put(request)
-        result_ref = self.actor.reanalyze.remote(request_ref)
+        result_ref = self.actors[actor_index].reanalyze.remote(request_ref)
+        self._actor_pending_counts[actor_index] += 1
         self._pending[result_ref] = _PendingRequest(
             request_id=request_id,
+            actor_index=actor_index,
             batch=batch,
             request_ref=request_ref,
             submitted_at=perf_counter(),
@@ -339,6 +364,7 @@ class ReanalysisPipeline:
             raise TimeoutError("timed out waiting for asynchronous reanalysis")
         result_ref = ready[0]
         pending = self._pending.pop(result_ref)
+        self._actor_pending_counts[pending.actor_index] -= 1
         result = self._ray.get(result_ref)
         if not isinstance(result, ReanalysisResult):
             raise TypeError("reanalysis actor returned an invalid result")
@@ -369,8 +395,19 @@ class ReanalysisPipeline:
             return
         self._closed = True
         self._pending.clear()
+        self._actor_pending_counts = [0] * len(self.actors)
         self._latest_weight_ref = None
-        self._ray.kill(self.actor, no_restart=True)
+        for actor in self.actors:
+            self._ray.kill(actor, no_restart=True)
+
+    def _select_actor(self) -> int:
+        minimum_pending = min(self._actor_pending_counts)
+        for offset in range(len(self.actors)):
+            index = (self._next_actor_index + offset) % len(self.actors)
+            if self._actor_pending_counts[index] == minimum_pending:
+                self._next_actor_index = (index + 1) % len(self.actors)
+                return index
+        raise RuntimeError("failed to select a reanalysis actor")
 
     def _require_open(self) -> None:
         if self._closed:
@@ -380,6 +417,8 @@ class ReanalysisPipeline:
 def create_reanalysis_actor(
     *,
     num_gpus: float,
+    num_cpus: int = 1,
+    mcts_threads: int = 1,
     in_channels: int,
     action_space_size: int,
     mcts_config: MCTSConfig,
@@ -392,7 +431,18 @@ def create_reanalysis_actor(
     """Create one silent local Ray actor with explicit GPU reservation."""
     if not math.isfinite(num_gpus) or num_gpus < 0.0:
         raise ValueError("reanalysis actor num_gpus must be non-negative")
-    actor_class = ray.remote(num_cpus=1, num_gpus=num_gpus)(ReanalysisWorker)
+    for value, name in (
+        (num_cpus, "num_cpus"),
+        (mcts_threads, "mcts_threads"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+    actor_class = ray.remote(
+        num_cpus=num_cpus,
+        num_gpus=num_gpus,
+    )(ReanalysisWorker)
     return actor_class.remote(
         in_channels=in_channels,
         action_space_size=action_space_size,
@@ -402,7 +452,53 @@ def create_reanalysis_actor(
         support_min=support_min,
         support_max=support_max,
         precision=precision,
+        mcts_threads=mcts_threads,
     )
+
+
+def create_reanalysis_actors(
+    *,
+    count: int,
+    num_gpus: float,
+    num_cpus: int,
+    mcts_threads: int,
+    in_channels: int,
+    action_space_size: int,
+    mcts_config: MCTSConfig,
+    policy_enabled: bool,
+    rng_seed: int,
+    support_min: int,
+    support_max: int,
+    precision: Precision,
+) -> tuple[Any, ...]:
+    """Create a local actor pool with independent deterministic RNG streams."""
+    if isinstance(count, bool) or not isinstance(count, int):
+        raise TypeError("reanalysis actor count must be an integer")
+    if count <= 0:
+        raise ValueError("reanalysis actor count must be positive")
+    actors: list[Any] = []
+    try:
+        for index in range(count):
+            actors.append(
+                create_reanalysis_actor(
+                    num_gpus=num_gpus,
+                    num_cpus=num_cpus,
+                    mcts_threads=mcts_threads,
+                    in_channels=in_channels,
+                    action_space_size=action_space_size,
+                    mcts_config=mcts_config,
+                    policy_enabled=policy_enabled,
+                    rng_seed=rng_seed + index,
+                    support_min=support_min,
+                    support_max=support_max,
+                    precision=precision,
+                )
+            )
+    except Exception:
+        for actor in actors:
+            ray.kill(actor, no_restart=True)
+        raise
+    return tuple(actors)
 
 
 def initialize_local_ray(*, object_store_memory: int | None = None) -> bool:
@@ -430,6 +526,7 @@ __all__ = [
     "ReanalysisWorker",
     "TargetState",
     "create_reanalysis_actor",
+    "create_reanalysis_actors",
     "initialize_local_ray",
     "make_target_state",
     "replay_batch_nbytes",

@@ -18,7 +18,7 @@ from atariagent.search import MCTSConfig
 from atariagent.training import (
     MuZeroTrainer,
     ReanalysisPipeline,
-    create_reanalysis_actor,
+    create_reanalysis_actors,
     initialize_local_ray,
     make_target_state,
 )
@@ -31,7 +31,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-simulations", type=int, default=2)
-    parser.add_argument("--actor-gpus", type=float, default=1.0)
+    parser.add_argument("--actor-count", type=int, default=2)
+    parser.add_argument("--actor-gpus", type=float, default=0.25)
+    parser.add_argument("--actor-threads", type=int, default=4)
     return parser.parse_args()
 
 
@@ -91,8 +93,11 @@ def main() -> None:
             num_simulations=args.num_simulations,
             value_prefix_horizon=1,
         )
-        actor = create_reanalysis_actor(
+        actors = create_reanalysis_actors(
+            count=args.actor_count,
             num_gpus=(args.actor_gpus if torch.cuda.is_available() else 0.0),
+            num_cpus=args.actor_threads,
+            mcts_threads=args.actor_threads,
             in_channels=4,
             action_space_size=3,
             mcts_config=mcts_config,
@@ -103,7 +108,7 @@ def main() -> None:
             precision="fp32",
         )
         pipeline = ReanalysisPipeline(
-            actor,
+            actors,
             reanalyze_values=True,
             policy_ratio=0.99,
             policy_chunk_size=1024,
@@ -176,6 +181,8 @@ def main() -> None:
             ),
             "batch_size": args.batch_size,
             "num_simulations": args.num_simulations,
+            "actor_count": args.actor_count,
+            "actor_threads": args.actor_threads,
             "policy_reanalysis_ratio": 0.99,
             "policy_reanalysis_chunk_size": 1024,
             "prefetch_batches": 2,

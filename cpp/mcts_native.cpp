@@ -11,6 +11,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef ATARIAGENT_HAS_OPENMP
+#include <omp.h>
+#endif
+
 namespace py = pybind11;
 
 namespace {
@@ -520,6 +524,17 @@ private:
 
 PYBIND11_MODULE(_mcts_native, module) {
     module.doc() = "Native batched EfficientZero MCTS tree operations";
+    module.def("set_num_threads", [](int count) {
+        if (count <= 0) {
+            throw std::invalid_argument("thread count must be positive");
+        }
+#ifdef ATARIAGENT_HAS_OPENMP
+        omp_set_num_threads(count);
+        return omp_get_max_threads();
+#else
+        return 1;
+#endif
+    });
     py::class_<BatchTree>(module, "BatchTree")
         .def(
             py::init<

@@ -17,7 +17,9 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.reanalysis_prefetch_batches == 2
     assert config.reanalysis_timeout_seconds == pytest.approx(600.0)
     assert config.reanalysis_max_weight_lag == 200
+    assert config.reanalysis_actor_count == 2
     assert config.reanalysis_actor_num_gpus == pytest.approx(0.25)
+    assert config.reanalysis_actor_num_threads == 4
     assert config.ray_object_store_memory is None
     assert config.target_update_interval == 200
 

@@ -37,7 +37,7 @@ from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
     MuZeroTrainer,
     ReanalysisPipeline,
-    create_reanalysis_actor,
+    create_reanalysis_actors,
     initialize_local_ray,
     make_target_state,
     representative_checkpoint_path,
@@ -170,6 +170,17 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("policy_reanalysis_ratio must be in [0, 1]")
     if config.training.policy_reanalysis_chunk_size <= 0:
         raise ValueError("policy_reanalysis_chunk_size must be positive")
+    if config.training.reanalysis_actor_count <= 0:
+        raise ValueError("reanalysis_actor_count must be positive")
+    if config.training.reanalysis_actor_num_threads <= 0:
+        raise ValueError("reanalysis_actor_num_threads must be positive")
+    if (
+        config.training.reanalysis_prefetch_batches
+        < config.training.reanalysis_actor_count
+    ):
+        raise ValueError(
+            "reanalysis_prefetch_batches must cover all reanalysis actors"
+        )
     if config.training.precision not in ("fp32", "bf16"):
         raise ValueError("training.precision must be fp32 or bf16")
     if config.checkpoint.every < 0:
@@ -255,12 +266,15 @@ def main(config: TrainMuZeroConfig) -> None:
         policy_reanalysis_enabled = (
             config.training.policy_reanalysis_ratio > 0.0
         )
-        actor = create_reanalysis_actor(
+        actors = create_reanalysis_actors(
+            count=config.training.reanalysis_actor_count,
             num_gpus=(
                 config.training.reanalysis_actor_num_gpus
                 if torch.cuda.is_available()
                 else 0.0
             ),
+            num_cpus=config.training.reanalysis_actor_num_threads,
+            mcts_threads=config.training.reanalysis_actor_num_threads,
             in_channels=config.environment.frame_stack * image_channels,
             action_space_size=action_space_size,
             mcts_config=agent.mcts.config,
@@ -271,7 +285,7 @@ def main(config: TrainMuZeroConfig) -> None:
             precision=config.training.precision,
         )
         reanalysis_pipeline = ReanalysisPipeline(
-            actor,
+            actors,
             reanalyze_values=config.training.use_target_network_reanalysis,
             policy_ratio=config.training.policy_reanalysis_ratio,
             policy_chunk_size=(
