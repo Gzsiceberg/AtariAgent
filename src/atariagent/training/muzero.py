@@ -65,13 +65,18 @@ class _StepTimer:
         self.timings_ms[name] = (perf_counter() - started) * 1_000.0
 
 
+def _halve_gradient(gradient: Tensor) -> Tensor:
+    """Scale recurrent-state gradients as prescribed by MuZero."""
+    return gradient * 0.5
+
+
 class MuZeroTrainer:
     """Train all agent networks from :class:`ReplayBatch` self-play data.
 
-    Root prediction losses keep full weight, while losses across recurrent
-    unrolls are scaled by ``1 / unroll_steps`` as in the original MuZero
-    pseudocode. The three default Atari loss coefficients are policy 1,
-    value 0.25, and value-prefix reward 1.
+    Root and recurrent losses are summed and scaled by ``1 / unroll_steps``.
+    Recurrent latent-state gradients are halved as in MuZero and EfficientZero.
+    The three default Atari loss coefficients are policy 1, value 0.25, and
+    value-prefix reward 1.
     """
 
     def __init__(
@@ -271,27 +276,27 @@ class MuZeroTrainer:
                     )
                     recurrent_policy_loss += step_policy_loss
                     recurrent_value_loss += step_value_loss
+                    state.register_hook(_halve_gradient)
 
                     if (step + 1) % self.lstm_horizon == 0:
                         hidden = None
 
-                recurrent_scale = 1.0 / self.unroll_steps
+                loss_scale = 1.0 / self.unroll_steps
                 sample_weights = batch.importance_weights.to(
                     root_policy_loss.dtype
                 )
                 policy_loss = (
                     sample_weights
-                    * (
-                        root_policy_loss
-                        + recurrent_policy_loss * recurrent_scale
-                    )
+                    * (root_policy_loss + recurrent_policy_loss)
+                    * loss_scale
                 ).mean()
                 value_loss = (
                     sample_weights
-                    * (root_value_loss + recurrent_value_loss * recurrent_scale)
+                    * (root_value_loss + recurrent_value_loss)
+                    * loss_scale
                 ).mean()
                 reward_loss = (
-                    sample_weights * recurrent_reward_loss * recurrent_scale
+                    sample_weights * recurrent_reward_loss * loss_scale
                 ).mean()
                 loss = (
                     self.policy_weight * policy_loss

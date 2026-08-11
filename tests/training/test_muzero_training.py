@@ -186,7 +186,71 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
     assert not torch.equal(reward_output.weight, initial_reward)
 
 
-def test_muzero_root_losses_keep_full_weight() -> None:
+class _ScalarRepresentation(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        return self.weight.expand(observations.shape[0], 1)
+
+
+class _IdentityDynamics(torch.nn.Module):
+    def forward(self, state, action, hidden):
+        next_state = state + 0.0
+        value_prefix = torch.cat((next_state * 0.0, next_state * 0.0), dim=1)
+        return next_state, None, value_prefix
+
+
+class _ScalarPrediction(torch.nn.Module):
+    def forward(self, state):
+        policy = torch.cat((state, torch.zeros_like(state)), dim=1)
+        value = torch.cat((state * 0.0, state * 0.0), dim=1)
+        return policy, value
+
+
+def test_muzero_halves_each_recurrent_state_gradient() -> None:
+    representation = _ScalarRepresentation()
+    trainer = MuZeroTrainer(
+        representation,
+        _IdentityDynamics(),
+        _ScalarPrediction(),
+        learning_rate=0.1,
+        lr_warmup_steps=0,
+        unroll_steps=2,
+        lstm_horizon=2,
+        policy_weight=1.0,
+        value_weight=0.0,
+        reward_weight=0.0,
+        support_min=0,
+        support_max=1,
+    )
+    batch = ReplayBatch(
+        frames=torch.zeros(2, 3, 1, 1, 1, dtype=torch.uint8),
+        actions=torch.zeros(2, 2, 1, dtype=torch.long),
+        rewards=torch.zeros(2, 2),
+        policy_targets=torch.tensor(
+            [
+                [[0.0, 0.0], [1.0, 0.0], [1.0, 0.0]],
+                [[0.0, 0.0], [1.0, 0.0], [1.0, 0.0]],
+            ]
+        ),
+        root_values=torch.zeros(2, 3),
+        value_targets=torch.zeros(2, 3),
+        action_mask=torch.zeros(2, 2, dtype=torch.bool),
+        target_mask=torch.ones(2, 3, dtype=torch.bool),
+        value_mask=torch.zeros(2, 3, dtype=torch.bool),
+        indices=torch.arange(2),
+        importance_weights=torch.ones(2),
+    )
+
+    metrics = trainer.train_step(batch)
+
+    assert metrics.policy_loss == pytest.approx(torch.log(torch.tensor(2.0)))
+    assert representation.weight.grad == pytest.approx(-0.1875)
+
+
+def test_muzero_scales_root_and_recurrent_losses_together() -> None:
     trainer = MuZeroTrainer(
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
@@ -212,10 +276,10 @@ def test_muzero_root_losses_keep_full_weight() -> None:
     metrics = trainer.train_step(batch)
 
     assert metrics.policy_loss == pytest.approx(
-        2.0 * torch.log(torch.tensor(3.0)).item()
+        1.5 * torch.log(torch.tensor(3.0)).item()
     )
     assert metrics.value_loss == pytest.approx(
-        2.0 * torch.log(torch.tensor(601.0)).item()
+        1.5 * torch.log(torch.tensor(601.0)).item()
     )
     assert metrics.reward_loss == pytest.approx(
         torch.log(torch.tensor(601.0)).item()
