@@ -59,6 +59,11 @@ class TrainingConfig:
     policy_reanalysis_ratio: float = 0.99
     policy_reanalysis_chunk_size: int = 256
     reanalysis_start_step: int = 1_000
+    reanalysis_prefetch_batches: int = 2
+    reanalysis_timeout_seconds: float = 600.0
+    reanalysis_max_weight_lag: int = 200
+    reanalysis_actor_num_gpus: float = 0.25
+    ray_object_store_memory: int | None = None
     target_update_interval: int = 200
     discount: float = 0.997
     learning_rate: float = 0.2

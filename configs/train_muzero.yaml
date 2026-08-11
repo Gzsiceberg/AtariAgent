@@ -51,6 +51,15 @@ training:
   policy_reanalysis_chunk_size: 256
   # Keep replay-stored value and policy targets for the first learner updates.
   reanalysis_start_step: 1000
+  # Queue depth and hard limit for pending Ray reanalysis batches.
+  reanalysis_prefetch_batches: 2
+  reanalysis_timeout_seconds: 600.0
+  # Accept at most one target-copy interval of queued target staleness.
+  reanalysis_max_weight_lag: 200
+  # One local actor shares the single learner GPU by default.
+  reanalysis_actor_num_gpus: 0.25
+  # Null lets Ray size the local /dev/shm object store automatically.
+  ray_object_store_memory: null
   # Hard-copy online representation/value weights for direct value reanalysis.
   target_update_interval: 200
   # Per raw frame; training and MCTS use discount ** frame_skip.

@@ -160,6 +160,27 @@ class ReplayBatch:
         )
         return replace(self, value_targets=targets)
 
+    def with_reanalysis_targets(
+        self,
+        *,
+        value_targets: Float[Tensor, "batch states"],
+        policy_targets: Float[Tensor, "batch states actions"],
+    ) -> ReplayBatch:
+        """Merge target-only asynchronous reanalysis output into this batch."""
+        if value_targets.shape != self.value_targets.shape:
+            raise ValueError("reanalyzed value targets have an invalid shape")
+        if policy_targets.shape != self.policy_targets.shape:
+            raise ValueError("reanalyzed policy targets have an invalid shape")
+        if value_targets.device != self.value_targets.device:
+            raise ValueError("reanalyzed value targets are on the wrong device")
+        if policy_targets.device != self.policy_targets.device:
+            raise ValueError("reanalyzed policy targets are on the wrong device")
+        return replace(
+            self,
+            value_targets=value_targets,
+            policy_targets=policy_targets,
+        )
+
     def with_reanalyzed_policy_targets(
         self,
         fresh_policy_targets: Float[Tensor, "batch states actions"],
@@ -311,6 +332,27 @@ class ReplayBatch:
             if (step + 1) % lstm_horizon == 0:
                 prefix = torch.zeros_like(prefix)
         return torch.stack(targets, dim=1)
+
+    def to_reanalysis_device(
+        self,
+        device: torch.device | str,
+    ) -> ReplayBatch:
+        """Move only tensors required by target reanalysis to ``device``."""
+        updates: dict[str, Tensor | None] = {
+            "frames": self.frames.to(device),
+            "policy_targets": self.policy_targets.to(device),
+            "target_mask": self.target_mask.to(device),
+            "value_targets": self.value_targets.to(device),
+        }
+        for name in (
+            "value_bootstrap_frames",
+            "value_bootstrap_values",
+            "value_bootstrap_discounts",
+            "value_bootstrap_mask",
+        ):
+            value = getattr(self, name)
+            updates[name] = None if value is None else value.to(device)
+        return replace(self, **updates)
 
     def pin_memory(self) -> ReplayBatch:
         """Copy CPU tensors into page-locked memory for asynchronous transfer."""

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 import random
 import shutil
@@ -11,6 +11,7 @@ import sys
 
 import hydra
 import numpy as np
+import ray
 from omegaconf import OmegaConf
 from rich import print as rich_print
 import torch
@@ -21,6 +22,7 @@ from atariagent import (
     EpisodeRewardTracker,
     FIFOReplayBuffer,
     GameTrajectory,
+    ReplayBatch,
     SelfPlayWorker,
 )
 from atariagent.evaluation import (
@@ -34,6 +36,10 @@ from atariagent.search import MCTS, MCTSConfig
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
     MuZeroTrainer,
+    ReanalysisPipeline,
+    create_reanalysis_actor,
+    initialize_local_ray,
+    make_target_state,
     representative_checkpoint_path,
     representative_checkpoint_updates,
 )
@@ -123,21 +129,23 @@ def save_checkpoint(
     *,
     agent: AtariAgent,
     trainer: MuZeroTrainer,
+    target_state: Mapping[str, torch.Tensor],
+    target_version: int,
     update: int,
     config: TrainMuZeroConfig,
 ) -> None:
-    """Persist online networks, optional target network, and optimizer."""
+    """Persist online networks, asynchronous target state, and optimizer."""
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint: dict[str, object] = {
         "update": update,
         "representation": agent.representation_network.state_dict(),
         "dynamics": agent.dynamics_network.state_dict(),
         "prediction": agent.prediction_network.state_dict(),
+        "target_network": dict(target_state),
+        "target_version": target_version,
         "optimizer": trainer.optimizer.state_dict(),
         "config": OmegaConf.to_container(config, resolve=True),
     }
-    if trainer.target_network is not None:
-        checkpoint["target_network"] = trainer.target_network.state_dict()
     torch.save(checkpoint, path)
 
 
@@ -154,6 +162,14 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("updates_per_iteration must be positive")
     if config.training.log_every <= 0:
         raise ValueError("log_every must be positive")
+    if config.training.reanalysis_start_step < 0:
+        raise ValueError("reanalysis_start_step must be non-negative")
+    if config.training.target_update_interval <= 0:
+        raise ValueError("target_update_interval must be positive")
+    if not 0.0 <= config.training.policy_reanalysis_ratio <= 1.0:
+        raise ValueError("policy_reanalysis_ratio must be in [0, 1]")
+    if config.training.policy_reanalysis_chunk_size <= 0:
+        raise ValueError("policy_reanalysis_chunk_size must be positive")
     if config.training.precision not in ("fp32", "bf16"):
         raise ValueError("training.precision must be fp32 or bf16")
     if config.checkpoint.every < 0:
@@ -179,9 +195,15 @@ def main(config: TrainMuZeroConfig) -> None:
     configure_training_backend(config.training.deterministic)
     set_runtime_typechecking(config.training.runtime_type_checks)
     device = resolve_device(config.training.device)
-    environments = create_environments(config)
+    environments: list[Environment] = []
+    reanalysis_pipeline: ReanalysisPipeline | None = None
+    owns_ray = False
 
     try:
+        owns_ray = initialize_local_ray(
+            object_store_memory=config.training.ray_object_store_memory
+        )
+        environments = create_environments(config)
         action_space_size = int(environments[0].action_space.n)
         if any(
             int(environment.action_space.n) != action_space_size
@@ -221,20 +243,6 @@ def main(config: TrainMuZeroConfig) -> None:
             reward_weight=config.loss.reward_weight,
             max_gradient_norm=config.training.max_gradient_norm,
             priority_epsilon=config.replay.priority_epsilon,
-            use_target_network_reanalysis=(
-                config.training.use_target_network_reanalysis
-            ),
-            policy_reanalysis_ratio=(
-                config.training.policy_reanalysis_ratio
-            ),
-            policy_reanalysis_chunk_size=(
-                config.training.policy_reanalysis_chunk_size
-            ),
-            action_space_size=action_space_size,
-            mcts_config=agent.mcts.config,
-            reanalysis_seed=config.seed,
-            reanalysis_start_step=config.training.reanalysis_start_step,
-            target_update_interval=config.training.target_update_interval,
             precision=config.training.precision,
             compile_model=config.training.compile_model,
             compile_mode=config.training.compile_mode,
@@ -243,6 +251,51 @@ def main(config: TrainMuZeroConfig) -> None:
             config.replay.max_transitions,
             seed=config.seed,
             priority_alpha=config.replay.priority_alpha,
+        )
+        policy_reanalysis_enabled = (
+            config.training.policy_reanalysis_ratio > 0.0
+        )
+        actor = create_reanalysis_actor(
+            num_gpus=(
+                config.training.reanalysis_actor_num_gpus
+                if torch.cuda.is_available()
+                else 0.0
+            ),
+            in_channels=config.environment.frame_stack * image_channels,
+            action_space_size=action_space_size,
+            mcts_config=agent.mcts.config,
+            policy_enabled=policy_reanalysis_enabled,
+            rng_seed=config.seed,
+            support_min=-300,
+            support_max=300,
+            precision=config.training.precision,
+        )
+        reanalysis_pipeline = ReanalysisPipeline(
+            actor,
+            reanalyze_values=config.training.use_target_network_reanalysis,
+            policy_ratio=config.training.policy_reanalysis_ratio,
+            policy_chunk_size=(
+                config.training.policy_reanalysis_chunk_size
+            ),
+            prefetch_batches=(
+                config.training.reanalysis_prefetch_batches
+            ),
+            timeout_seconds=config.training.reanalysis_timeout_seconds,
+            max_weight_lag=config.training.reanalysis_max_weight_lag,
+        )
+        initial_target_state = make_target_state(
+            agent.representation_network,
+            agent.prediction_network,
+            (
+                agent.dynamics_network
+                if policy_reanalysis_enabled
+                else None
+            ),
+        )
+        reanalysis_pipeline.publish_weights(
+            0,
+            initial_target_state,
+            wait=True,
         )
 
         total_updates = config.training.steps + config.training.final_steps
@@ -294,10 +347,16 @@ def main(config: TrainMuZeroConfig) -> None:
             if update in checkpointed_updates:
                 return
             is_representative = update in representative_updates
+            assert reanalysis_pipeline is not None
+            target_state = reanalysis_pipeline.latest_target_state
+            if target_state is None:
+                raise RuntimeError("asynchronous target state is unavailable")
             save_checkpoint(
                 latest_checkpoint_path,
                 agent=agent,
                 trainer=trainer,
+                target_state=target_state,
+                target_version=reanalysis_pipeline.weight_version,
                 update=update,
                 config=config,
             )
@@ -337,60 +396,137 @@ def main(config: TrainMuZeroConfig) -> None:
                 f"std={stats.std:.2f}[/dim]"
             )
 
-        def run_updates(count: int) -> None:
-            nonlocal update
-            if count <= 0:
-                return
-
-            pin_batches = config.training.pin_memory and device.type == "cuda"
-            for _ in range(count):
-                priority_beta = linear_priority_beta(
-                    update,
-                    total_updates,
-                    config.replay.priority_beta_initial,
-                    config.replay.priority_beta_final,
-                )
-                cpu_batch = replay.sample(
+        def sample_batch(
+            sample_step: int,
+            *,
+            include_value_bootstraps: bool,
+        ) -> tuple[ReplayBatch, float]:
+            priority_beta = linear_priority_beta(
+                sample_step,
+                total_updates,
+                config.replay.priority_beta_initial,
+                config.replay.priority_beta_final,
+            )
+            return (
+                replay.sample(
                     config.training.batch_size,
                     unroll_steps=config.training.unroll_steps,
                     td_steps=config.training.td_steps,
                     discount=discount,
                     priority_beta=priority_beta,
-                    include_value_bootstraps=(
-                        config.training.use_target_network_reanalysis
+                    include_value_bootstraps=include_value_bootstraps,
+                ),
+                priority_beta,
+            )
+
+        def apply_update(
+            cpu_batch: ReplayBatch,
+            priority_beta: float,
+            *,
+            queue_wait_ms: float | None = None,
+            actor_duration_ms: float | None = None,
+        ) -> None:
+            nonlocal update
+            assert reanalysis_pipeline is not None
+            pin_batch = config.training.pin_memory and device.type == "cuda"
+            if pin_batch:
+                cpu_batch = cpu_batch.pin_memory()
+            batch = cpu_batch.to(
+                device,
+                non_blocking=pin_batch,
+                keep_indices_on_cpu=True,
+            )
+            metrics = trainer.train_step(batch)
+            replay.update_priorities(batch.indices, metrics.priorities)
+
+            update += 1
+            if update % config.training.target_update_interval == 0:
+                target_state = make_target_state(
+                    agent.representation_network,
+                    agent.prediction_network,
+                    (
+                        agent.dynamics_network
+                        if policy_reanalysis_enabled
+                        else None
                     ),
                 )
-                if pin_batches:
-                    cpu_batch = cpu_batch.pin_memory()
-                batch = cpu_batch.to(
-                    device,
-                    non_blocking=pin_batches,
-                    keep_indices_on_cpu=True,
-                )
+                reanalysis_pipeline.publish_weights(update, target_state)
 
-                metrics = trainer.train_step(batch)
-                replay.update_priorities(batch.indices, metrics.priorities)
-
-                update += 1
-                if update == 1 or update % config.training.log_every == 0:
-                    training_progress.set_postfix(
-                        loss=f"{metrics.loss:.3f}",
-                        policy=f"{metrics.policy_loss:.3f}",
-                        value=f"{metrics.value_loss:.3f}",
-                        reward=f"{metrics.reward_loss:.3f}",
-                        grad=f"{metrics.gradient_norm:.2f}",
-                        lr=f"{metrics.learning_rate:.5f}",
-                        beta=f"{priority_beta:.3f}",
-                        refresh=False,
+            if update == 1 or update % config.training.log_every == 0:
+                progress_stats: dict[str, str] = {
+                    "loss": f"{metrics.loss:.3f}",
+                    "policy": f"{metrics.policy_loss:.3f}",
+                    "value": f"{metrics.value_loss:.3f}",
+                    "reward": f"{metrics.reward_loss:.3f}",
+                    "grad": f"{metrics.gradient_norm:.2f}",
+                    "lr": f"{metrics.learning_rate:.5f}",
+                    "beta": f"{priority_beta:.3f}",
+                }
+                if queue_wait_ms is not None and actor_duration_ms is not None:
+                    progress_stats.update(
+                        {
+                            "reanalyze": f"{actor_duration_ms:.0f}ms",
+                            "queue": f"{queue_wait_ms:.0f}ms",
+                            "pending": str(reanalysis_pipeline.pending_count),
+                        }
                     )
-                training_progress.update(1)
+                training_progress.set_postfix(progress_stats, refresh=False)
+            training_progress.update(1)
 
-                regular_checkpoint = (
-                    config.checkpoint.every > 0
-                    and update % config.checkpoint.every == 0
+            regular_checkpoint = (
+                config.checkpoint.every > 0
+                and update % config.checkpoint.every == 0
+            )
+            if regular_checkpoint or update in representative_updates:
+                checkpoint_and_evaluate()
+
+        def run_updates(count: int) -> None:
+            if count <= 0:
+                return
+            assert reanalysis_pipeline is not None
+
+            direct_updates = min(
+                count,
+                max(0, config.training.reanalysis_start_step - update),
+            )
+            for _ in range(direct_updates):
+                cpu_batch, priority_beta = sample_batch(
+                    update,
+                    include_value_bootstraps=False,
                 )
-                if regular_checkpoint or update in representative_updates:
-                    checkpoint_and_evaluate()
+                apply_update(cpu_batch, priority_beta)
+
+            async_updates = count - direct_updates
+            if async_updates <= 0:
+                return
+            async_start_step = update
+            submitted = 0
+            completed = 0
+            priority_betas: dict[int, float] = {}
+            while completed < async_updates:
+                while (
+                    submitted < async_updates
+                    and reanalysis_pipeline.needs_prefetch
+                ):
+                    cpu_batch, priority_beta = sample_batch(
+                        async_start_step + submitted,
+                        include_value_bootstraps=(
+                            config.training.use_target_network_reanalysis
+                        ),
+                    )
+                    request_id = reanalysis_pipeline.submit(cpu_batch)
+                    priority_betas[request_id] = priority_beta
+                    submitted += 1
+
+                ready = reanalysis_pipeline.wait_next()
+                priority_beta = priority_betas.pop(ready.request_id)
+                apply_update(
+                    ready.batch,
+                    priority_beta,
+                    queue_wait_ms=ready.queue_wait_ms,
+                    actor_duration_ms=ready.actor_duration_ms,
+                )
+                completed += 1
 
         minimum_replay_size = max(
             config.replay.warmup_transitions,
@@ -548,6 +684,14 @@ def main(config: TrainMuZeroConfig) -> None:
         for environment in environments:
             environment.close()
         raise
+    finally:
+        if reanalysis_pipeline is not None:
+            try:
+                reanalysis_pipeline.close()
+            except Exception:
+                pass
+        if owns_ray and ray.is_initialized():
+            ray.shutdown()
 
 
 if __name__ == "__main__":

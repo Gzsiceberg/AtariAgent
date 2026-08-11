@@ -253,14 +253,16 @@ class ValueTargetNetwork(nn.Module):
             value_logits.float(),
             "value_decoder",
         )
-        policy_rows = policy_logits.float().cpu().tolist()
-        scalar_values = values.float().cpu().tolist()
+        output_rows = torch.cat(
+            (values[:, None], policy_logits),
+            dim=1,
+        ).float().cpu().tolist()
         roots = tuple(
             Evaluation(
                 state=states[index],
                 value_prefix=0.0,
-                value=scalar_values[index],
-                policy_logits=policy_rows[index],
+                value=output_rows[index][0],
+                policy_logits=output_rows[index][1:],
             )
             for index in range(states.shape[0])
         )
