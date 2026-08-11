@@ -18,6 +18,8 @@ from typing import Any, Protocol, runtime_checkable
 import torch
 from torch import nn
 
+from ._mcts_native import BatchTree as NativeBatchTree
+
 
 @dataclass(frozen=True, slots=True)
 class Evaluation:
@@ -267,8 +269,149 @@ class MCTS:
         *,
         add_exploration_noise: bool = False,
         temperature: float = 1.0,
+        _deterministic_ties: bool = False,
     ) -> tuple[SearchResult, ...]:
-        """Search roots in parallel with one batched evaluation per simulation."""
+        """Search roots with native batched tree traversal and backup."""
+        self._validate_temperature(temperature)
+        if not root_evaluations:
+            return ()
+
+        root_priors: list[list[float]] = []
+        root_values: list[float] = []
+        root_prefixes: list[float] = []
+        state_stores: list[list[Any]] = []
+        hidden_stores: list[list[Any]] = []
+        action_count: int | None = None
+        for evaluation in root_evaluations:
+            logits = _as_finite_floats(
+                evaluation.policy_logits,
+                "policy_logits",
+            )
+            if not logits:
+                raise ValueError("policy_logits must contain at least one action")
+            if action_count is None:
+                action_count = len(logits)
+            elif len(logits) != action_count:
+                raise ValueError("all roots must have the same action count")
+            priors = _softmax(logits)
+            if add_exploration_noise:
+                priors = self._add_root_noise(priors)
+            root_priors.append(priors)
+            root_values.append(_finite_float(evaluation.value, "value"))
+            root_prefixes.append(
+                _finite_float(evaluation.value_prefix, "value_prefix")
+            )
+            state_stores.append([evaluation.state])
+            hidden_stores.append([evaluation.value_prefix_hidden])
+
+        tree = NativeBatchTree(
+            root_priors,
+            root_values,
+            root_prefixes,
+            self.config.num_simulations,
+            self.config.discount,
+            self.config.value_prefix_horizon,
+            self.config.value_delta_max,
+            self.rng.getrandbits(64),
+            _deterministic_ties,
+        )
+        with _evaluator_inference(evaluator):
+            for simulation in range(self.config.num_simulations):
+                state_slots, actions, reset_flags = tree.traverse(
+                    self.config.pb_c_base,
+                    self.config.pb_c_init,
+                )
+                states = [
+                    store[slot]
+                    for store, slot in zip(
+                        state_stores,
+                        state_slots,
+                        strict=True,
+                    )
+                ]
+                hidden_states = [
+                    None if reset else store[slot]
+                    for store, slot, reset in zip(
+                        hidden_stores,
+                        state_slots,
+                        reset_flags,
+                        strict=True,
+                    )
+                ]
+                evaluations = evaluator(states, actions, hidden_states)
+                if not isinstance(evaluations, Sequence):
+                    raise TypeError(
+                        "batched evaluator must return a sequence of Evaluations"
+                    )
+                if len(evaluations) != len(root_evaluations):
+                    raise ValueError(
+                        "batched evaluator must return one Evaluation per root"
+                    )
+
+                value_prefixes: list[float] = []
+                values: list[float] = []
+                policy_logits: list[list[float]] = []
+                for index, evaluation in enumerate(evaluations):
+                    if not isinstance(evaluation, Evaluation):
+                        raise TypeError(
+                            "batched evaluator must return Evaluations"
+                        )
+                    state_stores[index].append(evaluation.state)
+                    hidden_stores[index].append(
+                        evaluation.value_prefix_hidden
+                    )
+                    value_prefixes.append(
+                        _finite_float(
+                            evaluation.value_prefix,
+                            "value_prefix",
+                        )
+                    )
+                    values.append(_finite_float(evaluation.value, "value"))
+                    row = _as_finite_floats(
+                        evaluation.policy_logits,
+                        "policy_logits",
+                    )
+                    if len(row) != action_count:
+                        raise ValueError(
+                            "policy action count changed during search"
+                        )
+                    policy_logits.append(row)
+                tree.expand_and_back_up(
+                    simulation + 1,
+                    value_prefixes,
+                    values,
+                    policy_logits,
+                )
+
+        visit_counts = tree.visit_counts()
+        final_values = tree.root_values()
+        return tuple(
+            SearchResult(
+                action=self.rng.choices(
+                    range(len(counts)),
+                    weights=_visit_policy(counts, temperature),
+                    k=1,
+                )[0],
+                visit_counts=tuple(counts),
+                root_value=value,
+            )
+            for counts, value in zip(
+                visit_counts,
+                final_values,
+                strict=True,
+            )
+        )
+
+    def _search_batch_python(
+        self,
+        root_evaluations: Sequence[Evaluation],
+        evaluator: BatchedRecurrentEvaluator,
+        *,
+        add_exploration_noise: bool = False,
+        temperature: float = 1.0,
+        _deterministic_ties: bool = False,
+    ) -> tuple[SearchResult, ...]:
+        """Reference Python batch search used for differential tests."""
         self._validate_temperature(temperature)
         roots = [
             self._initialize_root(root, add_exploration_noise)
@@ -283,7 +426,11 @@ class MCTS:
         with _evaluator_inference(evaluator):
             for _ in range(self.config.num_simulations):
                 search_paths = [
-                    self._select_path(root, stats)
+                    self._select_path(
+                        root,
+                        stats,
+                        deterministic_ties=_deterministic_ties,
+                    )
                     for root, stats in zip(roots, min_max_stats, strict=True)
                 ]
                 leaves_and_parents = [
@@ -325,6 +472,23 @@ class MCTS:
                     )
 
         return tuple(self._result(root, temperature) for root in roots)
+
+    def _add_root_noise(self, priors: list[float]) -> list[float]:
+        samples = [
+            self.rng.gammavariate(self.config.dirichlet_alpha, 1.0)
+            for _ in priors
+        ]
+        total = sum(samples)
+        noise = (
+            [sample / total for sample in samples]
+            if total > 0.0
+            else [1.0 / len(samples)] * len(samples)
+        )
+        fraction = self.config.root_exploration_fraction
+        return [
+            (1.0 - fraction) * prior + fraction * sample
+            for prior, sample in zip(priors, noise, strict=True)
+        ]
 
     def _initialize_root(
         self, evaluation: Evaluation, add_exploration_noise: bool
@@ -396,7 +560,13 @@ class MCTS:
                 child.parent = None
                 stack.append(child)
 
-    def _select_path(self, root: Node, stats: MinMaxStats) -> list[Node]:
+    def _select_path(
+        self,
+        root: Node,
+        stats: MinMaxStats,
+        *,
+        deterministic_ties: bool = False,
+    ) -> list[Node]:
         node = root
         path = [root]
         parent_mean_q = 0.0
@@ -406,7 +576,12 @@ class MCTS:
                 parent_mean_q=parent_mean_q,
                 is_root=node is root,
             )
-            node = self._select_child(node, mean_q, stats)
+            node = self._select_child(
+                node,
+                mean_q,
+                stats,
+                deterministic_ties=deterministic_ties,
+            )
             path.append(node)
             parent_mean_q = mean_q
         return path
@@ -426,6 +601,8 @@ class MCTS:
         node: Node,
         mean_q: float,
         stats: MinMaxStats,
+        *,
+        deterministic_ties: bool = False,
     ) -> Node:
         children_visits = sum(child.visit_count for child in node.children.values())
         exploration_scale = (
@@ -457,6 +634,8 @@ class MCTS:
                 best_children = [child]
             elif abs(score - best_score) <= 1e-12:
                 best_children.append(child)
+        if deterministic_ties:
+            return best_children[0]
         return self.rng.choice(best_children)
 
     def _back_up(self, search_path: Sequence[Node], leaf_value: float) -> None:

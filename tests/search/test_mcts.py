@@ -162,6 +162,58 @@ def test_search_batch_evaluates_all_roots_in_one_call_per_simulation() -> None:
     assert all(result.visit_counts == (4,) for result in results)
 
 
+@pytest.mark.parametrize("seed", [0, 1, 4, 17])
+def test_native_batch_search_matches_python_reference(seed: int) -> None:
+    config = MCTSConfig(
+        num_simulations=20,
+        discount=0.9,
+        value_prefix_horizon=3,
+    )
+    roots = [
+        Evaluation(index, 0.0, float(index), [1.0, 0.2, -0.7], 0.0)
+        for index in range(3)
+    ]
+
+    def evaluator(states, actions, hidden_states):
+        return [
+            Evaluation(
+                state * 3 + action + 1,
+                float(hidden or 0.0) + (action + 1) * 0.25,
+                float(state + action) / 10.0,
+                [0.3 - action, 0.1 + action, -0.2],
+                float(hidden or 0.0) + (action + 1) * 0.25,
+            )
+            for state, action, hidden in zip(
+                states,
+                actions,
+                hidden_states,
+                strict=True,
+            )
+        ]
+
+    native = MCTS(config, rng=random.Random(seed)).search_batch(
+        roots,
+        evaluator,
+        add_exploration_noise=True,
+        _deterministic_ties=True,
+    )
+    reference = MCTS(config, rng=random.Random(seed))._search_batch_python(
+        roots,
+        evaluator,
+        add_exploration_noise=True,
+        _deterministic_ties=True,
+    )
+
+    assert [result.visit_counts for result in native] == [
+        result.visit_counts for result in reference
+    ]
+    assert [result.root_value for result in native] == pytest.approx(
+        [result.root_value for result in reference],
+        rel=1e-5,
+        abs=1e-6,
+    )
+
+
 def test_module_evaluator_uses_inference_and_eval_modes() -> None:
     class ModuleEvaluator(torch.nn.Module):
         def __init__(self) -> None:
