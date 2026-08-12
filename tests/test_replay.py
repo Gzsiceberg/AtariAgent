@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 import torch
@@ -62,7 +64,7 @@ def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:
         (batch.frames[:, 0, 0, 0, 0] == 12).nonzero().item()
     )
     torch.testing.assert_close(
-        batch.target_mask[final_sample],
+        batch.policy_mask[final_sample],
         torch.tensor([True, False, False]),
     )
 
@@ -81,7 +83,7 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.policy_targets.shape == (3, 6, 2)
     assert batch.value_targets.shape == (3, 6)
     assert batch.action_mask.dtype == torch.bool
-    assert batch.target_mask.dtype == torch.bool
+    assert batch.policy_mask.dtype == torch.bool
     assert batch.value_mask.dtype == torch.bool
     assert batch.value_bootstrap_frames is not None
     assert batch.value_bootstrap_frames.shape == batch.frames.shape
@@ -105,8 +107,8 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
         torch.tensor([True, False, False, False, False]),
     )
     torch.testing.assert_close(
-        batch.target_mask[final_sample],
-        torch.tensor([True, True, False, False, False, False]),
+        batch.policy_mask[final_sample],
+        torch.tensor([True, False, False, False, False, False]),
     )
     assert batch.value_targets[final_sample, 0] == 3.0
     assert batch.value_targets[final_sample, 1] == 0.0
@@ -189,6 +191,41 @@ def test_replay_builds_fixed_n_step_values_from_stored_root_values() -> None:
     )
 
 
+def test_replay_builds_consecutive_value_targets_in_linear_traversal() -> None:
+    replay = FIFOReplayBuffer(max_transitions=11)
+    for block_id in range(11):
+        replay.add(
+            make_trajectory(
+                1,
+                block_id=block_id,
+                initial_value=block_id,
+            )
+        )
+
+    first = replay._trajectories[0]
+    with patch.object(
+        replay,
+        "_next_trajectory",
+        wraps=replay._next_trajectory,
+    ) as next_trajectory:
+        targets = replay._n_step_value_targets(
+            first,
+            0,
+            target_count=6,
+            td_steps=5,
+            discount=0.5,
+        )
+
+    # Six targets with five-step returns require ten transitions total. The
+    # replay continuation is traversed once, rather than five times per target.
+    assert next_trajectory.call_count == 10
+    for offset, target in enumerate(targets):
+        expected = sum(0.5**step for step in range(5))
+        expected += 0.5**5 * (offset + 5)
+        assert target.valid
+        assert target.value == pytest.approx(expected)
+
+
 def test_replay_reconstructs_overlapping_stacks_from_compact_frames() -> None:
     replay = FIFOReplayBuffer(max_transitions=10, seed=1)
     replay.add(make_trajectory(2, stack_size=4))
@@ -231,7 +268,7 @@ def test_root_normalization_exactly_matches_full_root_slice(
         policy_targets=torch.zeros(batch_size, states, 2),
         value_targets=torch.zeros(batch_size, states),
         action_mask=torch.ones(batch_size, unroll_steps, dtype=torch.bool),
-        target_mask=torch.ones(batch_size, states, dtype=torch.bool),
+        policy_mask=torch.zeros(batch_size, states, dtype=torch.bool),
         value_mask=torch.ones(batch_size, states, dtype=torch.bool),
         indices=torch.arange(batch_size),
         importance_weights=torch.ones(batch_size),
@@ -265,7 +302,7 @@ def test_replay_unroll_continues_across_nonterminal_blocks() -> None:
         torch.tensor([True, True, True]),
     )
     torch.testing.assert_close(
-        batch.target_mask[crossing_sample],
+        batch.policy_mask[crossing_sample],
         torch.tensor([True, True, True, True]),
     )
     value_batch = replay.sample(

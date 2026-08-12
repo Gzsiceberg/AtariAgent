@@ -357,7 +357,7 @@ class FIFOReplayBuffer:
             ),
             "value_targets": ((batch_size, states), np.dtype(np.float32)),
             "action_mask": ((batch_size, unroll_steps), np.dtype(np.bool_)),
-            "target_mask": ((batch_size, states), np.dtype(np.bool_)),
+            "policy_mask": ((batch_size, states), np.dtype(np.bool_)),
             "value_mask": ((batch_size, states), np.dtype(np.bool_)),
             "value_bootstrap_frames": (
                 (
@@ -421,7 +421,7 @@ class FIFOReplayBuffer:
             policy_targets=torch.from_numpy(arrays["policy_targets"]),
             value_targets=torch.from_numpy(arrays["value_targets"]),
             action_mask=torch.from_numpy(arrays["action_mask"]),
-            target_mask=torch.from_numpy(arrays["target_mask"]),
+            policy_mask=torch.from_numpy(arrays["policy_mask"]),
             value_mask=torch.from_numpy(arrays["value_mask"]),
             indices=torch.from_numpy(arrays["indices"]),
             importance_weights=torch.from_numpy(arrays["importance_weights"]),
@@ -485,7 +485,7 @@ class FIFOReplayBuffer:
         policy_targets = arrays["policy_targets"]
         value_targets = arrays["value_targets"]
         action_mask = arrays["action_mask"]
-        target_mask = arrays["target_mask"]
+        policy_mask = arrays["policy_mask"]
         value_mask = arrays["value_mask"]
         value_bootstrap_frames = arrays.get("value_bootstrap_frames")
         value_bootstrap_values = arrays.get("value_bootstrap_values")
@@ -497,7 +497,7 @@ class FIFOReplayBuffer:
             policy_targets,
             value_targets,
             action_mask,
-            target_mask,
+            policy_mask,
             value_mask,
         )
         if value_bootstrap_frames is not None:
@@ -521,14 +521,9 @@ class FIFOReplayBuffer:
             frame_count = stack_size
             block: GameTrajectory | None = trajectory
             position = start
-            target_locations: list[tuple[GameTrajectory, int] | None] = [
-                None
-            ] * state_count
-            target_locations[0] = (trajectory, start)
-            terminal_target_offsets: set[int] = set()
             self._set_stored_target_array(
                 policy_targets,
-                target_mask,
+                policy_mask,
                 batch_index=batch_index,
                 target_offset=0,
                 trajectory=trajectory,
@@ -550,10 +545,9 @@ class FIFOReplayBuffer:
                 target_offset = offset + 1
 
                 if position < len(block):
-                    target_locations[target_offset] = (block, position)
                     self._set_stored_target_array(
                         policy_targets,
-                        target_mask,
+                        policy_mask,
                         batch_index=batch_index,
                         target_offset=target_offset,
                         trajectory=block,
@@ -563,8 +557,6 @@ class FIFOReplayBuffer:
 
                 if block.terminated:
                     # Terminal states have valid zero value but no policy.
-                    terminal_target_offsets.add(target_offset)
-                    target_mask[batch_index, target_offset] = True
                     break
 
                 next_block = self._next_trajectory(block)
@@ -573,10 +565,9 @@ class FIFOReplayBuffer:
 
                 block = next_block
                 position = 0
-                target_locations[target_offset] = (block, position)
                 self._set_stored_target_array(
                     policy_targets,
-                    target_mask,
+                    policy_mask,
                     batch_index=batch_index,
                     target_offset=target_offset,
                     trajectory=block,
@@ -588,17 +579,14 @@ class FIFOReplayBuffer:
                     batch_index, frame_count - 1
                 ]
 
-            for target_offset, location in enumerate(target_locations):
-                if target_offset in terminal_target_offsets:
-                    value_mask[batch_index, target_offset] = True
-                    continue
-                if location is None:
-                    continue
-                target = self._n_step_value_target(
-                    *location,
-                    td_steps=td_steps,
-                    discount=discount,
-                )
+            value_target_items = self._n_step_value_targets(
+                trajectory,
+                start,
+                target_count=state_count,
+                td_steps=td_steps,
+                discount=discount,
+            )
+            for target_offset, target in enumerate(value_target_items):
                 if target.valid:
                     value_targets[batch_index, target_offset] = target.value
                     value_mask[batch_index, target_offset] = True
@@ -635,7 +623,7 @@ class FIFOReplayBuffer:
     @staticmethod
     def _set_stored_target_array(
         policy_targets: np.ndarray,
-        target_mask: np.ndarray,
+        policy_mask: np.ndarray,
         *,
         batch_index: int,
         target_offset: int,
@@ -647,45 +635,109 @@ class FIFOReplayBuffer:
         policy_targets[batch_index, target_offset] = (
             visit_counts / visit_counts.sum()
         )
-        target_mask[batch_index, target_offset] = True
+        policy_mask[batch_index, target_offset] = True
 
-    def _n_step_value_target(
+    def _n_step_value_targets(
         self,
         trajectory: GameTrajectory,
         position: int,
         *,
+        target_count: int,
         td_steps: int,
         discount: float,
-    ) -> _ValueTarget:
-        """Return reward return plus stored bootstrap and its observation."""
-        value = 0.0
-        discount_power = 1.0
+    ) -> list[_ValueTarget]:
+        """Build consecutive n-step targets in linear time.
+
+        One forward traversal collects the rewards needed by every target.
+        Discounted prefix sums then produce each reward return in constant
+        time, instead of traversing ``td_steps`` transitions per target.
+        """
+        maximum_rewards = target_count - 1 + td_steps
+        rewards: list[float] = []
+        state_locations: list[tuple[GameTrajectory, int]] = [
+            (trajectory, position)
+        ]
         block = trajectory
+        ended_at_terminal = False
 
-        for _ in range(td_steps):
-            value += discount_power * block.rewards[position]
-            discount_power *= discount
+        while len(rewards) < maximum_rewards:
+            rewards.append(block.rewards[position])
             position += 1
-
             if position < len(block):
+                state_locations.append((block, position))
                 continue
             if block.terminated:
-                return _ValueTarget(value=value, valid=True)
-
+                ended_at_terminal = True
+                break
             next_block = self._next_trajectory(block)
             if next_block is None:
-                return _ValueTarget(value=0.0, valid=False)
+                break
             block = next_block
             position = 0
+            state_locations.append((block, position))
 
-        bootstrap_value = block.search_results[position].root_value
-        return _ValueTarget(
-            value=value + discount_power * bootstrap_value,
-            valid=True,
-            bootstrap_location=(block, position),
-            bootstrap_value=bootstrap_value,
-            bootstrap_discount=discount_power,
-        )
+        discount_powers = [1.0]
+        for _ in range(td_steps):
+            discount_powers.append(discount_powers[-1] * discount)
+        discounted_suffix = [0.0] * (len(rewards) + 1)
+        for reward_offset in range(len(rewards) - 1, -1, -1):
+            discounted_suffix[reward_offset] = (
+                rewards[reward_offset]
+                + discount * discounted_suffix[reward_offset + 1]
+            )
+
+        targets: list[_ValueTarget] = []
+        terminal_state = len(rewards) if ended_at_terminal else -1
+        for target_offset in range(target_count):
+            if target_offset == terminal_state:
+                targets.append(_ValueTarget(value=0.0, valid=True))
+                continue
+            if target_offset >= len(state_locations):
+                targets.append(_ValueTarget(value=0.0, valid=False))
+                continue
+
+            bootstrap_offset = target_offset + td_steps
+            reward_end = min(bootstrap_offset, len(rewards))
+            reward_horizon = reward_end - target_offset
+            reward_return = (
+                discounted_suffix[target_offset]
+                - discount_powers[reward_horizon]
+                * discounted_suffix[reward_end]
+            )
+
+            if bootstrap_offset > len(rewards):
+                targets.append(
+                    _ValueTarget(
+                        value=(reward_return if ended_at_terminal else 0.0),
+                        valid=ended_at_terminal,
+                    )
+                )
+                continue
+            if bootstrap_offset == terminal_state:
+                targets.append(_ValueTarget(value=reward_return, valid=True))
+                continue
+            if bootstrap_offset >= len(state_locations):
+                targets.append(_ValueTarget(value=0.0, valid=False))
+                continue
+
+            bootstrap_location = state_locations[bootstrap_offset]
+            bootstrap_block, bootstrap_position = bootstrap_location
+            bootstrap_value = bootstrap_block.search_results[
+                bootstrap_position
+            ].root_value
+            bootstrap_discount = discount_powers[td_steps]
+            targets.append(
+                _ValueTarget(
+                    value=(
+                        reward_return + bootstrap_discount * bootstrap_value
+                    ),
+                    valid=True,
+                    bootstrap_location=bootstrap_location,
+                    bootstrap_value=bootstrap_value,
+                    bootstrap_discount=bootstrap_discount,
+                )
+            )
+        return targets
 
     def _next_trajectory(
         self, trajectory: GameTrajectory

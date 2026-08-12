@@ -19,8 +19,8 @@ class ReplayBatch:
     ``frames`` contains the initial stack context followed by one new frame
     per unroll action. Call :meth:`normalized_observations` to reconstruct the
     overlapping state stacks for training. ``action_mask`` identifies real
-    action/reward steps. ``target_mask`` identifies states with stored search
-    targets. ``value_mask`` identifies states whose fixed-horizon return can
+    action/reward steps. ``policy_mask`` identifies states with stored search
+    policy targets. ``value_mask`` identifies states whose fixed-horizon return can
     be computed; a true terminal state has a valid zero-value target without
     an MCTS policy. Value-bootstrap fields carry compact real observations and
     stored bootstrap terms so the learner can substitute fresh target-network
@@ -33,7 +33,7 @@ class ReplayBatch:
     policy_targets: Float[Tensor, "batch states actions"]
     value_targets: Float[Tensor, "batch states"]
     action_mask: Bool[Tensor, "batch unroll"]
-    target_mask: Bool[Tensor, "batch states"]
+    policy_mask: Bool[Tensor, "batch states"]
     value_mask: Bool[Tensor, "batch states"]
     indices: Int[Tensor, "batch"]
     importance_weights: Float[Tensor, "batch"]
@@ -55,11 +55,6 @@ class ReplayBatch:
     @property
     def stack_size(self) -> int:
         return self.frames.shape[1] - self.unroll_steps
-
-    @property
-    def policy_mask(self) -> Bool[Tensor, "batch states"]:
-        """Identify states with a real stored self-play policy target."""
-        return self.target_mask & self.policy_targets.sum(dim=-1).gt(0.0)
 
     @runtime_typed
     def normalized_root_observation(
@@ -209,11 +204,9 @@ class ReplayBatch:
     ]:
         """Return masked policy and n-step value losses for one state."""
         policy_target = self.policy_targets[:, offset]
-        has_policy = policy_target.sum(dim=-1) > 0.0
-        policy_mask = self.target_mask[:, offset] & has_policy
         policy_loss = self._policy_cross_entropy(
             policy_logits, policy_target
-        ) * policy_mask.to(policy_logits.dtype)
+        ) * self.policy_mask[:, offset].to(policy_logits.dtype)
 
         value_loss = self._scalar_loss(
             value_logits,
@@ -335,7 +328,7 @@ class ReplayBatch:
         updates: dict[str, Tensor | None] = {
             "frames": self.frames.to(device),
             "policy_targets": self.policy_targets.to(device),
-            "target_mask": self.target_mask.to(device),
+            "policy_mask": self.policy_mask.to(device),
             "value_targets": self.value_targets.to(device),
         }
         for name in (

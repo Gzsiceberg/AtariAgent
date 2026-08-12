@@ -65,7 +65,7 @@ def make_batch(args: argparse.Namespace) -> ReplayBatch:
         ),
         value_targets=torch.zeros(batch_size, states),
         action_mask=torch.ones(batch_size, unroll_steps, dtype=torch.bool),
-        target_mask=torch.ones(batch_size, states, dtype=torch.bool),
+        policy_mask=torch.ones(batch_size, states, dtype=torch.bool),
         value_mask=torch.ones(batch_size, states, dtype=torch.bool),
         indices=torch.arange(batch_size),
         importance_weights=torch.ones(batch_size),

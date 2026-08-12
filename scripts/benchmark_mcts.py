@@ -76,7 +76,7 @@ def make_batch(
             dtype=torch.bool,
             device=device,
         ),
-        target_mask=torch.ones(
+        policy_mask=torch.ones(
             batch_size,
             states,
             dtype=torch.bool,

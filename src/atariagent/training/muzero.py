@@ -327,6 +327,8 @@ class MuZeroTrainer:
         target_shape = (batch.batch_size, self.unroll_steps + 1)
         if batch.policy_targets.shape[:2] != target_shape:
             raise ValueError("policy_targets has an invalid shape")
+        if batch.policy_mask.shape != target_shape:
+            raise ValueError("policy_mask has an invalid shape")
         if batch.value_targets.shape != target_shape:
             raise ValueError("value_targets has an invalid shape")
         if batch.value_mask.shape != target_shape:

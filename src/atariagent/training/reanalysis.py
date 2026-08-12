@@ -459,7 +459,7 @@ class ReanalysisPipeline:
                 batch,
                 value_targets=value_targets,
                 policy_targets=policy_targets,
-                target_mask=batch.target_mask & miss_mask,
+                policy_mask=batch.policy_mask & miss_mask,
                 value_bootstrap_mask=bootstrap_mask,
             ),
             cache_misses,
