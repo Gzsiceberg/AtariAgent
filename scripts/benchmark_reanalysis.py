@@ -53,7 +53,6 @@ def synthetic_batch(batch_size: int) -> ReplayBatch:
         ),
         rewards=torch.zeros(batch_size, 1),
         policy_targets=torch.full((batch_size, 2, 3), 1.0 / 3.0),
-        root_values=torch.zeros(batch_size, 2),
         value_targets=torch.zeros(batch_size, 2),
         action_mask=torch.ones(batch_size, 1, dtype=torch.bool),
         target_mask=torch.ones(batch_size, 2, dtype=torch.bool),

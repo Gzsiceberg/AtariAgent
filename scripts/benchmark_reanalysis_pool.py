@@ -63,7 +63,6 @@ def make_batch(args: argparse.Namespace) -> ReplayBatch:
             (batch_size, states, args.action_space_size),
             1.0 / args.action_space_size,
         ),
-        root_values=torch.zeros(batch_size, states),
         value_targets=torch.zeros(batch_size, states),
         action_mask=torch.ones(batch_size, unroll_steps, dtype=torch.bool),
         target_mask=torch.ones(batch_size, states, dtype=torch.bool),

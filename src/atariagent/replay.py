@@ -355,7 +355,6 @@ class FIFOReplayBuffer:
                 (batch_size, states, self._action_space_size),
                 np.dtype(np.float32),
             ),
-            "root_values": ((batch_size, states), np.dtype(np.float32)),
             "value_targets": ((batch_size, states), np.dtype(np.float32)),
             "action_mask": ((batch_size, unroll_steps), np.dtype(np.bool_)),
             "target_mask": ((batch_size, states), np.dtype(np.bool_)),
@@ -420,7 +419,6 @@ class FIFOReplayBuffer:
             actions=torch.from_numpy(arrays["actions"]),
             rewards=torch.from_numpy(arrays["rewards"]),
             policy_targets=torch.from_numpy(arrays["policy_targets"]),
-            root_values=torch.from_numpy(arrays["root_values"]),
             value_targets=torch.from_numpy(arrays["value_targets"]),
             action_mask=torch.from_numpy(arrays["action_mask"]),
             target_mask=torch.from_numpy(arrays["target_mask"]),
@@ -485,7 +483,6 @@ class FIFOReplayBuffer:
         actions = arrays["actions"]
         rewards = arrays["rewards"]
         policy_targets = arrays["policy_targets"]
-        root_values = arrays["root_values"]
         value_targets = arrays["value_targets"]
         action_mask = arrays["action_mask"]
         target_mask = arrays["target_mask"]
@@ -498,7 +495,6 @@ class FIFOReplayBuffer:
             actions,
             rewards,
             policy_targets,
-            root_values,
             value_targets,
             action_mask,
             target_mask,
@@ -532,7 +528,6 @@ class FIFOReplayBuffer:
             terminal_target_offsets: set[int] = set()
             self._set_stored_target_array(
                 policy_targets,
-                root_values,
                 target_mask,
                 batch_index=batch_index,
                 target_offset=0,
@@ -558,7 +553,6 @@ class FIFOReplayBuffer:
                     target_locations[target_offset] = (block, position)
                     self._set_stored_target_array(
                         policy_targets,
-                        root_values,
                         target_mask,
                         batch_index=batch_index,
                         target_offset=target_offset,
@@ -582,7 +576,6 @@ class FIFOReplayBuffer:
                 target_locations[target_offset] = (block, position)
                 self._set_stored_target_array(
                     policy_targets,
-                    root_values,
                     target_mask,
                     batch_index=batch_index,
                     target_offset=target_offset,
@@ -642,7 +635,6 @@ class FIFOReplayBuffer:
     @staticmethod
     def _set_stored_target_array(
         policy_targets: np.ndarray,
-        root_values: np.ndarray,
         target_mask: np.ndarray,
         *,
         batch_index: int,
@@ -655,7 +647,6 @@ class FIFOReplayBuffer:
         policy_targets[batch_index, target_offset] = (
             visit_counts / visit_counts.sum()
         )
-        root_values[batch_index, target_offset] = search_result.root_value
         target_mask[batch_index, target_offset] = True
 
     def _n_step_value_target(

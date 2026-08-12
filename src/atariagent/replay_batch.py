@@ -31,7 +31,6 @@ class ReplayBatch:
     actions: Int[Tensor, "batch unroll 1"]
     rewards: Float[Tensor, "batch unroll"]
     policy_targets: Float[Tensor, "batch states actions"]
-    root_values: Float[Tensor, "batch states"]
     value_targets: Float[Tensor, "batch states"]
     action_mask: Bool[Tensor, "batch unroll"]
     target_mask: Bool[Tensor, "batch states"]

@@ -69,7 +69,6 @@ def make_batch(
             1.0 / action_space_size,
             device=device,
         ),
-        root_values=torch.zeros(batch_size, states, device=device),
         value_targets=torch.zeros(batch_size, states, device=device),
         action_mask=torch.ones(
             batch_size,

@@ -79,7 +79,6 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.actions.dtype == torch.long
     assert batch.rewards.shape == (3, 5)
     assert batch.policy_targets.shape == (3, 6, 2)
-    assert batch.root_values.shape == (3, 6)
     assert batch.value_targets.shape == (3, 6)
     assert batch.action_mask.dtype == torch.bool
     assert batch.target_mask.dtype == torch.bool
@@ -109,7 +108,6 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
         batch.target_mask[final_sample],
         torch.tensor([True, True, False, False, False, False]),
     )
-    assert batch.root_values[final_sample, 1] == 0.0
     assert batch.value_targets[final_sample, 0] == 3.0
     assert batch.value_targets[final_sample, 1] == 0.0
     assert torch.all(batch.value_mask[final_sample, :2])
@@ -231,7 +229,6 @@ def test_root_normalization_exactly_matches_full_root_slice(
         actions=torch.zeros(batch_size, unroll_steps, 1, dtype=torch.long),
         rewards=torch.zeros(batch_size, unroll_steps),
         policy_targets=torch.zeros(batch_size, states, 2),
-        root_values=torch.zeros(batch_size, states),
         value_targets=torch.zeros(batch_size, states),
         action_mask=torch.ones(batch_size, unroll_steps, dtype=torch.bool),
         target_mask=torch.ones(batch_size, states, dtype=torch.bool),
@@ -271,11 +268,6 @@ def test_replay_unroll_continues_across_nonterminal_blocks() -> None:
         batch.target_mask[crossing_sample],
         torch.tensor([True, True, True, True]),
     )
-    torch.testing.assert_close(
-        batch.root_values[crossing_sample],
-        torch.tensor([1.0, 2.0, 3.0, 4.0]),
-    )
-
     value_batch = replay.sample(
         batch_size=5,
         unroll_steps=3,
