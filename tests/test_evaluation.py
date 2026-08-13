@@ -42,12 +42,42 @@ class GreedyAgent:
         return SimpleNamespace(actions=(1,))
 
 
+class VariableLengthEnvironment:
+    def __init__(self) -> None:
+        self.remaining_steps = 0
+        self.closed = False
+
+    def reset(self, *, seed=None):
+        self.remaining_steps = int(seed) % 3 + 1
+        return [seed], {}
+
+    def step(self, action):
+        assert action == 1
+        self.remaining_steps -= 1
+        return [0], 1.0, self.remaining_steps == 0, False, {}
+
+    def close(self):
+        self.closed = True
+
+
+class BatchedGreedyAgent:
+    def __init__(self) -> None:
+        self.mcts = SimpleNamespace(rng=random.Random(123))
+        self.batch_sizes: list[int] = []
+
+    def act(self, observations, **kwargs):
+        self.batch_sizes.append(len(observations))
+        return SimpleNamespace(actions=(1,) * len(observations))
+
+
 def test_evaluate_agent_reports_episode_reward_statistics() -> None:
     environment = OneStepEnvironment()
     agent = GreedyAgent()
     rng_state = agent.mcts.rng.getstate()
 
-    stats = evaluate_agent(agent, lambda: environment, episodes=3, seed=1)
+    stats = evaluate_agent(
+        agent, lambda: environment, episodes=3, num_envs=1, seed=1
+    )
 
     assert stats.rewards == (1.0, 2.0, 3.0)
     assert stats.mean == pytest.approx(2.0)
@@ -55,6 +85,29 @@ def test_evaluate_agent_reports_episode_reward_statistics() -> None:
     assert stats.std == pytest.approx(0.81649658)
     assert environment.closed
     assert agent.mcts.rng.getstate() == rng_state
+
+
+def test_evaluate_agent_batches_parallel_environments() -> None:
+    environments: list[VariableLengthEnvironment] = []
+
+    def factory() -> VariableLengthEnvironment:
+        environment = VariableLengthEnvironment()
+        environments.append(environment)
+        return environment
+
+    agent = BatchedGreedyAgent()
+    stats = evaluate_agent(agent, factory, episodes=5, num_envs=2, seed=0)
+
+    assert stats.rewards == (1.0, 2.0, 3.0, 1.0, 2.0)
+    assert len(environments) == 2
+    assert all(environment.closed for environment in environments)
+    assert max(agent.batch_sizes) == 2
+    assert agent.batch_sizes[-1] == 1
+
+
+def test_evaluate_agent_rejects_invalid_parallelism() -> None:
+    with pytest.raises(ValueError, match="num_envs"):
+        evaluate_agent(GreedyAgent(), OneStepEnvironment, episodes=1, num_envs=0)
 
 
 def test_evaluation_history_writes_json_and_plot(tmp_path) -> None:

@@ -105,6 +105,7 @@ class EvaluationConfig:
 
     enabled: bool = True
     episodes: int = 10
+    num_envs: int = 4
     data_path: str = "evaluations/muzero_evaluations.json"
     plot_path: str = "evaluations/muzero_evaluation.png"
 

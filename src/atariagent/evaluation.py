@@ -79,50 +79,104 @@ def evaluate_agent(
     environment_factory: Callable[[], Environment],
     *,
     episodes: int,
+    num_envs: int = 16,
     seed: int = 0,
     print_episode_results: bool = False,
 ) -> EvaluationStats:
-    """Evaluate a greedy, noise-free policy and return raw episode scores."""
+    """Evaluate a greedy policy, batching inference across parallel games.
+
+    Environments that finish early are immediately assigned the next episode,
+    so up to ``num_envs`` games remain active until all episodes are complete.
+    Returned rewards retain episode/seed order rather than completion order.
+    """
+    if isinstance(episodes, bool) or not isinstance(episodes, int):
+        raise TypeError("episodes must be an integer")
     if episodes <= 0:
         raise ValueError("episodes must be positive")
+    if isinstance(num_envs, bool) or not isinstance(num_envs, int):
+        raise TypeError("num_envs must be an integer")
+    if num_envs <= 0:
+        raise ValueError("num_envs must be positive")
 
-    rewards: list[float] = []
-    environment: Environment | None = None
+    rewards = [0.0] * episodes
+    environments: list[Environment] = []
+    created_environments: list[Environment] = []
     mcts_rng = getattr(getattr(agent, "mcts", None), "rng", None)
     rng_state = mcts_rng.getstate() if mcts_rng is not None else None
     if mcts_rng is not None:
         mcts_rng.seed(seed)
     try:
-        environment = environment_factory()
+        active_count = min(num_envs, episodes)
+        for _ in range(active_count):
+            created_environments.append(environment_factory())
+        environments = created_environments.copy()
+        observations = []
+        episode_indices = list(range(active_count))
+        episode_rewards = [0.0] * active_count
+        for environment, episode in zip(
+            environments, episode_indices, strict=True
+        ):
+            observation, _ = environment.reset(seed=seed + episode)
+            observations.append(observation)
+
+        next_episode = active_count
         with tqdm(
-            range(episodes),
+            total=episodes,
             desc="Evaluation",
             unit="episode",
             dynamic_ncols=True,
         ) as progress:
-            for episode in progress:
-                observation, _ = environment.reset(seed=seed + episode)
-                episode_reward = 0.0
-                terminated = truncated = False
-                while not (terminated or truncated):
-                    output = agent.act(
-                        (observation,),
-                        add_exploration_noise=False,
-                        temperature=0.0,
+            while environments:
+                output = agent.act(
+                    observations,
+                    add_exploration_noise=False,
+                    temperature=0.0,
+                )
+                if len(output.actions) != len(environments):
+                    raise ValueError(
+                        "agent returned a different number of actions than "
+                        "active evaluation environments"
                     )
+
+                next_environments: list[Environment] = []
+                next_observations = []
+                next_episode_indices: list[int] = []
+                next_episode_rewards: list[float] = []
+                for index, environment in enumerate(environments):
                     observation, reward, terminated, truncated, _ = environment.step(
-                        output.actions[0]
+                        output.actions[index]
                     )
-                    episode_reward += float(reward)
-                rewards.append(episode_reward)
-                progress.set_postfix(reward=f"{episode_reward:.2f}", refresh=False)
-                if print_episode_results:
-                    progress.write(
-                        f"Episode {episode + 1}/{episodes}: "
-                        f"reward={episode_reward:.3f}"
-                    )
+                    episode_reward = episode_rewards[index] + float(reward)
+                    episode = episode_indices[index]
+                    if terminated or truncated:
+                        rewards[episode] = episode_reward
+                        progress.update()
+                        progress.set_postfix(
+                            reward=f"{episode_reward:.2f}", refresh=False
+                        )
+                        if print_episode_results:
+                            progress.write(
+                                f"Episode {episode + 1}/{episodes}: "
+                                f"reward={episode_reward:.3f}"
+                            )
+                        if next_episode >= episodes:
+                            continue
+                        episode = next_episode
+                        next_episode += 1
+                        observation, _ = environment.reset(seed=seed + episode)
+                        episode_reward = 0.0
+
+                    next_environments.append(environment)
+                    next_observations.append(observation)
+                    next_episode_indices.append(episode)
+                    next_episode_rewards.append(episode_reward)
+
+                environments = next_environments
+                observations = next_observations
+                episode_indices = next_episode_indices
+                episode_rewards = next_episode_rewards
     finally:
-        if environment is not None:
+        for environment in created_environments:
             environment.close()
         if mcts_rng is not None:
             mcts_rng.setstate(rng_state)

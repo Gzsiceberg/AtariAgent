@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="number of episodes (default: checkpoint evaluation setting or 10)",
     )
+    parser.add_argument(
+        "--num-envs",
+        type=int,
+        default=None,
+        help="parallel environments (default: checkpoint setting or 4)",
+    )
     parser.add_argument("--seed", type=int, default=0, help="first episode seed")
     parser.add_argument(
         "--device",
@@ -70,6 +76,8 @@ def main() -> int:
         raise SystemExit(f"checkpoint not found: {checkpoint_path}")
     if args.episodes is not None and args.episodes <= 0:
         raise SystemExit("--episodes must be positive")
+    if args.num_envs is not None and args.num_envs <= 0:
+        raise SystemExit("--num-envs must be positive")
 
     device = resolve_device(args.device)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
@@ -79,6 +87,7 @@ def main() -> int:
     if not isinstance(evaluation_config, Mapping):
         evaluation_config = {}
     episodes = args.episodes or int(evaluation_config.get("episodes", 10))
+    num_envs = args.num_envs or int(evaluation_config.get("num_envs", 4))
 
     def environment_factory() -> Environment:
         return make_atari_environment(
@@ -106,12 +115,14 @@ def main() -> int:
         agent,
         environment_factory,
         episodes=episodes,
+        num_envs=num_envs,
         seed=args.seed,
         print_episode_results=True,
     )
 
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Episodes:   {episodes}")
+    print(f"Envs:       {min(num_envs, episodes)}")
     print(f"Mean:       {stats.mean:.3f}")
     print(f"Median:     {stats.median:.3f}")
     print(f"Std:        {stats.std:.3f}")

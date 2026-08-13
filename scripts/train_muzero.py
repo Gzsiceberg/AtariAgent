@@ -193,6 +193,8 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("checkpoint.keep_representative must be positive")
     if config.evaluation.enabled and config.evaluation.episodes <= 0:
         raise ValueError("evaluation.episodes must be positive")
+    if config.evaluation.enabled and config.evaluation.num_envs <= 0:
+        raise ValueError("evaluation.num_envs must be positive")
     if config.self_play.num_envs <= 0:
         raise ValueError("self_play.num_envs must be positive")
     if config.self_play.total_transitions <= 0:
@@ -385,6 +387,7 @@ def main(config: TrainMuZeroConfig) -> None:
                 agent,
                 lambda: create_evaluation_environment(config),
                 episodes=config.evaluation.episodes,
+                num_envs=config.evaluation.num_envs,
                 seed=config.seed,
             )
             evaluation_records.append(
