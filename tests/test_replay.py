@@ -485,6 +485,31 @@ def test_prioritized_replay_samples_and_updates_efficientzero_priorities() -> No
     assert counts[2] > counts[1] > counts[0]
 
 
+def test_replay_sample_batch_applies_configured_priority_beta_schedule() -> None:
+    replay = FIFOReplayBuffer(
+        max_transitions=10,
+        unroll_steps=1,
+        td_steps=1,
+        priority_beta_initial=0.4,
+        priority_beta_final=1.0,
+    )
+    replay.add(make_trajectory(3, terminated=True))
+
+    batch, beta = replay.sample_batch(
+        2,
+        trained_steps=60_000,
+        training_steps=120_000,
+        include_value_bootstraps=False,
+        pin_memory=False,
+    )
+
+    assert beta == pytest.approx(0.7)
+    assert batch.value_bootstrap_frames is None
+    assert replay.priority_beta(0, 120_000) == pytest.approx(0.4)
+    assert replay.priority_beta(120_000, 120_000) == pytest.approx(1.0)
+    assert replay.priority_beta(130_000, 120_000) == pytest.approx(1.0)
+
+
 def test_new_replay_transitions_receive_current_max_priority() -> None:
     replay = FIFOReplayBuffer(max_transitions=10)
     replay.add(make_trajectory(2, terminated=True))
@@ -525,6 +550,10 @@ def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
         ("discount", -0.1, ValueError),
         ("discount", 1.1, ValueError),
         ("discount", float("nan"), ValueError),
+        ("priority_beta_initial", -0.1, ValueError),
+        ("priority_beta_initial", 1.1, ValueError),
+        ("priority_beta_final", 1.1, ValueError),
+        ("priority_beta_final", float("nan"), ValueError),
     ],
 )
 def test_replay_validates_fixed_target_configuration(

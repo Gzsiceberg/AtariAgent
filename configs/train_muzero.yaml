@@ -53,6 +53,11 @@ training:
   reanalysis_start_step: 1000
   # Hard limit for individually queued single-actor reanalysis requests.
   reanalysis_prefetch_batches: 2
+  # Bound threaded sampling, reanalysis, H2D transfer, and ready GPU batches.
+  batch_max_in_flight: 3
+  # Keep at most two transferred GPU batches waiting ahead of the learner.
+  batch_ready_prefetch: 2
+  batch_worker_timeout_seconds: 600.0
   reanalysis_timeout_seconds: 600.0
   # Accept at most one target-copy interval of queued target staleness.
   reanalysis_max_weight_lag: 200

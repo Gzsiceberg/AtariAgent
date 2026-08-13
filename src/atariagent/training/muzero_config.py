@@ -60,6 +60,9 @@ class TrainingConfig:
     cache_reanalyzed_targets: bool = True
     reanalysis_start_step: int = 1_000
     reanalysis_prefetch_batches: int = 2
+    batch_max_in_flight: int = 3
+    batch_ready_prefetch: int = 2
+    batch_worker_timeout_seconds: float = 600.0
     reanalysis_timeout_seconds: float = 600.0
     reanalysis_max_weight_lag: int = 200
     reanalysis_actor_num_gpus: float = 0.25
@@ -143,23 +146,6 @@ def next_collection_vector_steps(
     return min(max_vector_steps, remaining // num_envs)
 
 
-def linear_priority_beta(
-    trained_steps: int,
-    training_steps: int,
-    initial_beta: float,
-    final_beta: float,
-) -> float:
-    """Linearly anneal the prioritized-replay importance exponent."""
-    if training_steps <= 0:
-        raise ValueError("training_steps must be positive")
-    if trained_steps < 0:
-        raise ValueError("trained_steps must be non-negative")
-    if not 0.0 <= initial_beta <= final_beta <= 1.0:
-        raise ValueError("priority betas must satisfy 0 <= initial <= final <= 1")
-    fraction = min(trained_steps / training_steps, 1.0)
-    return initial_beta + fraction * (final_beta - initial_beta)
-
-
 def visit_softmax_temperature(trained_steps: int, training_steps: int) -> float:
     """Return EfficientZero's three-stage self-play temperature."""
     if training_steps <= 0:
@@ -186,7 +172,6 @@ __all__ = [
     "EnvironmentConfig",
     "EvaluationConfig",
     "LossConfig",
-    "linear_priority_beta",
     "next_collection_vector_steps",
     "ReplayConfig",
     "SelfPlayConfig",

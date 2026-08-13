@@ -2,7 +2,6 @@ import pytest
 
 from atariagent.training.muzero_config import (
     TrainingConfig,
-    linear_priority_beta,
     next_collection_vector_steps,
     visit_softmax_temperature,
 )
@@ -15,6 +14,9 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.cache_reanalyzed_targets
     assert config.reanalysis_start_step == 1_000
     assert config.reanalysis_prefetch_batches == 2
+    assert config.batch_max_in_flight == 3
+    assert config.batch_ready_prefetch == 2
+    assert config.batch_worker_timeout_seconds == pytest.approx(600.0)
     assert config.reanalysis_timeout_seconds == pytest.approx(600.0)
     assert config.reanalysis_max_weight_lag == 200
     assert config.reanalysis_actor_num_gpus == pytest.approx(0.25)
@@ -34,13 +36,6 @@ def test_collection_steps_stop_at_exact_transition_budget() -> None:
 
     assert collected == 100_000
     assert next_collection_vector_steps(100_000, 100_000, 4, 100) == 0
-
-
-def test_priority_beta_uses_efficientzero_schedule() -> None:
-    assert linear_priority_beta(0, 120_000, 0.4, 1.0) == pytest.approx(0.4)
-    assert linear_priority_beta(60_000, 120_000, 0.4, 1.0) == pytest.approx(0.7)
-    assert linear_priority_beta(120_000, 120_000, 0.4, 1.0) == pytest.approx(1.0)
-    assert linear_priority_beta(130_000, 120_000, 0.4, 1.0) == pytest.approx(1.0)
 
 
 def test_visit_temperature_uses_efficientzero_schedule() -> None:

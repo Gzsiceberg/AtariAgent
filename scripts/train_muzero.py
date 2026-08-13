@@ -22,7 +22,6 @@ from atariagent import (
     EpisodeRewardTracker,
     FIFOReplayBuffer,
     GameTrajectory,
-    ReplayBatch,
     SelfPlayWorker,
 )
 from atariagent.evaluation import (
@@ -35,7 +34,9 @@ from atariagent.evaluation import (
 from atariagent.search import MCTS, MCTSConfig
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
+    BatchWorker,
     MuZeroTrainer,
+    ReadyBatch,
     ReanalysisPipeline,
     create_reanalysis_actor,
     initialize_local_ray,
@@ -46,7 +47,6 @@ from atariagent.training import (
 from atariagent.typecheck import set_runtime_typechecking
 from atariagent.training.muzero_config import (
     TrainMuZeroConfig,
-    linear_priority_beta,
     next_collection_vector_steps,
     register_train_muzero_config,
     visit_softmax_temperature,
@@ -177,6 +177,19 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("reanalysis_actor_num_threads must be positive")
     if config.training.reanalysis_prefetch_batches <= 0:
         raise ValueError("reanalysis_prefetch_batches must be positive")
+    if config.training.batch_max_in_flight <= 0:
+        raise ValueError("batch_max_in_flight must be positive")
+    if config.training.batch_ready_prefetch <= 0:
+        raise ValueError("batch_ready_prefetch must be positive")
+    if (
+        config.training.batch_ready_prefetch
+        > config.training.batch_max_in_flight
+    ):
+        raise ValueError(
+            "batch_ready_prefetch must not exceed batch_max_in_flight"
+        )
+    if config.training.batch_worker_timeout_seconds <= 0.0:
+        raise ValueError("batch_worker_timeout_seconds must be positive")
     if config.training.precision not in ("fp32", "bf16"):
         raise ValueError("training.precision must be fp32 or bf16")
     if config.checkpoint.every < 0:
@@ -204,6 +217,7 @@ def main(config: TrainMuZeroConfig) -> None:
     device = resolve_device(config.training.device)
     environments: list[Environment] = []
     reanalysis_pipeline: ReanalysisPipeline | None = None
+    batch_worker: BatchWorker | None = None
     owns_ray = False
 
     try:
@@ -265,6 +279,8 @@ def main(config: TrainMuZeroConfig) -> None:
             discount=discount,
             seed=config.seed,
             priority_alpha=config.replay.priority_alpha,
+            priority_beta_initial=config.replay.priority_beta_initial,
+            priority_beta_final=config.replay.priority_beta_final,
         )
         target_state = make_target_state(
             agent.representation_network,
@@ -401,39 +417,24 @@ def main(config: TrainMuZeroConfig) -> None:
                 f"std={stats.std:.2f}[/dim]"
             )
 
-        def sample_batch(
-            sample_step: int,
-            *,
-            include_value_bootstraps: bool,
-        ) -> tuple[ReplayBatch, float]:
-            priority_beta = linear_priority_beta(
-                sample_step,
-                total_updates,
-                config.replay.priority_beta_initial,
-                config.replay.priority_beta_final,
-            )
-            return (
-                replay.sample(
-                    config.training.batch_size,
-                    priority_beta=priority_beta,
-                    include_value_bootstraps=include_value_bootstraps,
-                    pin_memory=True,
-                ),
-                priority_beta,
-            )
+        batch_worker = BatchWorker(
+            replay,
+            batch_size=config.training.batch_size,
+            training_steps=total_updates,
+            device=device,
+            reanalysis_pipeline=reanalysis_pipeline,
+            reanalysis_start_step=config.training.reanalysis_start_step,
+            max_in_flight=config.training.batch_max_in_flight,
+            ready_prefetch=config.training.batch_ready_prefetch,
+            timeout_seconds=config.training.batch_worker_timeout_seconds,
+        )
 
-        def apply_gpu_update(
-            batch: ReplayBatch,
-            priority_beta: float,
-            *,
-            queue_wait_ms: float | None = None,
-            actor_duration_ms: float | None = None,
-            policy_roots_requested: int = 0,
-            policy_roots_searched: int = 0,
-        ) -> None:
+        def apply_gpu_update(ready: ReadyBatch) -> None:
             nonlocal update, target_state, target_version
-            metrics = trainer.train_step(batch)
-            replay.update_priorities(batch.indices, metrics.priorities)
+            metrics = trainer.train_step(ready.gpu_batch)
+            # Priority transfer synchronizes the learner stream, so it also
+            # makes the pinned H2D source safe to release immediately.
+            batch_worker.complete(ready, metrics.priorities)
 
             update += 1
             if update % config.training.target_update_interval == 0:
@@ -447,8 +448,7 @@ def main(config: TrainMuZeroConfig) -> None:
                     ),
                 )
                 target_version = update
-                if reanalysis_pipeline is not None:
-                    reanalysis_pipeline.publish_weights(update, target_state)
+                batch_worker.publish_weights(update, target_state)
 
             if update == 1 or update % config.training.log_every == 0:
                 progress_stats: dict[str, str] = {
@@ -458,27 +458,26 @@ def main(config: TrainMuZeroConfig) -> None:
                     # "reward": f"{metrics.reward_loss:.3f}",
                     # "grad": f"{metrics.gradient_norm:.2f}",
                     "lr": f"{metrics.learning_rate:.5f}",
-                    "beta": f"{priority_beta:.3f}",
+                    "beta": f"{ready.priority_beta:.3f}",
                 }
-                if queue_wait_ms is not None and actor_duration_ms is not None:
+                if (
+                    ready.queue_wait_ms is not None
+                    and ready.actor_duration_ms is not None
+                ):
                     progress_stats.update(
                         {
-                            "reanalyze": f"{actor_duration_ms:.0f}ms",
-                            "queue": f"{queue_wait_ms:.0f}ms"
+                            "reanalyze": f"{ready.actor_duration_ms:.0f}ms",
+                            "queue": f"{ready.queue_wait_ms:.0f}ms",
                         }
                     )
-                    if policy_roots_requested > 0:
+                    if ready.policy_roots_requested > 0:
                         progress_stats.update(
                             {
                                 "roots": (
-                                    f"{policy_roots_searched}/"
-                                    f"{policy_roots_requested}"
+                                    f"{ready.policy_roots_searched}/"
+                                    f"{ready.policy_roots_requested}"
                                 ),
-                                "cache": str(
-                                    reanalysis_pipeline.cache_size
-                                    if reanalysis_pipeline is not None
-                                    else 0
-                                ),
+                                "cache": str(batch_worker.cache_size),
                             }
                         )
                 training_progress.set_postfix(progress_stats, refresh=False)
@@ -491,116 +490,15 @@ def main(config: TrainMuZeroConfig) -> None:
             if regular_checkpoint or update in representative_updates:
                 checkpoint_and_evaluate()
 
-        def apply_update(
-            cpu_batch: ReplayBatch,
-            priority_beta: float,
-            **metrics: float | int | None,
-        ) -> None:
-            batch = cpu_batch.to(
-                device,
-                non_blocking=True,
-                keep_indices_on_cpu=True,
-            )
-            apply_gpu_update(
-                batch,
-                priority_beta,
-                **metrics,
-            )
-
-        transfer_stream = torch.cuda.Stream(device=device)
-
-        def run_direct_updates(count: int) -> None:
-            """Overlap the next pinned H2D copy with the current CUDA update."""
-            if count <= 0:
-                return
-
-            def enqueue(
-                cpu_batch: ReplayBatch,
-                priority_beta: float,
-            ) -> tuple[ReplayBatch, ReplayBatch, float, torch.cuda.Event]:
-                if not cpu_batch.frames.is_pinned():
-                    raise RuntimeError("overlapped replay batch must be pinned")
-                pinned_batch = cpu_batch
-                with torch.cuda.stream(transfer_stream):
-                    gpu_batch = pinned_batch.to(
-                        device,
-                        non_blocking=True,
-                        keep_indices_on_cpu=True,
-                    )
-                    ready = torch.cuda.Event()
-                    ready.record(transfer_stream)
-                return pinned_batch, gpu_batch, priority_beta, ready
-
-            cpu_batch, priority_beta = sample_batch(
-                update,
-                include_value_bootstraps=False,
-            )
-            current = enqueue(cpu_batch, priority_beta)
-            for offset in range(count):
-                following = None
-                if offset + 1 < count:
-                    cpu_batch, priority_beta = sample_batch(
-                        update + 1,
-                        include_value_bootstraps=False,
-                    )
-                    following = enqueue(cpu_batch, priority_beta)
-
-                pinned_batch, gpu_batch, current_beta, ready = current
-                training_stream = torch.cuda.current_stream(device)
-                training_stream.wait_event(ready)
-                gpu_batch.record_stream(training_stream)
-                # Retain pinned source storage until the update's priority copy
-                # synchronizes the training stream, which also completes H2D.
-                apply_gpu_update(gpu_batch, current_beta)
-                del pinned_batch
-                if following is not None:
-                    current = following
-
         def run_updates(count: int) -> None:
             if count <= 0:
                 return
-            if not target_reanalysis_enabled:
-                run_direct_updates(count)
-                return
-
-            assert reanalysis_pipeline is not None
-            direct_updates = min(
-                count,
-                max(0, config.training.reanalysis_start_step - update),
-            )
-            run_direct_updates(direct_updates)
-
-            async_updates = count - direct_updates
-            if async_updates <= 0:
-                return
-            async_start_step = update
-            submitted = 0
-            completed = 0
-            priority_betas: dict[int, float] = {}
-            while completed < async_updates:
-                while (
-                    submitted < async_updates
-                    and reanalysis_pipeline.needs_prefetch
-                ):
-                    cpu_batch, priority_beta = sample_batch(
-                        async_start_step + submitted,
-                        include_value_bootstraps=True,
-                    )
-                    request_id = reanalysis_pipeline.submit(cpu_batch)
-                    priority_betas[request_id] = priority_beta
-                    submitted += 1
-
-                ready = reanalysis_pipeline.wait_next()
-                priority_beta = priority_betas.pop(ready.request_id)
-                apply_update(
-                    ready.batch,
-                    priority_beta,
-                    queue_wait_ms=ready.queue_wait_ms,
-                    actor_duration_ms=ready.actor_duration_ms,
-                    policy_roots_requested=ready.policy_roots_requested,
-                    policy_roots_searched=ready.policy_roots_searched,
-                )
-                completed += 1
+            batch_worker.start(update, count)
+            for _ in range(count):
+                ready = batch_worker.next_ready()
+                ready.wait_for_current_stream(device)
+                apply_gpu_update(ready)
+            batch_worker.wait_idle()
 
         minimum_replay_size = max(
             config.replay.warmup_transitions,
@@ -763,6 +661,11 @@ def main(config: TrainMuZeroConfig) -> None:
             environment.close()
         raise
     finally:
+        if batch_worker is not None:
+            try:
+                batch_worker.close()
+            except Exception:
+                pass
         if reanalysis_pipeline is not None:
             try:
                 reanalysis_pipeline.close()

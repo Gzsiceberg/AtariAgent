@@ -70,6 +70,8 @@ class FIFOReplayBuffer:
         discount: float = 0.997,
         seed: int = 0,
         priority_alpha: float = 0.6,
+        priority_beta_initial: float = 0.4,
+        priority_beta_final: float = 1.0,
     ) -> None:
         if isinstance(max_transitions, bool) or not isinstance(
             max_transitions, int
@@ -89,12 +91,22 @@ class FIFOReplayBuffer:
             raise ValueError("discount must be finite and in [0, 1]")
         if not np.isfinite(priority_alpha) or priority_alpha < 0.0:
             raise ValueError("priority_alpha must be finite and non-negative")
+        if not (
+            np.isfinite(priority_beta_initial)
+            and np.isfinite(priority_beta_final)
+            and 0.0 <= priority_beta_initial <= priority_beta_final <= 1.0
+        ):
+            raise ValueError(
+                "priority betas must be finite and satisfy 0 <= initial <= final <= 1"
+            )
 
         self.max_transitions = max_transitions
         self._unroll_steps = unroll_steps
         self._td_steps = td_steps
         self._discount = float(discount)
         self.priority_alpha = float(priority_alpha)
+        self.priority_beta_initial = float(priority_beta_initial)
+        self.priority_beta_final = float(priority_beta_final)
         self._reward_discounts = self.discount ** np.arange(
             self.td_steps, dtype=np.float64
         )
@@ -231,6 +243,46 @@ class FIFOReplayBuffer:
             added_transitions=added_transitions,
             evicted_trajectories=evicted_trajectories,
             evicted_transitions=evicted_transitions,
+        )
+
+    def priority_beta(
+        self,
+        trained_steps: int,
+        training_steps: int,
+    ) -> float:
+        """Return the linearly annealed importance-sampling exponent."""
+        if isinstance(trained_steps, bool) or not isinstance(trained_steps, int):
+            raise TypeError("trained_steps must be an integer")
+        if isinstance(training_steps, bool) or not isinstance(training_steps, int):
+            raise TypeError("training_steps must be an integer")
+        if trained_steps < 0:
+            raise ValueError("trained_steps must be non-negative")
+        if training_steps <= 0:
+            raise ValueError("training_steps must be positive")
+        fraction = min(trained_steps / training_steps, 1.0)
+        return self.priority_beta_initial + fraction * (
+            self.priority_beta_final - self.priority_beta_initial
+        )
+
+    def sample_batch(
+        self,
+        batch_size: int,
+        *,
+        trained_steps: int,
+        training_steps: int,
+        include_value_bootstraps: bool,
+        pin_memory: bool = True,
+    ) -> tuple[ReplayBatch, float]:
+        """Sample one learner batch with the configured beta schedule."""
+        priority_beta = self.priority_beta(trained_steps, training_steps)
+        return (
+            self.sample(
+                batch_size,
+                priority_beta=priority_beta,
+                include_value_bootstraps=include_value_bootstraps,
+                pin_memory=pin_memory,
+            ),
+            priority_beta,
         )
 
     def sample(

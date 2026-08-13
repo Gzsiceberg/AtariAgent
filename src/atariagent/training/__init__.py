@@ -1,5 +1,6 @@
 """Training utilities for AtariAgent."""
 
+from .batch_worker import BatchWorker, ReadyBatch
 from .checkpoint import (
     representative_checkpoint_path,
     representative_checkpoint_updates,
@@ -20,10 +21,12 @@ from .reanalysis import (
 from .target import ValueTargetNetwork
 
 __all__ = [
+    "BatchWorker",
     "DynamicsTrainer",
     "DynamicsTrainMetrics",
     "MuZeroTrainer",
     "MuZeroTrainMetrics",
+    "ReadyBatch",
     "ReadyReanalysis",
     "ReanalysisPipeline",
     "ReanalysisRequest",

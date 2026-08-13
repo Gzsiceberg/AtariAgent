@@ -341,6 +341,16 @@ class ReplayBatch:
             updates[name] = None if value is None else value.to(device)
         return replace(self, **updates)
 
+    def without_value_bootstraps(self) -> ReplayBatch:
+        """Drop target-reanalysis metadata that the learner does not consume."""
+        return replace(
+            self,
+            value_bootstrap_frames=None,
+            value_bootstrap_values=None,
+            value_bootstrap_discounts=None,
+            value_bootstrap_mask=None,
+        )
+
     def pin_memory(self) -> ReplayBatch:
         """Copy CPU tensors into page-locked memory for asynchronous transfer."""
         return ReplayBatch(
