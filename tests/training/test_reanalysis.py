@@ -42,7 +42,7 @@ def _pipeline(
     *,
     prefetch_batches: int = 2,
     timeout_seconds: float = 60.0,
-    max_weight_lag: int = 200,
+    target_update_interval: int = 200,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -57,7 +57,7 @@ def _pipeline(
         mcts_threads=1,
         prefetch_batches=prefetch_batches,
         timeout_seconds=timeout_seconds,
-        max_weight_lag=max_weight_lag,
+        target_update_interval=target_update_interval,
         device="cpu",
     )
     representation = RepresentationNetwork(4)
@@ -157,6 +157,9 @@ def test_native_pipeline_retains_tensor_storage_without_transport_copy() -> None
 
 
 def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
+    with pytest.raises(ValueError, match="target_update_interval"):
+        _pipeline(target_update_interval=0)
+
     with pytest.raises(ValueError, match="prefetch_batches"):
         ReanalysisPipeline(
             in_channels=4,
@@ -171,7 +174,7 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             mcts_threads=1,
             prefetch_batches=0,
             timeout_seconds=1.0,
-            max_weight_lag=0,
+            target_update_interval=200,
             device="cpu",
         )
 

@@ -129,7 +129,7 @@ class ReanalysisPipeline:
         mcts_threads: int,
         prefetch_batches: int,
         timeout_seconds: float,
-        max_weight_lag: int,
+        target_update_interval: int,
         device: torch.device | str | None = None,
     ) -> None:
         if isinstance(cache_targets, bool) is False:
@@ -146,10 +146,12 @@ class ReanalysisPipeline:
             raise ValueError("prefetch_batches must be positive")
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
             raise ValueError("timeout_seconds must be positive")
-        if isinstance(max_weight_lag, bool) or not isinstance(max_weight_lag, int):
-            raise TypeError("max_weight_lag must be an integer")
-        if max_weight_lag < 0:
-            raise ValueError("max_weight_lag must be non-negative")
+        if isinstance(target_update_interval, bool) or not isinstance(
+            target_update_interval, int
+        ):
+            raise TypeError("target_update_interval must be an integer")
+        if target_update_interval <= 0:
+            raise ValueError("target_update_interval must be positive")
         set_num_threads(mcts_threads)
 
         self.device = torch.device(
@@ -174,13 +176,13 @@ class ReanalysisPipeline:
         ).to(self.device)
         self.prefetch_batches = prefetch_batches
         self.timeout_seconds = timeout_seconds
-        self.max_weight_lag = max_weight_lag
+        self.target_update_interval = target_update_interval
         self._executor = _TargetExecutor(self.target, self.device)
         self._engine = NativeReanalysisEngine(
             self._executor,
             prefetch_batches,
             timeout_seconds,
-            max_weight_lag,
+            target_update_interval,
             cache_targets,
         )
         self._latest_target_state: TargetState | None = None

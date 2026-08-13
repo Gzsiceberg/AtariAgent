@@ -84,7 +84,7 @@ def main() -> None:
         mcts_threads=args.worker_threads,
         prefetch_batches=2,
         timeout_seconds=600.0,
-        max_weight_lag=200,
+        target_update_interval=200,
         device=device,
     )
     try:

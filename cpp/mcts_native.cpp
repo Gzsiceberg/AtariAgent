@@ -389,13 +389,13 @@ public:
         py::object target,
         int prefetch_batches,
         double timeout_seconds,
-        int max_weight_lag,
+        int target_update_interval,
         bool cache_targets
     )
         : target_(std::move(target)),
           prefetch_batches_(prefetch_batches),
           timeout_seconds_(timeout_seconds),
-          max_weight_lag_(max_weight_lag),
+          target_update_interval_(target_update_interval),
           cache_targets_(cache_targets) {
         if (prefetch_batches <= 0) {
             throw std::invalid_argument("prefetch_batches must be positive");
@@ -403,8 +403,10 @@ public:
         if (!std::isfinite(timeout_seconds) || timeout_seconds <= 0.0) {
             throw std::invalid_argument("timeout_seconds must be positive");
         }
-        if (max_weight_lag < 0) {
-            throw std::invalid_argument("max_weight_lag must be non-negative");
+        if (target_update_interval <= 0) {
+            throw std::invalid_argument(
+                "target_update_interval must be positive"
+            );
         }
         worker_ = std::thread(&NativeReanalysisEngine::run, this);
     }
@@ -514,9 +516,9 @@ public:
             std::rethrow_exception(job->error);
         }
         const auto lag = published_version_ - job->version;
-        if (lag < 0 || lag > max_weight_lag_) {
+        if (lag < 0 || lag > target_update_interval_) {
             throw std::runtime_error(
-                "reanalysis result target-weight lag exceeds limit"
+                "reanalysis result is older than one target update interval"
             );
         }
         py::dict result;
@@ -623,7 +625,7 @@ private:
     py::object target_;
     int prefetch_batches_;
     double timeout_seconds_;
-    int max_weight_lag_;
+    int target_update_interval_;
     bool cache_targets_;
     mutable std::mutex mutex_;
     std::condition_variable work_ready_;
@@ -1295,7 +1297,7 @@ PYBIND11_MODULE(_mcts_native, module) {
             py::arg("target"),
             py::arg("prefetch_batches"),
             py::arg("timeout_seconds"),
-            py::arg("max_weight_lag"),
+            py::arg("target_update_interval"),
             py::arg("cache_targets")
         )
         .def(

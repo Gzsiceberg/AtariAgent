@@ -64,7 +64,6 @@ class TrainingConfig:
     batch_ready_prefetch: int = 2
     batch_worker_timeout_seconds: float = 600.0
     reanalysis_timeout_seconds: float = 600.0
-    reanalysis_max_weight_lag: int = 200
     reanalysis_worker_num_threads: int = 4
     target_update_interval: int = 200
     discount: float = 0.997

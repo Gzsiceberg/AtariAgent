@@ -299,7 +299,9 @@ def main(config: TrainMuZeroConfig) -> None:
                     config.training.reanalysis_prefetch_batches
                 ),
                 timeout_seconds=config.training.reanalysis_timeout_seconds,
-                max_weight_lag=config.training.reanalysis_max_weight_lag,
+                target_update_interval=(
+                    config.training.target_update_interval
+                ),
                 device=device,
             )
             reanalysis_pipeline.publish_weights(

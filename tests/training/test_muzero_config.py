@@ -18,7 +18,6 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.batch_ready_prefetch == 2
     assert config.batch_worker_timeout_seconds == pytest.approx(600.0)
     assert config.reanalysis_timeout_seconds == pytest.approx(600.0)
-    assert config.reanalysis_max_weight_lag == 200
     assert config.reanalysis_worker_num_threads == 4
     assert config.target_update_interval == 200
     assert config.compile_mode == "max-autotune"

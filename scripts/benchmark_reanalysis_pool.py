@@ -79,7 +79,7 @@ def benchmark_depth(depth: int, args: argparse.Namespace, batch: ReplayBatch):
         mcts_threads=args.worker_threads,
         prefetch_batches=depth,
         timeout_seconds=600.0,
-        max_weight_lag=0,
+        target_update_interval=200,
     )
     try:
         pipeline.publish_weights(

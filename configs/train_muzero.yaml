@@ -59,12 +59,10 @@ training:
   batch_ready_prefetch: 2
   batch_worker_timeout_seconds: 600.0
   reanalysis_timeout_seconds: 600.0
-  # Accept at most one target-copy interval of queued target staleness.
-  reanalysis_max_weight_lag: 200
   # Cap native OpenMP tree traversal to avoid CPU oversubscription.
   reanalysis_worker_num_threads: 4
   # Hard-copy online representation/value weights for direct value reanalysis.
-  target_update_interval: 200
+  target_update_interval: 1000
   # Per raw frame; training and MCTS use discount ** frame_skip.
   discount: 0.997
   # EfficientZero V1 Atari optimizer and step learning-rate schedule.
