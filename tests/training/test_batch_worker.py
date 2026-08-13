@@ -157,7 +157,7 @@ class _FakeReanalysisPipeline:
             batch=batch,
             weight_version=0,
             queue_wait_ms=1.0,
-            actor_duration_ms=2.0,
+            worker_duration_ms=2.0,
             transfer_duration_ms=0.0,
             peak_memory_bytes=0,
             policy_roots_requested=4,
@@ -195,7 +195,7 @@ def test_worker_handles_direct_then_reanalysis_batches_in_order() -> None:
             ready = worker.next_ready()
             steps.append(ready.sample_step)
             if ready.sample_step >= 2:
-                assert ready.actor_duration_ms == pytest.approx(2.0)
+                assert ready.worker_duration_ms == pytest.approx(2.0)
                 assert ready.gpu_batch.value_bootstrap_frames is None
             worker.complete(ready, torch.ones(2))
         worker.wait_idle()

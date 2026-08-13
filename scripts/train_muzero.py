@@ -11,7 +11,6 @@ import sys
 
 import hydra
 import numpy as np
-import ray
 from omegaconf import OmegaConf
 from rich import print as rich_print
 import torch
@@ -38,8 +37,6 @@ from atariagent.training import (
     MuZeroTrainer,
     ReadyBatch,
     ReanalysisPipeline,
-    create_reanalysis_actor,
-    initialize_local_ray,
     make_target_state,
     representative_checkpoint_path,
     representative_checkpoint_updates,
@@ -173,8 +170,8 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("policy_reanalysis_chunk_size must be positive")
     if not isinstance(config.training.cache_reanalyzed_targets, bool):
         raise TypeError("cache_reanalyzed_targets must be a boolean")
-    if config.training.reanalysis_actor_num_threads <= 0:
-        raise ValueError("reanalysis_actor_num_threads must be positive")
+    if config.training.reanalysis_worker_num_threads <= 0:
+        raise ValueError("reanalysis_worker_num_threads must be positive")
     if config.training.reanalysis_prefetch_batches <= 0:
         raise ValueError("reanalysis_prefetch_batches must be positive")
     if config.training.batch_max_in_flight <= 0:
@@ -218,16 +215,11 @@ def main(config: TrainMuZeroConfig) -> None:
     environments: list[Environment] = []
     reanalysis_pipeline: ReanalysisPipeline | None = None
     batch_worker: BatchWorker | None = None
-    owns_ray = False
 
     try:
         target_reanalysis_enabled = (
             config.training.use_target_network_reanalysis
         )
-        if target_reanalysis_enabled:
-            owns_ray = initialize_local_ray(
-                object_store_memory=config.training.ray_object_store_memory
-            )
         environments = create_environments(config)
         action_space_size = int(environments[0].action_space.n)
         if any(
@@ -290,10 +282,7 @@ def main(config: TrainMuZeroConfig) -> None:
         )
         target_version = 0
         if target_reanalysis_enabled:
-            actor = create_reanalysis_actor(
-                num_gpus=config.training.reanalysis_actor_num_gpus,
-                num_cpus=config.training.reanalysis_actor_num_threads,
-                mcts_threads=config.training.reanalysis_actor_num_threads,
+            reanalysis_pipeline = ReanalysisPipeline(
                 in_channels=config.environment.frame_stack * image_channels,
                 action_space_size=action_space_size,
                 mcts_config=agent.mcts.config,
@@ -305,14 +294,13 @@ def main(config: TrainMuZeroConfig) -> None:
                 support_min=-300,
                 support_max=300,
                 precision=config.training.precision,
-            )
-            reanalysis_pipeline = ReanalysisPipeline(
-                actor,
+                mcts_threads=config.training.reanalysis_worker_num_threads,
                 prefetch_batches=(
                     config.training.reanalysis_prefetch_batches
                 ),
                 timeout_seconds=config.training.reanalysis_timeout_seconds,
                 max_weight_lag=config.training.reanalysis_max_weight_lag,
+                device=device,
             )
             reanalysis_pipeline.publish_weights(
                 target_version,
@@ -459,11 +447,11 @@ def main(config: TrainMuZeroConfig) -> None:
                 }
                 if (
                     ready.queue_wait_ms is not None
-                    and ready.actor_duration_ms is not None
+                    and ready.worker_duration_ms is not None
                 ):
                     progress_stats.update(
                         {
-                            "reanalyze": f"{ready.actor_duration_ms:.0f}ms",
+                            "reanalyze": f"{ready.worker_duration_ms:.0f}ms",
                             "queue": f"{ready.queue_wait_ms:.0f}ms",
                         }
                     )
@@ -668,8 +656,6 @@ def main(config: TrainMuZeroConfig) -> None:
                 reanalysis_pipeline.close()
             except Exception:
                 pass
-        if owns_ray and ray.is_initialized():
-            ray.shutdown()
 
 
 if __name__ == "__main__":

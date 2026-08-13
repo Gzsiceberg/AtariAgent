@@ -14,7 +14,6 @@ dependencies = [
     "opencv-python>=5.0.0.93",
     "pygame>=2.6.1",
     "pytest>=9.1.1",
-    "ray>=2.56.1",
     "rich>=15.0.0",
     "torch>=2.13.0",
     "tqdm>=4.70.0",
@@ -32,6 +31,7 @@ dev = [
 requires = [
     "pybind11>=3.0",
     "scikit-build-core>=0.11",
+    "torch>=2.13.0",
 ]
 build-backend = "scikit_build_core.build"
 

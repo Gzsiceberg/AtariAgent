@@ -51,7 +51,7 @@ training:
   cache_reanalyzed_targets: true
   # Keep replay-stored value and policy targets for the first learner updates.
   reanalysis_start_step: 1000
-  # Hard limit for individually queued single-actor reanalysis requests.
+  # Hard limit for queued native reanalysis requests.
   reanalysis_prefetch_batches: 2
   # Bound threaded sampling, reanalysis, H2D transfer, and ready GPU batches.
   batch_max_in_flight: 3
@@ -61,12 +61,8 @@ training:
   reanalysis_timeout_seconds: 600.0
   # Accept at most one target-copy interval of queued target staleness.
   reanalysis_max_weight_lag: 200
-  # One actor shares the learner GPU; this is its Ray scheduling reservation.
-  reanalysis_actor_num_gpus: 0.25
-  # Cap each actor's OpenMP tree traversal to avoid CPU oversubscription.
-  reanalysis_actor_num_threads: 4
-  # Null lets Ray size the local /dev/shm object store automatically.
-  ray_object_store_memory: null
+  # Cap native OpenMP tree traversal to avoid CPU oversubscription.
+  reanalysis_worker_num_threads: 4
   # Hard-copy online representation/value weights for direct value reanalysis.
   target_update_interval: 200
   # Per raw frame; training and MCTS use discount ** frame_skip.

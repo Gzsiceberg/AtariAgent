@@ -31,7 +31,7 @@ class ReadyBatch:
     sample_duration_ms: float
     transfer_enqueue_ms: float
     queue_wait_ms: float | None = None
-    actor_duration_ms: float | None = None
+    worker_duration_ms: float | None = None
     policy_roots_requested: int = 0
     policy_roots_searched: int = 0
 
@@ -213,7 +213,7 @@ class BatchWorker:
         version: int,
         state: Mapping[str, Tensor],
     ) -> None:
-        """Order a target-weight update between old and new actor requests."""
+        """Order a target-weight update between old and new requests."""
         self._require_open()
         pipeline = self.reanalysis_pipeline
         if pipeline is None:
@@ -239,7 +239,7 @@ class BatchWorker:
         self._raise_failure()
 
     def close(self) -> None:
-        """Stop the producer thread. The caller still owns the Ray pipeline."""
+        """Stop the producer thread; the caller still owns reanalysis."""
         if self._closed:
             return
         self._closed = True
@@ -349,7 +349,7 @@ class BatchWorker:
                     beta,
                     sample_duration_ms=sample_ms,
                     queue_wait_ms=result.queue_wait_ms,
-                    actor_duration_ms=result.actor_duration_ms,
+                    worker_duration_ms=result.worker_duration_ms,
                     policy_roots_requested=result.policy_roots_requested,
                     policy_roots_searched=result.policy_roots_searched,
                 )
@@ -401,7 +401,7 @@ class BatchWorker:
         *,
         sample_duration_ms: float,
         queue_wait_ms: float | None = None,
-        actor_duration_ms: float | None = None,
+        worker_duration_ms: float | None = None,
         policy_roots_requested: int = 0,
         policy_roots_searched: int = 0,
     ) -> ReadyBatch:
@@ -431,7 +431,7 @@ class BatchWorker:
             sample_duration_ms=sample_duration_ms,
             transfer_enqueue_ms=(perf_counter() - started) * 1_000.0,
             queue_wait_ms=queue_wait_ms,
-            actor_duration_ms=actor_duration_ms,
+            worker_duration_ms=worker_duration_ms,
             policy_roots_requested=policy_roots_requested,
             policy_roots_searched=policy_roots_searched,
         )

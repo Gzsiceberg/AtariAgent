@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from copy import deepcopy
 import random
-from typing import Literal
+from typing import Literal, Protocol
 
 import torch
 from torch import Tensor, nn
@@ -16,6 +16,10 @@ from atariagent.search import MCTS, MCTSConfig
 
 
 Precision = Literal["fp32", "bf16"]
+
+
+class StateSource(Protocol):
+    def state_dict(self) -> dict[str, Tensor]: ...
 
 
 class ValueTargetNetwork(nn.Module):
@@ -92,9 +96,9 @@ class ValueTargetNetwork(nn.Module):
     @torch.no_grad()
     def synchronize(
         self,
-        representation: nn.Module,
-        prediction: nn.Module,
-        dynamics: nn.Module | None = None,
+        representation: nn.Module | StateSource,
+        prediction: nn.Module | StateSource,
+        dynamics: nn.Module | StateSource | None = None,
     ) -> None:
         """Hard-copy online parameters and batch-normalization buffers."""
         self.representation.load_state_dict(representation.state_dict())
