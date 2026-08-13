@@ -216,22 +216,58 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     assert worker.total_transitions == 10
 
 
-def test_worker_uses_fixed_block_size_across_run_calls() -> None:
+def test_worker_waits_for_lookahead_and_keeps_it_in_next_block() -> None:
     worker = SelfPlayWorker(
         FakeAgent(),
         environments=[FakeEnvironment(episode_length=100)],
         trajectory_length=5,
+        lookahead_steps=2,
         clip_rewards=False,
     )
 
     assert worker.run(3)[0] == ()
-    trajectories = worker.run(2)[0]
+    assert worker.run(2)[0] == ()
+    assert worker.run(1)[0] == ()
+    trajectories = worker.run(1)[0]
 
     assert len(trajectories) == 1
-    assert len(trajectories[0]) == 5
-    assert trajectories[0].block_id == 0
-    assert not trajectories[0].terminated
-    assert trajectories[0].rewards == (2.5,) * 5
+    trajectory = trajectories[0]
+    assert len(trajectory) == 5
+    assert trajectory.stored_transition_count == 7
+    assert trajectory.lookahead_steps == 2
+    assert trajectory.block_id == 0
+    assert not trajectory.terminated
+    assert trajectory.rewards == (2.5,) * 7
+
+    future = worker.flush()[0][0]
+    assert len(future) == 2
+    assert future.lookahead_steps == 0
+    assert future.block_id == 1
+    assert future.actions == trajectory.actions[-2:]
+    assert future.search_results == trajectory.search_results[-2:]
+
+
+def test_terminal_during_lookahead_finalizes_both_blocks() -> None:
+    worker = SelfPlayWorker(
+        FakeAgent(),
+        environments=[FakeEnvironment(episode_length=6, reward=2.5)],
+        trajectory_length=5,
+        lookahead_steps=2,
+        clip_rewards=False,
+    )
+
+    trajectories = worker.run(6)[0]
+
+    assert [len(trajectory) for trajectory in trajectories] == [5, 1]
+    assert [trajectory.stored_transition_count for trajectory in trajectories] == [
+        6,
+        1,
+    ]
+    assert [trajectory.lookahead_steps for trajectory in trajectories] == [1, 0]
+    assert all(trajectory.terminated for trajectory in trajectories)
+    assert not trajectories[0].full_episode_done
+    assert trajectories[1].full_episode_done
+    assert EpisodeRewardTracker().add(trajectories) == (15.0,)
 
 
 def test_episode_reward_tracker_accumulates_raw_rewards_across_blocks() -> None:
@@ -283,12 +319,14 @@ def test_worker_random_warmup_is_seeded_and_stores_uniform_policy() -> None:
         first_agent,
         environments=[FakeEnvironment(episode_length=100)],
         trajectory_length=4,
+        lookahead_steps=0,
         base_seed=7,
     )
     second_worker = SelfPlayWorker(
         second_agent,
         environments=[FakeEnvironment(episode_length=100)],
         trajectory_length=4,
+        lookahead_steps=0,
         base_seed=7,
     )
 
@@ -323,6 +361,13 @@ def test_worker_validates_steps() -> None:
         worker.run(0)
     with pytest.raises(TypeError, match="integer"):
         worker.run(1.5)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="non-negative"):
+        SelfPlayWorker(
+            FakeAgent(),
+            environments=[FakeEnvironment(10)],
+            lookahead_steps=-1,
+        )
 
 
 def test_atari_observation_conversion_flattens_frame_and_rgb_channels() -> None:

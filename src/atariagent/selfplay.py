@@ -61,11 +61,14 @@ class GameTrajectory:
     """An immutable compact block from one environment and episode.
 
     ``frames`` stores the initial frame-stack context once, followed by one
-    new processed frame per action. For stack size ``S`` and ``T`` actions,
-    its length is ``S + T``. State ``i`` is reconstructed from
-    ``frames[i : i + S]``. ``terminated`` may represent an artificial
-    episodic-life terminal, while ``full_episode_done`` is true only at the
-    full-game boundary used by evaluation scoring.
+    new processed frame per stored action. A full nonterminal block contains
+    ``trajectory_length`` sampleable transitions followed by lookahead
+    transitions copied into the next block as well. ``lookahead_steps`` tells
+    consumers how many trailing transitions are context rather than replay
+    starts. State ``i`` is reconstructed from ``frames[i : i + S]``.
+    ``terminated`` may represent an artificial episodic-life terminal, while
+    ``full_episode_done`` is true only on the block that owns the full-game
+    boundary used by evaluation scoring.
     """
 
     environment_index: int
@@ -80,9 +83,19 @@ class GameTrajectory:
     terminated: bool
     truncated: bool
     full_episode_done: bool
+    lookahead_steps: int = 0
 
     def __post_init__(self) -> None:
         transition_count = len(self.actions)
+        if isinstance(self.lookahead_steps, bool) or not isinstance(
+            self.lookahead_steps, int
+        ):
+            raise TypeError("lookahead_steps must be an integer")
+        if not 0 <= self.lookahead_steps < transition_count:
+            raise ValueError(
+                "lookahead_steps must be non-negative and leave at least one "
+                "sampleable transition"
+            )
         if self.full_episode_done and not (self.terminated or self.truncated):
             raise ValueError(
                 "a full episode can end only at a terminal or truncated state"
@@ -110,7 +123,31 @@ class GameTrajectory:
             raise ValueError("a finalized trajectory must contain a transition")
 
     def __len__(self) -> int:
+        """Return sampleable transitions, excluding trailing lookahead data."""
+        return len(self.actions) - self.lookahead_steps
+
+    @property
+    def stored_transition_count(self) -> int:
+        """Return all stored transitions, including lookahead context."""
         return len(self.actions)
+
+    def validate_lookahead(self, unroll_steps: int, td_steps: int) -> None:
+        """Ensure a complete nonterminal tail covers both replay horizons."""
+        required_steps = max(unroll_steps, td_steps)
+        if (
+            self.lookahead_steps == 0
+            or self.terminated
+            or self.truncated
+            or self.lookahead_steps >= required_steps
+        ):
+            # Terminal blocks need no bootstrap. A zero-lookahead block is an
+            # incomplete flush whose unavailable targets are masked by replay.
+            return
+        raise ValueError(
+            "trajectory lookahead_steps must be greater than or equal to "
+            f"unroll_steps and td_steps; got {self.lookahead_steps}, "
+            f"unroll_steps={unroll_steps}, td_steps={td_steps}"
+        )
 
     @property
     def target_policy(self) -> tuple[tuple[float, ...], ...]:
@@ -151,6 +188,21 @@ class _TrajectoryBuilder:
         self.rewards: list[float] = []
         self.raw_rewards: list[float] = []
         self.search_results: list[SearchResult] = []
+        self._sampleable_transitions: int | None = None
+
+    @property
+    def lookahead_steps(self) -> int:
+        if self._sampleable_transitions is None:
+            return 0
+        return len(self.actions) - self._sampleable_transitions
+
+    def freeze(self) -> None:
+        """Mark the current transitions as replay starts before adding context."""
+        if self._sampleable_transitions is not None:
+            raise RuntimeError("trajectory builder is already frozen")
+        if not self.actions:
+            raise RuntimeError("cannot freeze an empty trajectory builder")
+        self._sampleable_transitions = len(self.actions)
 
     def append(
         self,
@@ -191,6 +243,7 @@ class _TrajectoryBuilder:
             terminated=terminated,
             truncated=truncated,
             full_episode_done=full_episode_done,
+            lookahead_steps=self.lookahead_steps,
         )
 
 
@@ -286,7 +339,7 @@ class EpisodeRewardTracker:
         for trajectory in trajectories:
             episode_key = (trajectory.environment_index, trajectory.episode_id)
             episode_reward = self._partial_rewards.get(episode_key, 0.0) + sum(
-                trajectory.raw_rewards
+                trajectory.raw_rewards[: len(trajectory)]
             )
             if trajectory.full_episode_done:
                 completed_rewards.append(episode_reward)
@@ -300,10 +353,12 @@ class SelfPlayWorker:
     """Generate replay-ready trajectory blocks from persistent Atari games.
 
     ``run(steps)`` advances every environment by exactly ``steps`` transitions,
-    batching one agent call across all environments at each step. Blocks are
-    finalized at environment terminals (including configured life losses) or
-    ``trajectory_length``; partial builders persist across calls so worker
-    scheduling does not create artificial replay boundaries.
+    batching one agent call across all environments at each step. At
+    ``trajectory_length`` the block remains open for ``lookahead_steps`` more
+    transitions. Those trailing transitions are also retained as the start of
+    the next block. Environment terminals (including configured life losses)
+    finalize every open block immediately. Partial builders persist across
+    calls so worker scheduling does not create artificial replay boundaries.
     """
 
     def __init__(
@@ -319,6 +374,7 @@ class SelfPlayWorker:
         screen_size: int = 96,
         max_episode_steps: int = 3000,
         trajectory_length: int = 400,
+        lookahead_steps: int = 5,
         base_seed: int = 0,
         clip_rewards: bool = True,
         add_exploration_noise: bool = True,
@@ -336,6 +392,12 @@ class SelfPlayWorker:
             raise TypeError("trajectory_length must be an integer")
         if trajectory_length <= 0:
             raise ValueError("trajectory_length must be positive")
+        if isinstance(lookahead_steps, bool) or not isinstance(
+            lookahead_steps, int
+        ):
+            raise TypeError("lookahead_steps must be an integer")
+        if lookahead_steps < 0:
+            raise ValueError("lookahead_steps must be non-negative")
 
         if environments is not None:
             self.environments = list(environments)
@@ -366,6 +428,7 @@ class SelfPlayWorker:
         self.base_seed = base_seed
         self.frame_stack = frame_stack
         self.trajectory_length = trajectory_length
+        self.lookahead_steps = lookahead_steps
         self.clip_rewards = clip_rewards
         self.add_exploration_noise = add_exploration_noise
         self.temperature = float(temperature)
@@ -374,7 +437,7 @@ class SelfPlayWorker:
         self.total_vector_steps = 0
         self.total_transitions = 0
         self._observations: list[AtariObservation] = []
-        self._builders: list[_TrajectoryBuilder] = []
+        self._builders: list[list[_TrajectoryBuilder]] = []
         self._episode_ids = [0] * self.num_envs
         self._next_block_ids = [0] * self.num_envs
         self._initialized = False
@@ -434,13 +497,16 @@ class SelfPlayWorker:
                     if self.clip_rewards
                     else raw_reward
                 )
-                builders[index].append(
-                    action=action,
-                    observation=next_observation,
-                    reward=reward,
-                    raw_reward=raw_reward,
-                    search_result=agent_output.search_results[index],
-                )
+                # Frozen builders receive the transition as lookahead context,
+                # while the active builder owns it as a future replay start.
+                for builder in builders[index]:
+                    builder.append(
+                        action=action,
+                        observation=next_observation,
+                        reward=reward,
+                        raw_reward=raw_reward,
+                        search_result=agent_output.search_results[index],
+                    )
                 self._observations[index] = _copy_observation(next_observation)
                 self.total_transitions += 1
 
@@ -454,12 +520,20 @@ class SelfPlayWorker:
                         "truncated transition"
                     )
                 if episode_done:
-                    completed[index].append(
-                        builders[index].finalize(
+                    # A terminal in the bootstrap tail also terminates an older
+                    # stored block, but only the active block owns that episode
+                    # boundary for score accounting.
+                    final_builder = builders[index][-1]
+                    completed[index].extend(
+                        builder.finalize(
                             terminated=bool(terminated),
                             truncated=bool(truncated),
-                            full_episode_done=full_episode_done,
+                            full_episode_done=(
+                                full_episode_done and builder is final_builder
+                            ),
                         )
+                        for builder in builders[index]
+                        if len(builder) > 0
                     )
                     self._next_block_ids[index] += 1
                     if full_episode_done:
@@ -467,17 +541,35 @@ class SelfPlayWorker:
                     self._observations[index] = self._reset_environment(
                         index, seed=None
                     )
-                    builders[index] = self._new_builder(index)
-                elif len(builders[index]) >= self.trajectory_length:
-                    completed[index].append(
-                        builders[index].finalize(
-                            terminated=False,
-                            truncated=False,
-                            full_episode_done=False,
-                        )
-                    )
+                    builders[index] = [self._new_builder(index)]
+                    continue
+
+                active_builder = builders[index][-1]
+                if len(active_builder) >= self.trajectory_length:
+                    active_builder.freeze()
                     self._next_block_ids[index] += 1
-                    builders[index] = self._new_builder(index)
+                    builders[index].append(self._new_builder(index))
+
+                ready = [
+                    builder
+                    for builder in builders[index][:-1]
+                    if builder.lookahead_steps >= self.lookahead_steps
+                ]
+                completed[index].extend(
+                    builder.finalize(
+                        terminated=False,
+                        truncated=False,
+                        full_episode_done=False,
+                    )
+                    for builder in ready
+                )
+                if ready:
+                    ready_ids = {id(builder) for builder in ready}
+                    builders[index] = [
+                        builder
+                        for builder in builders[index]
+                        if id(builder) not in ready_ids
+                    ]
 
             self.total_vector_steps += 1
 
@@ -496,18 +588,23 @@ class SelfPlayWorker:
         completed: list[list[GameTrajectory]] = [
             [] for _ in range(self.num_envs)
         ]
-        for index, builder in enumerate(self._builders):
-            if len(builder) == 0:
-                continue
-            completed[index].append(
+        for index, builders in enumerate(self._builders):
+            active_builder = builders[-1]
+            completed[index].extend(
                 builder.finalize(
                     terminated=False,
                     truncated=False,
                     full_episode_done=False,
                 )
+                for builder in builders
+                if len(builder) > 0
             )
-            self._next_block_ids[index] += 1
-            self._builders[index] = self._new_builder(index)
+            # A non-empty active block consumed its reserved identity. An empty
+            # one was created only to retain a just-completed block's tail and
+            # can safely reuse the same identity after flushing.
+            if len(active_builder) > 0:
+                self._next_block_ids[index] += 1
+            self._builders[index] = [self._new_builder(index)]
         return tuple(tuple(blocks) for blocks in completed)
 
     def close(self) -> None:
@@ -535,7 +632,7 @@ class SelfPlayWorker:
             for index in range(self.num_envs)
         ]
         self._builders = [
-            self._new_builder(index) for index in range(self.num_envs)
+            [self._new_builder(index)] for index in range(self.num_envs)
         ]
         self._initialized = True
 

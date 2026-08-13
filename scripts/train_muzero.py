@@ -565,6 +565,10 @@ def main(config: TrainMuZeroConfig) -> None:
             environments=environments,
             frame_stack=config.environment.frame_stack,
             trajectory_length=config.self_play.trajectory_length,
+            lookahead_steps=max(
+                config.training.unroll_steps,
+                config.training.td_steps,
+            ),
             base_seed=config.seed,
             clip_rewards=config.self_play.clip_rewards,
             add_exploration_noise=config.self_play.add_exploration_noise,

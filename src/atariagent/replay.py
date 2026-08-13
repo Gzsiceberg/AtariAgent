@@ -38,9 +38,11 @@ class _ValueTarget:
 class FIFOReplayBuffer:
     """Store trajectories with FIFO eviction and prioritized sampling.
 
-    New transitions receive the current maximum priority. Sampled transitions
-    carry normalized importance weights and stable IDs used to update their
-    priorities after training. Reanalysis remains outside this buffer.
+    New sampleable transitions receive the current maximum priority; trailing
+    lookahead transitions remain attached to their trajectory as local target
+    context. Sampled transitions carry normalized importance weights and stable
+    IDs used to update their priorities after training. Reanalysis remains
+    outside this buffer.
     """
 
     def __init__(
@@ -65,7 +67,7 @@ class FIFOReplayBuffer:
         self._transition_ids = np.empty(0, dtype=np.int64)
         self._priorities = np.empty(0, dtype=np.float64)
         self._next_transition_id = 0
-        self._trajectory_by_key: dict[tuple[int, int, int], GameTrajectory] = {}
+        self._trajectory_keys: set[tuple[int, int, int]] = set()
         self._transition_count = 0
         self._action_space_size: int | None = None
         self._stack_size: int | None = None
@@ -114,14 +116,14 @@ class FIFOReplayBuffer:
             raise ValueError("all trajectories must use the same frame shape")
 
         key = self._trajectory_key(trajectory)
-        if key in self._trajectory_by_key:
+        if key in self._trajectory_keys:
             raise ValueError("trajectory identity already exists in replay")
 
         evicted_trajectories = 0
         evicted_transitions = 0
         while self._transition_count + trajectory_length > self.max_transitions:
             evicted = self._trajectories.popleft()
-            del self._trajectory_by_key[self._trajectory_key(evicted)]
+            self._trajectory_keys.remove(self._trajectory_key(evicted))
             self._transition_count -= len(evicted)
             evicted_trajectories += 1
             evicted_transitions += len(evicted)
@@ -150,7 +152,7 @@ class FIFOReplayBuffer:
         )
 
         self._trajectories.append(trajectory)
-        self._trajectory_by_key[key] = trajectory
+        self._trajectory_keys.add(key)
         self._transition_count += trajectory_length
         return ReplayAddResult(
             added_trajectories=1,
@@ -188,10 +190,11 @@ class FIFOReplayBuffer:
         priority_beta: float = 0.4,
         include_value_bootstraps: bool = True,
     ) -> ReplayBatch:
-        """Prioritize unique starts and return full padded frame sequences."""
+        """Prioritize unique starts and slice their local lookahead context."""
         self._validate_sample_request(
             batch_size, unroll_steps, td_steps, discount, priority_beta
         )
+        self._validate_lookahead(unroll_steps, td_steps)
         if not isinstance(include_value_bootstraps, bool):
             raise TypeError("include_value_bootstraps must be a boolean")
         assert self._action_space_size is not None
@@ -299,6 +302,11 @@ class FIFOReplayBuffer:
                 f"cannot sample {batch_size} unique transitions from "
                 f"a replay buffer containing {self._transition_count}"
             )
+
+    def _validate_lookahead(self, unroll_steps: int, td_steps: int) -> None:
+        """Require complete nonterminal tails to cover both target horizons."""
+        for trajectory in self._trajectories:
+            trajectory.validate_lookahead(unroll_steps, td_steps)
 
     def _sample_context(
         self, batch_size: int, priority_beta: float
@@ -436,32 +444,23 @@ class FIFOReplayBuffer:
     def _locations_for_indices(
         self, flat_indices: np.ndarray
     ) -> list[tuple[GameTrajectory, int]]:
-        ordered = sorted(
-            enumerate(int(index) for index in flat_indices), key=lambda item: item[1]
+        """Resolve flat replay offsets with vectorized cumulative boundaries."""
+        trajectories = tuple(self._trajectories)
+        lengths = np.fromiter(
+            (len(trajectory) for trajectory in trajectories),
+            dtype=np.int64,
+            count=len(trajectories),
         )
-        resolved: list[tuple[GameTrajectory, int] | None] = [None] * len(ordered)
-        trajectory_offset = 0
-        ordered_index = 0
-
-        for trajectory in self._trajectories:
-            trajectory_end = trajectory_offset + len(trajectory)
-            while (
-                ordered_index < len(ordered)
-                and ordered[ordered_index][1] < trajectory_end
-            ):
-                original_position, flat_index = ordered[ordered_index]
-                resolved[original_position] = (
-                    trajectory,
-                    flat_index - trajectory_offset,
-                )
-                ordered_index += 1
-            trajectory_offset = trajectory_end
-            if ordered_index == len(ordered):
-                break
-
-        if any(location is None for location in resolved):
-            raise RuntimeError("failed to resolve sampled replay indices")
-        return [location for location in resolved if location is not None]
+        ends = np.cumsum(lengths)
+        trajectory_indices = np.searchsorted(ends, flat_indices, side="right")
+        starts = ends - lengths
+        positions = flat_indices - starts[trajectory_indices]
+        return [
+            (trajectories[int(trajectory_index)], int(position))
+            for trajectory_index, position in zip(
+                trajectory_indices, positions, strict=True
+            )
+        ]
 
     def _fill_batch_arrays(
         self,
@@ -514,70 +513,40 @@ class FIFOReplayBuffer:
             array.fill(0)
 
         for batch_index, (trajectory, start) in enumerate(locations):
-            frames[batch_index, :stack_size] = np.asarray(
-                trajectory.frames[start : start + stack_size],
+            stored_count = len(trajectory) + trajectory.lookahead_steps
+            action_count = min(unroll_steps, stored_count - start)
+            frame_count = stack_size + action_count
+            frames[batch_index, :frame_count] = np.asarray(
+                trajectory.frames[start : start + frame_count],
                 dtype=np.uint8,
             )
-            frame_count = stack_size
-            block: GameTrajectory | None = trajectory
-            position = start
-            self._set_stored_target_array(
-                policy_targets,
-                policy_mask,
-                batch_index=batch_index,
-                target_offset=0,
-                trajectory=trajectory,
-                position=start,
-            )
-
-            for offset in range(unroll_steps):
-                if block is None or position >= len(block):
-                    break
-
-                actions[batch_index, offset, 0] = block.actions[position]
-                rewards[batch_index, offset] = block.rewards[position]
-                action_mask[batch_index, offset] = True
-                frames[batch_index, frame_count] = block.frames[
-                    position + block.stack_size
-                ]
-                frame_count += 1
-                position += 1
-                target_offset = offset + 1
-
-                if position < len(block):
-                    self._set_stored_target_array(
-                        policy_targets,
-                        policy_mask,
-                        batch_index=batch_index,
-                        target_offset=target_offset,
-                        trajectory=block,
-                        position=position,
-                    )
-                    continue
-
-                if block.terminated:
-                    # Terminal states have valid zero value but no policy.
-                    break
-
-                next_block = self._next_trajectory(block)
-                if next_block is None:
-                    break
-
-                block = next_block
-                position = 0
-                self._set_stored_target_array(
-                    policy_targets,
-                    policy_mask,
-                    batch_index=batch_index,
-                    target_offset=target_offset,
-                    trajectory=block,
-                    position=position,
-                )
-
             if frame_count < stack_size + unroll_steps:
                 frames[batch_index, frame_count:] = frames[
                     batch_index, frame_count - 1
                 ]
+
+            action_end = start + action_count
+            actions[batch_index, :action_count, 0] = np.asarray(
+                trajectory.actions[start:action_end], dtype=np.int64
+            )
+            rewards[batch_index, :action_count] = np.asarray(
+                trajectory.rewards[start:action_end], dtype=np.float32
+            )
+            action_mask[batch_index, :action_count] = True
+
+            policy_count = min(state_count, stored_count - start)
+            policy_end = start + policy_count
+            visit_counts = np.asarray(
+                tuple(
+                    result.visit_counts
+                    for result in trajectory.search_results[start:policy_end]
+                ),
+                dtype=np.float32,
+            )
+            policy_targets[batch_index, :policy_count] = visit_counts / (
+                visit_counts.sum(axis=1, keepdims=True)
+            )
+            policy_mask[batch_index, :policy_count] = True
 
             value_target_items = self._n_step_value_targets(
                 trajectory,
@@ -620,23 +589,6 @@ class FIFOReplayBuffer:
         arrays["indices"][:] = transition_ids
         arrays["importance_weights"][:] = importance_weights
 
-    @staticmethod
-    def _set_stored_target_array(
-        policy_targets: np.ndarray,
-        policy_mask: np.ndarray,
-        *,
-        batch_index: int,
-        target_offset: int,
-        trajectory: GameTrajectory,
-        position: int,
-    ) -> None:
-        search_result = trajectory.search_results[position]
-        visit_counts = np.asarray(search_result.visit_counts, dtype=np.float32)
-        policy_targets[batch_index, target_offset] = (
-            visit_counts / visit_counts.sum()
-        )
-        policy_mask[batch_index, target_offset] = True
-
     def _n_step_value_targets(
         self,
         trajectory: GameTrajectory,
@@ -646,66 +598,52 @@ class FIFOReplayBuffer:
         td_steps: int,
         discount: float,
     ) -> list[_ValueTarget]:
-        """Build consecutive n-step targets in linear time.
+        """Build consecutive n-step targets from one trajectory in linear time.
 
-        One forward traversal collects the rewards needed by every target.
-        Discounted prefix sums then produce each reward return in constant
-        time, instead of traversing ``td_steps`` transitions per target.
+        The trajectory's duplicated lookahead tail supplies rewards and root
+        values beyond its sampleable range, so no next-block lookup is needed.
+        Discounted suffix sums produce each reward return in constant time.
         """
         maximum_rewards = target_count - 1 + td_steps
-        rewards: list[float] = []
-        state_locations: list[tuple[GameTrajectory, int]] = [
-            (trajectory, position)
-        ]
-        block = trajectory
-        ended_at_terminal = False
+        stored_count = len(trajectory) + trajectory.lookahead_steps
+        available_transitions = stored_count - position
+        reward_count = min(maximum_rewards, available_transitions)
+        rewards = np.asarray(
+            trajectory.rewards[position : position + reward_count],
+            dtype=np.float64,
+        )
+        ended_at_terminal = (
+            trajectory.terminated and reward_count == available_transitions
+        )
 
-        while len(rewards) < maximum_rewards:
-            rewards.append(block.rewards[position])
-            position += 1
-            if position < len(block):
-                state_locations.append((block, position))
-                continue
-            if block.terminated:
-                ended_at_terminal = True
-                break
-            next_block = self._next_trajectory(block)
-            if next_block is None:
-                break
-            block = next_block
-            position = 0
-            state_locations.append((block, position))
-
-        discount_powers = [1.0]
-        for _ in range(td_steps):
-            discount_powers.append(discount_powers[-1] * discount)
-        discounted_suffix = [0.0] * (len(rewards) + 1)
-        for reward_offset in range(len(rewards) - 1, -1, -1):
+        discount_powers = discount ** np.arange(td_steps + 1)
+        discounted_suffix = np.zeros(reward_count + 1, dtype=np.float64)
+        for reward_offset in range(reward_count - 1, -1, -1):
             discounted_suffix[reward_offset] = (
                 rewards[reward_offset]
                 + discount * discounted_suffix[reward_offset + 1]
             )
 
         targets: list[_ValueTarget] = []
-        terminal_state = len(rewards) if ended_at_terminal else -1
+        terminal_state = available_transitions if ended_at_terminal else -1
         for target_offset in range(target_count):
             if target_offset == terminal_state:
                 targets.append(_ValueTarget(value=0.0, valid=True))
                 continue
-            if target_offset >= len(state_locations):
+            if target_offset >= available_transitions:
                 targets.append(_ValueTarget(value=0.0, valid=False))
                 continue
 
             bootstrap_offset = target_offset + td_steps
-            reward_end = min(bootstrap_offset, len(rewards))
+            reward_end = min(bootstrap_offset, reward_count)
             reward_horizon = reward_end - target_offset
-            reward_return = (
+            reward_return = float(
                 discounted_suffix[target_offset]
                 - discount_powers[reward_horizon]
                 * discounted_suffix[reward_end]
             )
 
-            if bootstrap_offset > len(rewards):
+            if bootstrap_offset > reward_count:
                 targets.append(
                     _ValueTarget(
                         value=(reward_return if ended_at_terminal else 0.0),
@@ -716,41 +654,28 @@ class FIFOReplayBuffer:
             if bootstrap_offset == terminal_state:
                 targets.append(_ValueTarget(value=reward_return, valid=True))
                 continue
-            if bootstrap_offset >= len(state_locations):
+
+            bootstrap_position = position + bootstrap_offset
+            if bootstrap_position >= stored_count:
                 targets.append(_ValueTarget(value=0.0, valid=False))
                 continue
 
-            bootstrap_location = state_locations[bootstrap_offset]
-            bootstrap_block, bootstrap_position = bootstrap_location
-            bootstrap_value = bootstrap_block.search_results[
+            bootstrap_value = trajectory.search_results[
                 bootstrap_position
             ].root_value
-            bootstrap_discount = discount_powers[td_steps]
+            bootstrap_discount = float(discount_powers[td_steps])
             targets.append(
                 _ValueTarget(
                     value=(
                         reward_return + bootstrap_discount * bootstrap_value
                     ),
                     valid=True,
-                    bootstrap_location=bootstrap_location,
+                    bootstrap_location=(trajectory, bootstrap_position),
                     bootstrap_value=bootstrap_value,
                     bootstrap_discount=bootstrap_discount,
                 )
             )
         return targets
-
-    def _next_trajectory(
-        self, trajectory: GameTrajectory
-    ) -> GameTrajectory | None:
-        if trajectory.terminated or trajectory.truncated:
-            return None
-        return self._trajectory_by_key.get(
-            (
-                trajectory.environment_index,
-                trajectory.episode_id,
-                trajectory.block_id + 1,
-            )
-        )
 
     @staticmethod
     def _trajectory_key(trajectory: GameTrajectory) -> tuple[int, int, int]:
