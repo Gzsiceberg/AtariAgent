@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 import math
@@ -76,13 +75,30 @@ class MCTSConfig:
             raise ValueError("value_prefix_horizon must be positive")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class SearchResult:
-    """Materialized outputs for one root, stored by self-play replay."""
+    """Materialized root output with contiguous NumPy visit counts."""
 
     action: int
-    visit_counts: tuple[int, ...]
+    visit_counts: NDArray[np.int32]
     root_value: float
+
+    def __post_init__(self) -> None:
+        counts = np.asarray(self.visit_counts, dtype=np.int32)
+        if counts.ndim != 1 or counts.shape[0] == 0:
+            raise ValueError("visit_counts must be a non-empty 1D array")
+        if not counts.flags.c_contiguous:
+            counts = np.ascontiguousarray(counts)
+        object.__setattr__(self, "visit_counts", counts)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SearchResult):
+            return NotImplemented
+        return (
+            self.action == other.action
+            and self.root_value == other.root_value
+            and np.array_equal(self.visit_counts, other.visit_counts)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,21 +279,21 @@ class MCTS:
     ) -> tuple[SearchResult, ...]:
         """Sample actions and create per-root objects at the replay boundary."""
         self._validate_temperature(temperature)
-        visit_counts = batch.visit_counts.tolist()
-        root_values = batch.root_values.tolist()
+        policies = _visit_policy(batch.visit_counts, temperature)
         return tuple(
             SearchResult(
                 action=self.rng.choices(
-                    range(len(counts)),
-                    weights=_visit_policy(counts, temperature),
+                    range(counts.shape[0]),
+                    weights=policy,
                     k=1,
                 )[0],
-                visit_counts=tuple(counts),
-                root_value=value,
+                visit_counts=counts,
+                root_value=float(value),
             )
-            for counts, value in zip(
-                visit_counts,
-                root_values,
+            for counts, policy, value in zip(
+                batch.visit_counts,
+                policies,
+                batch.root_values,
                 strict=True,
             )
         )
@@ -323,27 +339,32 @@ def _evaluator_inference(evaluator: PackedEvaluator):
             module.train(was_training)
 
 
-def _visit_policy(visits: Sequence[int], temperature: float) -> tuple[float, ...]:
-    if len(visits) == 0 or sum(visits) <= 0:
+def _visit_policy(
+    visits: NDArray[np.int32],
+    temperature: float,
+) -> NDArray[np.float64]:
+    """Return batched temperature-adjusted visit weights with NumPy."""
+    if visits.ndim not in (1, 2) or visits.shape[-1] == 0:
+        raise ValueError("visits must have shape (actions,) or (roots, actions)")
+    squeeze = visits.ndim == 1
+    rows = visits[None, :] if squeeze else visits
+    totals = rows.sum(axis=1)
+    if np.any(totals <= 0):
         raise ValueError("at least one action must have been visited")
-    best_action = max(range(len(visits)), key=visits.__getitem__)
     if temperature == 0.0:
-        return tuple(
-            1.0 if action == best_action else 0.0
-            for action in range(len(visits))
-        )
+        policies = np.zeros(rows.shape, dtype=np.float64)
+        policies[np.arange(rows.shape[0]), rows.argmax(axis=1)] = 1.0
+        return policies[0] if squeeze else policies
 
-    log_weights = [
-        math.log(visit) / temperature if visit > 0 else -math.inf
-        for visit in visits
-    ]
-    maximum = max(log_weights)
-    weights = [
-        math.exp(log_weight - maximum) if math.isfinite(log_weight) else 0.0
-        for log_weight in log_weights
-    ]
-    total = sum(weights)
-    return tuple(weight / total for weight in weights)
+    positive = rows > 0
+    log_weights = np.full(rows.shape, -np.inf, dtype=np.float64)
+    np.log(rows, out=log_weights, where=positive)
+    log_weights /= temperature
+    log_weights -= log_weights.max(axis=1, keepdims=True)
+    weights = np.zeros(rows.shape, dtype=np.float64)
+    np.exp(log_weights, out=weights, where=positive)
+    weights /= weights.sum(axis=1, keepdims=True)
+    return weights[0] if squeeze else weights
 
 
 __all__ = [

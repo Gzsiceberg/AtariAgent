@@ -335,7 +335,10 @@ def test_worker_random_warmup_is_seeded_and_stores_uniform_policy() -> None:
 
     assert first.actions == second.actions
     assert first.target_policy == ((0.5, 0.5),) * 4
-    assert all(result.visit_counts == (1, 1) for result in first.search_results)
+    assert all(
+        np.array_equal(result.visit_counts, (1, 1))
+        for result in first.search_results
+    )
     assert all(kwargs["temperature"] == 0.5 for kwargs in first_agent.kwargs)
 
     first_worker.close()

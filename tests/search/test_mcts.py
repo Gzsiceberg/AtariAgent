@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import math
 import random
 
+import numpy as np
 import pytest
 import torch
 
@@ -318,6 +319,8 @@ def test_temperature_zero_returns_greedy_action() -> None:
         torch.tensor([[2.0, -2.0, -3.0]]).expand(2, -1),
     )
     results = mcts.materialize_results(batch, temperature=0.0)
+    assert all(isinstance(result.visit_counts, np.ndarray) for result in results)
+    assert all(result.visit_counts.dtype == np.int32 for result in results)
     assert all(
         result.action
         == max(range(len(result.visit_counts)), key=result.visit_counts.__getitem__)
