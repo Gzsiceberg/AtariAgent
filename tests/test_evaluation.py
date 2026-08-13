@@ -10,6 +10,7 @@ from atariagent.evaluation import (
     plot_evaluation_history,
     write_evaluation_history,
 )
+from atariagent.typecheck import runtime_typechecking_enabled
 
 
 class OneStepEnvironment:
@@ -85,6 +86,7 @@ def test_evaluate_agent_reports_episode_reward_statistics() -> None:
     assert stats.std == pytest.approx(0.81649658)
     assert environment.closed
     assert agent.mcts.rng.getstate() == rng_state
+    assert runtime_typechecking_enabled()
 
 
 def test_evaluate_agent_batches_parallel_environments() -> None:

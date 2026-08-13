@@ -42,7 +42,23 @@ def batch_atari_observations(
     """Convert raw Atari observations into a channel-first float batch."""
     if not observations:
         raise ValueError("observations must not be empty")
-    return torch.stack(tuple(atari_observation_tensor(obs) for obs in observations))
+    # Stack uint8 observations before conversion instead of allocating and
+    # normalizing one float tensor per environment.
+    frames = torch.from_numpy(
+        np.stack(tuple(np.asarray(observation) for observation in observations))
+    ).float()
+    frames.div_(255.0)
+    if frames.ndim == 5:
+        return rearrange(
+            frames,
+            "batch stack height width channels -> "
+            "batch (stack channels) height width",
+        )
+    if frames.ndim == 4:
+        return frames
+    raise ValueError(
+        "Atari observations must have shape (stack, H, W, C) or (channels, H, W)"
+    )
 
 
 @lru_cache(maxsize=32)
@@ -299,7 +315,8 @@ class AtariAgent(nn.Module):
         observations = self._prepare_observations(observations)
 
         was_training = self.training
-        self.eval()
+        if was_training:
+            self.eval()
         try:
             states = self.representation_network(observations)
             policy_logits, value_logits = self.prediction_network(states)
@@ -327,7 +344,8 @@ class AtariAgent(nn.Module):
                 search_results=search_results,
             )
         finally:
-            self.train(was_training)
+            if was_training:
+                self.train()
 
     def _prepare_observations(
         self, observations: Tensor | Sequence[AtariObservation]

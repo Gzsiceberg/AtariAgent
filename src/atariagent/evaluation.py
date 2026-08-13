@@ -15,6 +15,7 @@ from tqdm.auto import tqdm
 from .agent import AtariAgent
 from .search import MCTSConfig
 from .selfplay import Environment
+from .typecheck import runtime_typechecking_enabled, set_runtime_typechecking
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,8 +104,12 @@ def evaluate_agent(
     created_environments: list[Environment] = []
     mcts_rng = getattr(getattr(agent, "mcts", None), "rng", None)
     rng_state = mcts_rng.getstate() if mcts_rng is not None else None
+    typechecking_was_enabled = runtime_typechecking_enabled()
     if mcts_rng is not None:
         mcts_rng.seed(seed)
+    # Evaluation repeatedly executes the same validated model interfaces in a
+    # hot MCTS loop. Keep annotations, but avoid beartype/jaxtyping overhead.
+    set_runtime_typechecking(False)
     try:
         active_count = min(num_envs, episodes)
         for _ in range(active_count):
@@ -180,6 +185,7 @@ def evaluate_agent(
             environment.close()
         if mcts_rng is not None:
             mcts_rng.setstate(rng_state)
+        set_runtime_typechecking(typechecking_was_enabled)
 
     return EvaluationStats.from_rewards(tuple(rewards))
 

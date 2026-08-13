@@ -1,0 +1,28 @@
+{
+  "checkpoint": "checkpoints/Alien-v5/muzero_latest.pt",
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "episodes": 16,
+  "num_envs": 16,
+  "command": "uv run python scripts/eval_muzero.py checkpoints/Alien-v5/muzero_latest.pt --episodes 16 --num-envs 16 --device cuda",
+  "baseline": {
+    "elapsed_seconds": 58.99,
+    "user_seconds": 206.57,
+    "system_seconds": 3.93,
+    "max_rss_kb": 1433044,
+    "mean_reward": 628.125,
+    "median_reward": 575.0,
+    "reward_std": 233.646
+  },
+  "optimized": {
+    "elapsed_seconds": 49.90,
+    "user_seconds": 177.85,
+    "system_seconds": 2.64,
+    "max_rss_kb": 1430452,
+    "mean_reward": 628.125,
+    "median_reward": 575.0,
+    "reward_std": 233.646
+  },
+  "speedup": 1.1822,
+  "elapsed_reduction_percent": 15.41
+}
