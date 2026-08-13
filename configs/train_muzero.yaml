@@ -24,7 +24,7 @@ self_play:
   add_exploration_noise: true
 
 replay:
-  max_transitions: 10000
+  max_transitions: 100000
   warmup_transitions: 2000
   priority_alpha: 0.6
   priority_beta_initial: 0.4
