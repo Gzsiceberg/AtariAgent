@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+import pytest
 import torch
 
 from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
@@ -44,6 +45,7 @@ class _PolicyDynamics(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.bias = torch.nn.Parameter(torch.tensor(0.0))
+        self.reward_prediction = torch.nn.LSTM(1, 1)
 
     def forward(self, state, action, hidden):
         del action, hidden
@@ -119,6 +121,7 @@ def test_target_network_reanalyzes_all_policy_samples() -> None:
         rng_seed=7,
         support_min=0,
         support_max=1,
+        chunk_size=16,
     )
     stored_policies = torch.zeros(100, 2, 2)
     stored_policies[:, 0] = 0.5
@@ -142,13 +145,11 @@ def test_target_network_reanalyzes_all_policy_samples() -> None:
         "search_batch",
         wraps=target._mcts.search_batch,
     ) as search_batch:
-        reanalyzed = target.reanalyze_policies(
-            batch,
-            chunk_size=16,
-        )
+        reanalyzed = target.reanalyze_policies(batch)
 
+    assert search_batch.call_count == 7
     assert all(
-        call.kwargs["temperature"] == 1.0
+        call.kwargs["add_exploration_noise"]
         for call in search_batch.call_args_list
     )
     changed_samples = reanalyzed.policy_targets[:, 0].ne(0.5).any(dim=1)
@@ -171,6 +172,7 @@ def test_policy_reanalysis_runs_with_atari_networks() -> None:
         dynamics=DynamicsNetwork(action_space_size=2),
         action_space_size=2,
         mcts_config=MCTSConfig(num_simulations=1),
+        chunk_size=4,
     )
     batch = ReplayBatch(
         frames=torch.randint(0, 256, (2, 5, 1, 96, 96), dtype=torch.uint8),
@@ -185,13 +187,28 @@ def test_policy_reanalysis_runs_with_atari_networks() -> None:
         importance_weights=torch.ones(2),
     )
 
-    reanalyzed = target.reanalyze_policies(batch, chunk_size=4)
+    reanalyzed = target.reanalyze_policies(batch)
 
     torch.testing.assert_close(
         reanalyzed.policy_targets.sum(dim=-1),
         torch.ones(2, 2),
     )
     assert reanalyzed.policy_targets.ne(0.5).any()
+
+
+def test_target_network_validates_constructor_chunk_size() -> None:
+    with pytest.raises(TypeError, match="chunk_size must be an integer"):
+        ValueTargetNetwork(
+            _MeanRepresentation(),
+            _BinaryPrediction(),
+            chunk_size=True,
+        )
+    with pytest.raises(ValueError, match="chunk_size must be positive"):
+        ValueTargetNetwork(
+            _MeanRepresentation(),
+            _BinaryPrediction(),
+            chunk_size=0,
+        )
 
 
 def test_target_network_hard_copies_online_weights_and_buffers() -> None:

@@ -12,7 +12,7 @@ from torch import Tensor, nn
 
 from atariagent.agent import BatchedNetworkEvaluator, categorical_to_scalar
 from atariagent.replay_batch import ReplayBatch
-from atariagent.search import Evaluation, MCTS, MCTSConfig, SearchResult
+from atariagent.search import MCTS, MCTSConfig
 
 
 Precision = Literal["fp32", "bf16"]
@@ -33,6 +33,7 @@ class ValueTargetNetwork(nn.Module):
         support_min: int = -300,
         support_max: int = 300,
         precision: Precision = "fp32",
+        chunk_size: int = 768,
     ) -> None:
         super().__init__()
         if support_min >= support_max:
@@ -41,6 +42,7 @@ class ValueTargetNetwork(nn.Module):
             raise ValueError("precision must be fp32 or bf16")
         if isinstance(rng_seed, bool) or not isinstance(rng_seed, int):
             raise TypeError("rng_seed must be an integer")
+        self._validate_chunk_size(chunk_size)
         if dynamics is not None and (
             action_space_size is None or action_space_size <= 0
         ):
@@ -54,6 +56,7 @@ class ValueTargetNetwork(nn.Module):
         self.support_min = support_min
         self.support_max = support_max
         self.precision: Precision = precision
+        self.chunk_size = chunk_size
         self._mcts: MCTS | None = None
         self._policy_evaluator: BatchedNetworkEvaluator | None = None
         if self.dynamics is not None:
@@ -74,6 +77,7 @@ class ValueTargetNetwork(nn.Module):
             )
             self._mcts = MCTS(
                 mcts_config,
+                evaluator=self._policy_evaluator,
                 rng=random.Random(rng_seed + 1),
             )
 
@@ -102,18 +106,10 @@ class ValueTargetNetwork(nn.Module):
         self.eval()
 
     @torch.no_grad()
-    def reanalyze_batch(
-        self,
-        batch: ReplayBatch,
-        *,
-        policy_chunk_size: int,
-    ) -> ReplayBatch:
+    def reanalyze_batch(self, batch: ReplayBatch) -> ReplayBatch:
         """Refresh value and policy targets for one replay batch."""
         batch = self.reanalyze_values(batch)
-        return self.reanalyze_policies(
-            batch,
-            chunk_size=policy_chunk_size,
-        )
+        return self.reanalyze_policies(batch)
 
     @torch.no_grad()
     def reanalyze_values(self, batch: ReplayBatch) -> ReplayBatch:
@@ -126,40 +122,35 @@ class ValueTargetNetwork(nn.Module):
             raise ValueError("batch has no value-bootstrap mask")
         if batch.value_bootstrap_values is None:
             raise ValueError("batch has no stored bootstrap values")
-        if not batch.value_bootstrap_mask.any():
+        positions = torch.nonzero(
+            batch.value_bootstrap_mask,
+            as_tuple=False,
+        )
+        if positions.shape[0] == 0:
             return batch
 
         fresh_values = batch.value_bootstrap_values.clone()
         with self._autocast_context():
-            for offset in range(batch.unroll_steps + 1):
-                rows = batch.value_bootstrap_mask[:, offset].nonzero().flatten()
-                if rows.numel() == 0:
-                    continue
-                observations = batch.normalized_value_bootstrap_observation(
-                    offset
-                )[rows]
+            for start in range(0, positions.shape[0], self.chunk_size):
+                chunk = positions[start : start + self.chunk_size]
+                observations = self._stacked_observations(
+                    batch.value_bootstrap_frames,
+                    chunk,
+                    stack_size=batch.stack_size,
+                )
                 state = self.representation(observations)
                 _, value_logits = self.prediction(state)
-                fresh_values[rows, offset] = categorical_to_scalar(
+                values = categorical_to_scalar(
                     value_logits.float(),
                     support_min=self.support_min,
                     support_max=self.support_max,
                 )
+                fresh_values[chunk[:, 0], chunk[:, 1]] = values
         return batch.with_reanalyzed_value_targets(fresh_values)
 
     @torch.no_grad()
-    def reanalyze_policies(
-        self,
-        batch: ReplayBatch,
-        *,
-        chunk_size: int,
-    ) -> ReplayBatch:
+    def reanalyze_policies(self, batch: ReplayBatch) -> ReplayBatch:
         """Replace selected stored policies with fresh target-network MCTS."""
-        if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
-            raise TypeError("policy reanalysis chunk_size must be an integer")
-        if chunk_size <= 0:
-            raise ValueError("policy reanalysis chunk_size must be positive")
-
         if self._mcts is None or self._policy_evaluator is None:
             raise RuntimeError("target network has no policy MCTS components")
 
@@ -169,19 +160,20 @@ class ValueTargetNetwork(nn.Module):
 
         fresh_policies = batch.policy_targets.clone()
         with self._autocast_context():
-            for start in range(0, positions.shape[0], chunk_size):
-                chunk = positions[start : start + chunk_size]
+            for start in range(0, positions.shape[0], self.chunk_size):
+                chunk = positions[start : start + self.chunk_size]
                 observations = self._policy_observations(batch, chunk)
-                results = self._search_policies(observations)
-                visits = torch.as_tensor(
-                    tuple(result.visit_counts for result in results),
+                policies = self._search_policies(observations)
+                fresh_policies[chunk[:, 0], chunk[:, 1]] = policies.to(
                     dtype=fresh_policies.dtype,
-                    device=fresh_policies.device,
                 )
-                policies = visits / visits.sum(dim=1, keepdim=True)
-                fresh_policies[chunk[:, 0], chunk[:, 1]] = policies
 
-        return batch.with_reanalyzed_policy_targets(fresh_policies)
+        # Every changed position came directly from policy_mask; the cloned
+        # tensor already preserves all unselected stored targets.
+        return batch.with_reanalysis_targets(
+            value_targets=batch.value_targets,
+            policy_targets=fresh_policies,
+        )
 
     @torch.no_grad()
     def decoded_values(self, observations: Tensor) -> Tensor:
@@ -199,18 +191,32 @@ class ValueTargetNetwork(nn.Module):
         batch: ReplayBatch,
         positions: Tensor,
     ) -> Tensor:
+        return self._stacked_observations(
+            batch.frames,
+            positions,
+            stack_size=batch.stack_size,
+        )
+
+    @staticmethod
+    def _stacked_observations(
+        frames: Tensor,
+        positions: Tensor,
+        *,
+        stack_size: int,
+    ) -> Tensor:
+        """Gather and normalize arbitrary overlapping frame stacks."""
         frame_offsets = torch.arange(
-            batch.stack_size,
+            stack_size,
             device=positions.device,
         )
-        frames = batch.frames[
+        selected = frames[
             positions[:, 0, None],
             positions[:, 1, None] + frame_offsets,
         ]
-        channels, height, width = batch.frames.shape[2:]
-        return frames.reshape(
+        channels, height, width = frames.shape[2:]
+        return selected.reshape(
             positions.shape[0],
-            batch.stack_size * channels,
+            stack_size * channels,
             height,
             width,
         ).to(dtype=torch.float32).div_(255.0)
@@ -218,7 +224,8 @@ class ValueTargetNetwork(nn.Module):
     def _search_policies(
         self,
         observations: Tensor,
-    ) -> tuple[SearchResult, ...]:
+    ) -> Tensor:
+        """Run packed native MCTS and return normalized visit policies."""
         assert self._mcts is not None
         assert self._policy_evaluator is not None
         states = self.representation(observations)
@@ -229,27 +236,24 @@ class ValueTargetNetwork(nn.Module):
             value_logits.float(),
             "value_decoder",
         )
-        output_rows = torch.cat(
-            (values[:, None], policy_logits),
-            dim=1,
-        ).float().cpu().tolist()
-        roots = tuple(
-            Evaluation(
-                state=states[index],
-                value_prefix=0.0,
-                value=output_rows[index][0],
-                policy_logits=output_rows[index][1:],
-            )
-            for index in range(states.shape[0])
-        )
-        # EfficientZero V1 reanalysis uses normalized raw visit counts. The
-        # sampled MCTS action is intentionally ignored.
-        return self._mcts.search_batch(
-            roots,
-            self._policy_evaluator,
+        results = self._mcts.search_batch(
+            states,
+            values,
+            policy_logits,
             add_exploration_noise=True,
-            temperature=1.0,
         )
+        visits = torch.from_numpy(results.visit_counts).to(
+            dtype=policy_logits.dtype,
+            device=policy_logits.device,
+        )
+        return visits / visits.sum(dim=1, keepdim=True)
+
+    @staticmethod
+    def _validate_chunk_size(chunk_size: int) -> None:
+        if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
+            raise TypeError("chunk_size must be an integer")
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
 
     def _autocast_context(self):
         parameter = next(self.parameters(), None)

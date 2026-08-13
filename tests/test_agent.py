@@ -1,3 +1,5 @@
+import random
+
 import numpy as np
 import torch
 from torch import nn
@@ -8,7 +10,7 @@ from atariagent import (
     BatchedNetworkEvaluator,
     categorical_to_scalar,
 )
-from atariagent.search import BatchedRecurrentEvaluator, MCTSConfig
+from atariagent.search import MCTS, MCTSConfig
 
 
 class RecordingRepresentation(nn.Module):
@@ -34,6 +36,8 @@ class RecordingRepresentation(nn.Module):
 class RecordingDynamics(nn.Module):
     def __init__(self) -> None:
         super().__init__()
+        self.reward_prediction = nn.Identity()
+        self.reward_prediction.hidden_size = 512
         self.batch_sizes: list[int] = []
         self.grad_modes: list[bool] = []
         self.training_modes: list[bool] = []
@@ -83,7 +87,6 @@ def test_agent_batches_root_and_recurrent_network_inference() -> None:
     output = agent(torch.randn(3, 4, 96, 96, requires_grad=True))
 
     assert isinstance(agent.recurrent_evaluator, BatchedNetworkEvaluator)
-    assert isinstance(agent.recurrent_evaluator, BatchedRecurrentEvaluator)
     assert not hasattr(agent, "_evaluate_recurrent_batch")
     assert isinstance(output, AgentOutput)
     assert len(output.actions) == 3
@@ -96,6 +99,39 @@ def test_agent_batches_root_and_recurrent_network_inference() -> None:
     assert representation.batch_sizes == [3]
     assert dynamics.batch_sizes == [3] * simulations
     assert prediction.batch_sizes == [3] * (simulations + 1)
+
+
+def test_packed_policy_search_returns_complete_results() -> None:
+    dynamics = RecordingDynamics()
+    prediction = RecordingPrediction(action_space_size=3)
+    evaluator = BatchedNetworkEvaluator(
+        dynamics,
+        prediction,
+        action_space_size=3,
+        value_decoder=categorical_to_scalar,
+        value_prefix_decoder=categorical_to_scalar,
+    )
+    states = torch.zeros(4, 64, 6, 6)
+    policy_logits, value_logits = prediction(states)
+    values = categorical_to_scalar(value_logits)
+    simulations = 7
+
+    mcts = MCTS(
+        MCTSConfig(num_simulations=simulations),
+        evaluator=evaluator,
+        rng=random.Random(4),
+    )
+    batch = mcts.search_batch(
+        states,
+        values,
+        policy_logits,
+        _deterministic_ties=True,
+    )
+    results = mcts.materialize_results(batch)
+
+    assert batch.visit_counts.shape == (states.shape[0], 3)
+    assert (batch.visit_counts.sum(axis=1) == simulations).all()
+    assert all(result.action in range(3) for result in results)
 
 
 def test_agent_runs_every_network_without_gradients_and_in_eval_mode() -> None:

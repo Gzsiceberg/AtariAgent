@@ -13,7 +13,7 @@ import torch
 from tqdm.auto import tqdm
 
 from .agent import AtariAgent
-from .search import MCTS, MCTSConfig
+from .search import MCTSConfig
 from .selfplay import Environment
 
 
@@ -161,12 +161,10 @@ def load_agent_checkpoint(
     agent = AtariAgent(
         frame_stack * image_channels,
         action_space_size,
-        mcts=MCTS(
-            MCTSConfig(
-                num_simulations=num_simulations,
-                discount=discount,
-                value_prefix_horizon=lstm_horizon,
-            )
+        mcts_config=MCTSConfig(
+            num_simulations=num_simulations,
+            discount=discount,
+            value_prefix_horizon=lstm_horizon,
         ),
     ).to(device)
     for key, network in (

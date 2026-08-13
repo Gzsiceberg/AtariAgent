@@ -3,6 +3,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
+import random
 from typing import TypeAlias
 
 from einops import rearrange
@@ -12,13 +13,7 @@ import torch
 from torch import Tensor, nn
 
 from .models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
-from .search import (
-    BatchedRecurrentEvaluator,
-    Evaluation,
-    MCTS,
-    MCTSConfig,
-    SearchResult,
-)
+from .search import MCTS, MCTSConfig, SearchResult
 
 
 AtariObservation: TypeAlias = NDArray[np.uint8]
@@ -130,7 +125,7 @@ class AgentOutput:
             raise ValueError("actions and search_results must have equal lengths")
 
 
-class BatchedNetworkEvaluator(BatchedRecurrentEvaluator):
+class BatchedNetworkEvaluator:
     """Evaluate MCTS leaves with batched dynamics and prediction networks."""
 
     def __init__(
@@ -147,63 +142,51 @@ class BatchedNetworkEvaluator(BatchedRecurrentEvaluator):
         self.action_space_size = action_space_size
         self.value_decoder = value_decoder
         self.value_prefix_decoder = value_prefix_decoder
+        reward_prediction = getattr(dynamics_network, "reward_prediction", None)
+        hidden_size = getattr(reward_prediction, "hidden_size", None)
+        if isinstance(hidden_size, bool) or not isinstance(hidden_size, int):
+            raise TypeError(
+                "dynamics_network.reward_prediction.hidden_size "
+                "must be an integer"
+            )
+        if hidden_size <= 0:
+            raise ValueError("recurrent hidden size must be positive")
+        self.hidden_size = hidden_size
 
     @torch.inference_mode()
-    def __call__(
+    def evaluate_tensors(
         self,
-        states: Sequence[Tensor],
-        actions: Sequence[int],
-        value_prefix_hidden: Sequence[RewardHidden | None],
-    ) -> tuple[Evaluation, ...]:
-        if not states:
-            return ()
-
-        state_batch = torch.stack(tuple(states))
-        action_batch = torch.as_tensor(
-            actions, device=state_batch.device, dtype=torch.long
-        ).reshape(-1, 1)
-        hidden_batch = self._batch_hidden(
-            value_prefix_hidden,
-            batch_size=len(states),
-            device=state_batch.device,
-            dtype=state_batch.dtype,
-        )
+        states: Tensor,
+        actions: Tensor,
+        value_prefix_hidden: RewardHidden,
+        reset_value_prefix: Tensor | None = None,
+    ) -> tuple[Tensor, RewardHidden, Tensor, Tensor, Tensor]:
+        """Evaluate packed MCTS leaves without per-root Python objects."""
+        batch_size = states.shape[0]
+        if actions.shape != (batch_size, 1):
+            raise ValueError("actions must have shape (batch_size, 1)")
+        hidden, cell = value_prefix_hidden
+        if reset_value_prefix is not None:
+            if reset_value_prefix.shape != (batch_size,):
+                raise ValueError("reset mask must have shape (batch_size,)")
+            reset = reset_value_prefix.reshape(1, batch_size, 1)
+            hidden = hidden.masked_fill(reset, 0.0)
+            cell = cell.masked_fill(reset, 0.0)
 
         next_states, next_hidden, value_prefix_logits = self.dynamics_network(
-            state_batch, action_batch, hidden_batch
+            states,
+            actions,
+            (hidden, cell),
         )
         policy_logits, value_logits = self.prediction_network(next_states)
-        self.validate_policy(policy_logits, len(states))
+        self.validate_policy(policy_logits, batch_size)
         values = self.decode(self.value_decoder, value_logits, "value_decoder")
         value_prefixes = self.decode(
             self.value_prefix_decoder,
             value_prefix_logits,
             "value_prefix_decoder",
         )
-        # One packed device transfer avoids three CUDA synchronizations per
-        # MCTS simulation while retaining the Python tree implementation.
-        output_rows = torch.cat(
-            (
-                value_prefixes[:, None],
-                values[:, None],
-                policy_logits,
-            ),
-            dim=1,
-        ).float().cpu().tolist()
-
-        return tuple(
-            Evaluation(
-                state=next_states[index],
-                value_prefix=output_rows[index][0],
-                value=output_rows[index][1],
-                policy_logits=output_rows[index][2:],
-                value_prefix_hidden=(
-                    next_hidden[0][:, index : index + 1],
-                    next_hidden[1][:, index : index + 1],
-                ),
-            )
-            for index in range(len(states))
-        )
+        return next_states, next_hidden, value_prefixes, values, policy_logits
 
     def validate_policy(self, policy_logits: Tensor, batch_size: int) -> None:
         expected = (batch_size, self.action_space_size)
@@ -220,38 +203,18 @@ class BatchedNetworkEvaluator(BatchedRecurrentEvaluator):
             raise ValueError(f"{name} must return one scalar per batch item")
         return values.reshape(logits.shape[0])
 
-    def _batch_hidden(
+    def initial_hidden(
         self,
-        hidden_states: Sequence[RewardHidden | None],
-        *,
         batch_size: int,
+        *,
         device: torch.device,
         dtype: torch.dtype,
     ) -> RewardHidden:
-        if len(hidden_states) != batch_size:
-            raise ValueError("expected one recurrent hidden state per latent state")
-
-        reward_prediction = getattr(
-            self.dynamics_network, "reward_prediction", None
+        """Allocate one packed zero recurrent state for native MCTS."""
+        hidden = torch.zeros(
+            1, batch_size, self.hidden_size, device=device, dtype=dtype
         )
-        hidden_size = getattr(reward_prediction, "hidden_size", 512)
-
-        def zero_hidden() -> Tensor:
-            return torch.zeros(
-                1, 1, hidden_size, device=device, dtype=dtype
-            )
-
-        hidden_parts: list[Tensor] = []
-        cell_parts: list[Tensor] = []
-        for recurrent_state in hidden_states:
-            if recurrent_state is None:
-                hidden_parts.append(zero_hidden())
-                cell_parts.append(zero_hidden())
-            else:
-                hidden, cell = recurrent_state
-                hidden_parts.append(hidden.to(device=device, dtype=dtype))
-                cell_parts.append(cell.to(device=device, dtype=dtype))
-        return torch.cat(hidden_parts, dim=1), torch.cat(cell_parts, dim=1)
+        return hidden, torch.zeros_like(hidden)
 
 
 class AtariAgent(nn.Module):
@@ -271,17 +234,14 @@ class AtariAgent(nn.Module):
         representation_network: nn.Module | None = None,
         dynamics_network: nn.Module | None = None,
         prediction_network: nn.Module | None = None,
-        mcts: MCTS | None = None,
         mcts_config: MCTSConfig | None = None,
+        mcts_rng: random.Random | None = None,
         value_decoder: ScalarDecoder = categorical_to_scalar,
         value_prefix_decoder: ScalarDecoder = categorical_to_scalar,
     ) -> None:
         super().__init__()
         if action_space_size <= 0:
             raise ValueError("action_space_size must be positive")
-        if mcts is not None and mcts_config is not None:
-            raise ValueError("pass either mcts or mcts_config, not both")
-
         self.action_space_size = action_space_size
         self.representation_network = (
             representation_network
@@ -298,7 +258,6 @@ class AtariAgent(nn.Module):
             if prediction_network is not None
             else PredictionNetwork(action_space_size)
         )
-        self.mcts = mcts if mcts is not None else MCTS(mcts_config)
         self.value_decoder = value_decoder
         self.value_prefix_decoder = value_prefix_decoder
         self.recurrent_evaluator = BatchedNetworkEvaluator(
@@ -307,6 +266,11 @@ class AtariAgent(nn.Module):
             action_space_size=action_space_size,
             value_decoder=self.value_decoder,
             value_prefix_decoder=self.value_prefix_decoder,
+        )
+        self.mcts = MCTS(
+            mcts_config,
+            evaluator=self.recurrent_evaluator,
+            rng=mcts_rng,
         )
 
     def forward(
@@ -348,19 +312,14 @@ class AtariAgent(nn.Module):
                 "value_decoder",
             )
 
-            roots = tuple(
-                Evaluation(
-                    state=states[index],
-                    value_prefix=0.0,
-                    value=float(values[index]),
-                    policy_logits=policy_logits[index].tolist(),
-                )
-                for index in range(states.shape[0])
-            )
-            search_results = self.mcts.search_batch(
-                roots,
-                self.recurrent_evaluator,
+            search_batch = self.mcts.search_batch(
+                states,
+                values,
+                policy_logits,
                 add_exploration_noise=add_exploration_noise,
+            )
+            search_results = self.mcts.materialize_results(
+                search_batch,
                 temperature=temperature,
             )
             return AgentOutput(

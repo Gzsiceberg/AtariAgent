@@ -31,7 +31,7 @@ from atariagent.evaluation import (
     plot_evaluation_history,
     write_evaluation_history,
 )
-from atariagent.search import MCTS, MCTSConfig
+from atariagent.search import MCTSConfig
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
     BatchWorker,
@@ -238,18 +238,15 @@ def main(config: TrainMuZeroConfig) -> None:
 
         image_channels = 1 if config.environment.grayscale else 3
         discount = config.training.discount ** config.environment.frame_skip
-        mcts = MCTS(
-            MCTSConfig(
+        agent = AtariAgent(
+            config.environment.frame_stack * image_channels,
+            action_space_size,
+            mcts_config=MCTSConfig(
                 num_simulations=config.self_play.num_simulations,
                 discount=discount,
                 value_prefix_horizon=config.training.lstm_horizon,
             ),
-            rng=random.Random(config.seed),
-        )
-        agent = AtariAgent(
-            config.environment.frame_stack * image_channels,
-            action_space_size,
-            mcts=mcts,
+            mcts_rng=random.Random(config.seed),
         ).to(device)
         trainer = MuZeroTrainer(
             agent.representation_network,

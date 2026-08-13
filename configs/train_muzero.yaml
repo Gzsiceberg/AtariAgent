@@ -45,8 +45,8 @@ training:
   lstm_horizon: 5
   # Refresh replay values and policies with the delayed target network.
   use_target_network_reanalysis: true
-  # Larger native-MCTS root chunks trade about 1.5 GiB for higher throughput.
-  policy_reanalysis_chunk_size: 1024
+  # Two 768-root chunks are faster here than 1024+512 and use less memory.
+  policy_reanalysis_chunk_size: 768
   # Cache corrected values and MCTS policies by transition and target version.
   cache_reanalyzed_targets: true
   # Keep replay-stored value and policy targets for the first learner updates.

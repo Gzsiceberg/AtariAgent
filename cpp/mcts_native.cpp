@@ -1,3 +1,4 @@
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -18,6 +19,11 @@
 namespace py = pybind11;
 
 namespace {
+
+using FloatArray = py::array_t<
+    float,
+    py::array::c_style | py::array::forcecast
+>;
 
 struct MinMaxStats {
     explicit MinMaxStats(float minimum_delta)
@@ -370,9 +376,9 @@ private:
 class BatchTree {
 public:
     BatchTree(
-        const std::vector<std::vector<float>>& root_priors,
-        const std::vector<float>& root_values,
-        const std::vector<float>& root_value_prefixes,
+        FloatArray root_priors,
+        FloatArray root_values,
+        FloatArray root_value_prefixes,
         int simulations,
         float discount,
         int value_prefix_horizon,
@@ -380,28 +386,24 @@ public:
         std::uint64_t seed,
         bool deterministic_ties
     ) {
-        const std::size_t root_count = root_priors.size();
-        if (root_count == 0) {
+        if (root_priors.ndim() != 2
+            || root_values.ndim() != 1
+            || root_value_prefixes.ndim() != 1) {
+            throw std::invalid_argument(
+                "root priors must be 2D and root values must be 1D"
+            );
+        }
+        const py::ssize_t root_count = root_priors.shape(0);
+        if (root_count <= 0) {
             throw std::invalid_argument("at least one root is required");
         }
-        if (root_values.size() != root_count
-            || root_value_prefixes.size() != root_count) {
+        if (root_values.shape(0) != root_count
+            || root_value_prefixes.shape(0) != root_count) {
             throw std::invalid_argument("root arrays must have equal lengths");
         }
-        action_count_ = static_cast<int>(root_priors.front().size());
+        action_count_ = static_cast<int>(root_priors.shape(1));
         if (action_count_ <= 0) {
             throw std::invalid_argument("root policy must not be empty");
-        }
-        for (std::size_t index = 0; index < root_count; ++index) {
-            if (static_cast<int>(root_priors[index].size()) != action_count_) {
-                throw std::invalid_argument(
-                    "all root policies must have the same action count"
-                );
-            }
-            if (!std::isfinite(root_values[index])
-                || !std::isfinite(root_value_prefixes[index])) {
-                throw std::invalid_argument("root values must be finite");
-            }
         }
         if (simulations <= 0) {
             throw std::invalid_argument("simulations must be positive");
@@ -409,13 +411,31 @@ public:
         if (value_prefix_horizon <= 0) {
             throw std::invalid_argument("value prefix horizon must be positive");
         }
-        roots_.reserve(root_count);
+
+        const auto priors_data = root_priors.unchecked<2>();
+        const auto values_data = root_values.unchecked<1>();
+        const auto prefixes_data = root_value_prefixes.unchecked<1>();
+        roots_.reserve(static_cast<std::size_t>(root_count));
         std::mt19937_64 seed_generator(seed);
-        for (std::size_t index = 0; index < root_count; ++index) {
+        for (py::ssize_t index = 0; index < root_count; ++index) {
+            if (!std::isfinite(values_data(index))
+                || !std::isfinite(prefixes_data(index))) {
+                throw std::invalid_argument("root values must be finite");
+            }
+            std::vector<float> priors(action_count_);
+            for (int action = 0; action < action_count_; ++action) {
+                const float prior = priors_data(index, action);
+                if (!std::isfinite(prior) || prior < 0.0F) {
+                    throw std::invalid_argument(
+                        "root priors must be finite and non-negative"
+                    );
+                }
+                priors[action] = prior;
+            }
             roots_.emplace_back(
-                root_priors[index],
-                root_values[index],
-                root_value_prefixes[index],
+                priors,
+                values_data(index),
+                prefixes_data(index),
                 simulations,
                 discount,
                 value_prefix_horizon,
@@ -426,91 +446,108 @@ public:
         }
     }
 
-    std::tuple<std::vector<int>, std::vector<int>, std::vector<int>> traverse(
-        float pb_c_base,
-        float pb_c_init
-    ) {
+    py::tuple traverse_arrays(float pb_c_base, float pb_c_init) {
         if (!std::isfinite(pb_c_base) || pb_c_base <= 0.0F
             || !std::isfinite(pb_c_init) || pb_c_init < 0.0F) {
             throw std::invalid_argument("invalid exploration constants");
         }
-        std::vector<int> state_slots;
-        std::vector<int> actions;
-        std::vector<int> resets;
-        state_slots.resize(roots_.size());
-        actions.resize(roots_.size());
-        resets.resize(roots_.size());
-        #pragma omp parallel for if(roots_.size() >= 32)
-        for (std::int64_t index = 0;
-             index < static_cast<std::int64_t>(roots_.size());
-             ++index) {
+        const py::ssize_t root_count = static_cast<py::ssize_t>(roots_.size());
+        py::array_t<std::int64_t> state_slots(root_count);
+        py::array_t<std::int64_t> actions(root_count);
+        py::array_t<bool> resets(root_count);
+        auto slots_data = state_slots.mutable_unchecked<1>();
+        auto actions_data = actions.mutable_unchecked<1>();
+        auto resets_data = resets.mutable_unchecked<1>();
+        #pragma omp parallel for if(root_count >= 32)
+        for (py::ssize_t index = 0; index < root_count; ++index) {
             auto [state_slot, action, reset] = roots_[index].traverse(
                 pb_c_base,
                 pb_c_init
             );
-            state_slots[index] = state_slot;
-            actions[index] = action;
-            resets[index] = reset;
+            slots_data(index) = state_slot;
+            actions_data(index) = action;
+            resets_data(index) = reset;
         }
-        return {std::move(state_slots), std::move(actions), std::move(resets)};
+        return py::make_tuple(state_slots, actions, resets);
     }
 
-    void expand_and_back_up(
+    void expand_and_back_up_arrays(
         int state_slot,
-        const std::vector<float>& value_prefixes,
-        const std::vector<float>& values,
-        const std::vector<std::vector<float>>& policy_logits
+        py::array_t<float, py::array::c_style | py::array::forcecast>
+            value_prefixes,
+        py::array_t<float, py::array::c_style | py::array::forcecast> values,
+        py::array_t<float, py::array::c_style | py::array::forcecast>
+            policy_logits
     ) {
-        if (value_prefixes.size() != roots_.size()
-            || values.size() != roots_.size()
-            || policy_logits.size() != roots_.size()) {
-            throw std::invalid_argument("evaluation arrays must match root count");
+        if (value_prefixes.ndim() != 1 || values.ndim() != 1
+            || policy_logits.ndim() != 2
+            || value_prefixes.shape(0) != static_cast<py::ssize_t>(roots_.size())
+            || values.shape(0) != static_cast<py::ssize_t>(roots_.size())
+            || policy_logits.shape(0) != static_cast<py::ssize_t>(roots_.size())
+            || policy_logits.shape(1) != action_count_) {
+            throw std::invalid_argument(
+                "evaluation arrays have invalid shapes"
+            );
         }
-        for (std::size_t index = 0; index < roots_.size(); ++index) {
-            if (!std::isfinite(value_prefixes[index])
-                || !std::isfinite(values[index])) {
+        auto prefixes_data = value_prefixes.unchecked<1>();
+        auto values_data = values.unchecked<1>();
+        auto policy_data = policy_logits.unchecked<2>();
+        for (py::ssize_t index = 0;
+             index < static_cast<py::ssize_t>(roots_.size());
+             ++index) {
+            if (!std::isfinite(prefixes_data(index))
+                || !std::isfinite(values_data(index))) {
                 throw std::invalid_argument("evaluation values must be finite");
             }
-            if (static_cast<int>(policy_logits[index].size()) != action_count_) {
-                throw std::invalid_argument(
-                    "policy action count changed during search"
-                );
-            }
-            if (!std::all_of(
-                    policy_logits[index].begin(),
-                    policy_logits[index].end(),
-                    [](float value) { return std::isfinite(value); }
-                )) {
-                throw std::invalid_argument("policy logits must be finite");
+            for (int action = 0; action < action_count_; ++action) {
+                if (!std::isfinite(policy_data(index, action))) {
+                    throw std::invalid_argument("policy logits must be finite");
+                }
             }
         }
         #pragma omp parallel for if(roots_.size() >= 32)
         for (std::int64_t index = 0;
              index < static_cast<std::int64_t>(roots_.size());
              ++index) {
+            std::vector<float> policy(action_count_);
+            for (int action = 0; action < action_count_; ++action) {
+                policy[action] = policy_data(index, action);
+            }
             roots_[index].expand_and_back_up(
                 state_slot,
-                value_prefixes[index],
-                values[index],
-                policy_logits[index]
+                prefixes_data(index),
+                values_data(index),
+                policy
             );
         }
     }
 
-    std::vector<std::vector<int>> visit_counts() const {
-        std::vector<std::vector<int>> result;
-        result.reserve(roots_.size());
-        for (const RootTree& root : roots_) {
-            result.push_back(root.visit_counts());
+    py::array_t<std::int32_t> visit_counts_array() const {
+        py::array_t<std::int32_t> result(
+            {static_cast<py::ssize_t>(roots_.size()),
+             static_cast<py::ssize_t>(action_count_)}
+        );
+        auto output = result.mutable_unchecked<2>();
+        for (py::ssize_t index = 0;
+             index < static_cast<py::ssize_t>(roots_.size());
+             ++index) {
+            const std::vector<int> counts = roots_[index].visit_counts();
+            for (int action = 0; action < action_count_; ++action) {
+                output(index, action) = counts[action];
+            }
         }
         return result;
     }
 
-    std::vector<float> root_values() const {
-        std::vector<float> result;
-        result.reserve(roots_.size());
-        for (const RootTree& root : roots_) {
-            result.push_back(root.root_value());
+    py::array_t<float> root_values_array() const {
+        py::array_t<float> result(
+            static_cast<py::ssize_t>(roots_.size())
+        );
+        auto output = result.mutable_unchecked<1>();
+        for (py::ssize_t index = 0;
+             index < static_cast<py::ssize_t>(roots_.size());
+             ++index) {
+            output(index) = roots_[index].root_value();
         }
         return result;
     }
@@ -538,9 +575,9 @@ PYBIND11_MODULE(_mcts_native, module) {
     py::class_<BatchTree>(module, "BatchTree")
         .def(
             py::init<
-                const std::vector<std::vector<float>>&,
-                const std::vector<float>&,
-                const std::vector<float>&,
+                FloatArray,
+                FloatArray,
+                FloatArray,
                 int,
                 float,
                 int,
@@ -559,21 +596,19 @@ PYBIND11_MODULE(_mcts_native, module) {
             py::arg("deterministic_ties") = false
         )
         .def(
-            "traverse",
-            &BatchTree::traverse,
+            "traverse_arrays",
+            &BatchTree::traverse_arrays,
             py::arg("pb_c_base"),
-            py::arg("pb_c_init"),
-            py::call_guard<py::gil_scoped_release>()
+            py::arg("pb_c_init")
         )
         .def(
-            "expand_and_back_up",
-            &BatchTree::expand_and_back_up,
+            "expand_and_back_up_arrays",
+            &BatchTree::expand_and_back_up_arrays,
             py::arg("state_slot"),
             py::arg("value_prefixes"),
             py::arg("values"),
-            py::arg("policy_logits"),
-            py::call_guard<py::gil_scoped_release>()
+            py::arg("policy_logits")
         )
-        .def("visit_counts", &BatchTree::visit_counts)
-        .def("root_values", &BatchTree::root_values);
+        .def("visit_counts_array", &BatchTree::visit_counts_array)
+        .def("root_values_array", &BatchTree::root_values_array);
 }

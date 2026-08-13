@@ -1,165 +1,277 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import math
 import random
 
 import pytest
 import torch
 
-from atariagent.search import Evaluation, MCTS, MCTSConfig, MinMaxStats, Node
+from atariagent.search import MCTS, MCTSConfig, PackedEvaluator
 
 
-class SampleLastRandom(random.Random):
-    """Choose the last positive-weight action when sampling a final action."""
+class PackedScalarEvaluator:
+    """Tensor evaluator paired with the independent Python reference below."""
 
-    def choices(
-        self,
-        population,
-        weights=None,
-        *,
-        cum_weights=None,
-        k=1,
-    ):
-        assert weights is not None
-        positive = [item for item, weight in zip(population, weights) if weight > 0]
-        return [positive[-1]] * k
-
-
-class RandomPolicyDefaultValue:
-    """A random policy with the default zero value/value-prefix prediction."""
-
-    def __init__(self, action_space_size: int, seed: int = 0) -> None:
-        self.action_space_size = action_space_size
-        self.rng = random.Random(seed)
+    def __init__(self) -> None:
         self.calls = 0
 
-    def __call__(self, state: int, action: int, hidden: object) -> Evaluation:
+    @staticmethod
+    def initial_hidden(batch_size, *, device, dtype):
+        hidden = torch.zeros(1, batch_size, 1, device=device, dtype=dtype)
+        return hidden, torch.zeros_like(hidden)
+
+    def evaluate_tensors(self, states, actions, hidden, resets=None):
         self.calls += 1
-        return Evaluation(
-            state=state + 1,
-            value_prefix=0.0,
-            value=0.0,
-            policy_logits=[
-                self.rng.uniform(-1.0, 1.0)
-                for _ in range(self.action_space_size)
-            ],
+        hidden_value = hidden[0]
+        if resets is not None:
+            hidden_value = hidden_value.masked_fill(
+                resets.reshape(1, states.shape[0], 1),
+                0.0,
+            )
+        prefix = hidden_value + (actions.T.unsqueeze(-1) + 1) * 0.25
+        flat_actions = actions[:, 0].to(states.dtype)
+        flat_states = states[:, 0]
+        next_states = (flat_states * 3 + flat_actions + 1).unsqueeze(1)
+        values = (flat_states + flat_actions) / 10.0
+        logits = torch.stack(
+            (0.3 - flat_actions, 0.1 + flat_actions, flat_actions * 0 - 0.2),
+            dim=1,
+        )
+        return next_states, (prefix, prefix), prefix[0, :, 0], values, logits
+
+    @staticmethod
+    def validate_policy(policy_logits, batch_size):
+        if policy_logits.shape != (batch_size, 3):
+            raise ValueError("invalid policy shape")
+
+
+@dataclass(frozen=True)
+class _Evaluation:
+    state: int
+    value_prefix: float
+    value: float
+    policy_logits: list[float]
+    hidden: float = 0.0
+
+
+@dataclass
+class _Stats:
+    minimum_delta: float
+    minimum: float = math.inf
+    maximum: float = -math.inf
+
+    def normalize(self, value: float) -> float:
+        delta = self.maximum - self.minimum
+        if delta > 0.0:
+            value = (value - self.minimum) / max(delta, self.minimum_delta)
+        return min(max(value, 0.0), 1.0)
+
+
+@dataclass
+class _Node:
+    prior: float
+    parent: _Node | None = None
+    action: int = -1
+    state: int = 0
+    value_prefix: float = 0.0
+    hidden: float = 0.0
+    reset: bool = False
+    visits: int = 0
+    value_sum: float = 0.0
+    children: list[_Node] = field(default_factory=list)
+
+    @property
+    def depth(self) -> int:
+        return 0 if self.parent is None else self.parent.depth + 1
+
+    @property
+    def value(self) -> float:
+        return self.value_sum / self.visits if self.visits else 0.0
+
+    def reward(self) -> float:
+        if self.parent is None:
+            return 0.0
+        if self.parent.reset:
+            return self.value_prefix
+        return self.value_prefix - self.parent.value_prefix
+
+    def q(self, discount: float) -> float:
+        return self.reward() + discount * self.value
+
+
+def _softmax(logits: list[float]) -> list[float]:
+    maximum = max(logits)
+    values = [math.exp(value - maximum) for value in logits]
+    total = sum(values)
+    return [value / total for value in values]
+
+
+def _expand(node: _Node, evaluation: _Evaluation) -> None:
+    node.state = evaluation.state
+    node.value_prefix = evaluation.value_prefix
+    node.hidden = evaluation.hidden
+    node.children = [
+        _Node(prior=prior, parent=node, action=action)
+        for action, prior in enumerate(_softmax(evaluation.policy_logits))
+    ]
+
+
+def _reference_batch(
+    config: MCTSConfig,
+    roots: list[_Evaluation],
+    *,
+    seed: int,
+    add_exploration_noise: bool,
+) -> tuple[list[tuple[int, ...]], list[float]]:
+    """Independent Python MCTS retained only for native differential tests."""
+    rng = random.Random(seed)
+    nodes: list[_Node] = []
+    stats: list[_Stats] = []
+    for evaluation in roots:
+        root = _Node(prior=1.0)
+        _expand(root, evaluation)
+        root.visits = 1
+        root.value_sum = evaluation.value
+        if add_exploration_noise:
+            samples = [
+                rng.gammavariate(config.dirichlet_alpha, 1.0)
+                for _ in root.children
+            ]
+            total = sum(samples)
+            for child, sample in zip(root.children, samples, strict=True):
+                child.prior = (
+                    (1.0 - config.root_exploration_fraction) * child.prior
+                    + config.root_exploration_fraction * sample / total
+                )
+        nodes.append(root)
+        stats.append(_Stats(config.value_delta_max))
+
+    def evaluator(state: int, action: int, hidden: float | None) -> _Evaluation:
+        prefix = float(hidden or 0.0) + (action + 1) * 0.25
+        return _Evaluation(
+            state * 3 + action + 1,
+            prefix,
+            float(state + action) / 10.0,
+            [0.3 - action, 0.1 + action, -0.2],
+            prefix,
         )
 
+    for _ in range(config.num_simulations):
+        for root, root_stats in zip(nodes, stats, strict=True):
+            node = root
+            path = [root]
+            parent_mean_q = 0.0
+            while node.children:
+                visited_q = [
+                    child.q(config.discount)
+                    for child in node.children
+                    if child.visits > 0
+                ]
+                mean_q = (
+                    sum(visited_q) / len(visited_q)
+                    if node is root and visited_q
+                    else 0.0
+                    if node is root
+                    else (parent_mean_q + sum(visited_q))
+                    / (1 + len(visited_q))
+                )
+                child_visits = sum(child.visits for child in node.children)
+                exploration_scale = config.pb_c_init + math.log(
+                    (child_visits + config.pb_c_base + 1.0)
+                    / config.pb_c_base
+                )
+                sqrt_visits = math.sqrt(child_visits)
+                scores = []
+                for child in node.children:
+                    prior_score = (
+                        child.prior
+                        * sqrt_visits
+                        / (1 + child.visits)
+                        * exploration_scale
+                    )
+                    q = child.q(config.discount) if child.visits else mean_q
+                    scores.append(root_stats.normalize(q) + prior_score)
+                best = max(scores)
+                node = next(
+                    child
+                    for child, score in zip(node.children, scores, strict=True)
+                    if abs(score - best) <= 1e-12
+                )
+                path.append(node)
+                parent_mean_q = mean_q
 
-def test_default_mcts_with_random_policy_and_zero_value() -> None:
-    evaluator = RandomPolicyDefaultValue(action_space_size=4)
-    root = Evaluation(
-        state=0,
-        value_prefix=0.0,
-        value=0.0,
-        policy_logits=[0.0, 0.0, 0.0, 0.0],
-    )
+            parent = node.parent
+            assert parent is not None
+            evaluation = evaluator(
+                parent.state,
+                node.action,
+                None if parent.reset else parent.hidden,
+            )
+            _expand(node, evaluation)
+            node.reset = node.depth % config.value_prefix_horizon == 0
+            bootstrap = evaluation.value
+            for visited in reversed(path):
+                visited.value_sum += bootstrap
+                visited.visits += 1
+                bootstrap = visited.reward() + config.discount * bootstrap
 
-    result = MCTS(rng=random.Random(7)).search(root, evaluator)
+            root_stats.minimum = math.inf
+            root_stats.maximum = -math.inf
+            stack = [root]
+            while stack:
+                current = stack.pop()
+                for child in current.children:
+                    if child.visits:
+                        value = child.q(config.discount)
+                        root_stats.minimum = min(root_stats.minimum, value)
+                        root_stats.maximum = max(root_stats.maximum, value)
+                        stack.append(child)
 
-    assert evaluator.calls == 50
-    assert sum(result.visit_counts) == 50
-    assert not hasattr(result, "root")
-    assert result.action in range(4)
-    assert result.root_value == pytest.approx(0.0)
-    assert not hasattr(result, "policy")
-    assert MCTSConfig().value_prefix_horizon == 5
-
-
-def test_node_recovers_rewards_from_value_prefixes() -> None:
-    root = Node(prior=1.0)
-    root.expand(Evaluation("root", 0.0, 0.0, [0.0]))
-    child = root.children[0]
-    child.expand(Evaluation("child", 2.0, 0.0, [0.0]))
-    grandchild = child.children[0]
-    grandchild.value_prefix = 5.0
-
-    assert child.reward() == pytest.approx(2.0)
-    assert grandchild.reward() == pytest.approx(3.0)
-
-    child.reset_value_prefix = True
-    assert grandchild.reward() == pytest.approx(5.0)
-
-
-def test_value_prefix_horizon_resets_evaluator_hidden_state() -> None:
-    hidden_inputs: list[int | None] = []
-
-    def evaluator(state: int, action: int, hidden: int | None) -> Evaluation:
-        hidden_inputs.append(hidden)
-        prefix = (hidden or 0) + 1
-        return Evaluation(state + 1, prefix, 0.0, [0.0], prefix)
-
-    config = MCTSConfig(
-        num_simulations=3,
-        discount=1.0,
-        value_prefix_horizon=2,
-    )
-    root = Evaluation(0, 0.0, 0.0, [0.0], 0)
-
-    result = MCTS(config, rng=random.Random(0)).search(root, evaluator)
-
-    assert hidden_inputs == [0, 1, None]
-    assert result.root_value == pytest.approx(1.5)
-
-
-def test_soft_min_max_normalization_uses_minimum_delta() -> None:
-    stats = MinMaxStats(value_delta_max=0.01)
-    stats.update(1.0)
-    stats.update(1.001)
-
-    assert stats.normalize(1.0) == pytest.approx(0.0)
-    assert stats.normalize(1.001) == pytest.approx(0.1)
-
-    stats.clear()
-    stats.update(0.5)
-    assert stats.normalize(0.5) == pytest.approx(0.5)
-
-
-def test_temperature_zero_returns_greedy_action() -> None:
-    evaluator = RandomPolicyDefaultValue(action_space_size=2)
-    result = MCTS(
-        MCTSConfig(num_simulations=4), rng=random.Random(0)
-    ).search(
-        Evaluation(0, 0.0, 0.0, [2.0, -2.0]),
-        evaluator,
-        temperature=0.0,
-    )
-
-    assert result.action == max(
-        range(len(result.visit_counts)),
-        key=result.visit_counts.__getitem__,
+    return (
+        [tuple(child.visits for child in root.children) for root in nodes],
+        [root.value for root in nodes],
     )
 
 
-def test_temperature_policy_is_used_to_sample_action() -> None:
-    evaluator = RandomPolicyDefaultValue(action_space_size=2)
-    result = MCTS(
-        MCTSConfig(num_simulations=2), rng=SampleLastRandom(0)
-    ).search(
-        Evaluation(0, 0.0, 0.0, [0.0, 0.0]),
-        evaluator,
-        temperature=1.0,
+def _make_mcts(
+    config: MCTSConfig | None = None,
+    *,
+    seed: int = 0,
+    evaluator: PackedEvaluator | None = None,
+) -> MCTS:
+    return MCTS(
+        config,
+        evaluator=evaluator or PackedScalarEvaluator(),
+        rng=random.Random(seed),
     )
 
-    assert result.visit_counts == (1, 1)
-    assert result.action == 1
+
+def test_default_config_matches_efficientzero_search() -> None:
+    config = MCTSConfig()
+    assert config.num_simulations == 50
+    assert config.value_prefix_horizon == 5
 
 
-def test_search_batch_evaluates_all_roots_in_one_call_per_simulation() -> None:
-    calls: list[tuple[list[int], list[int], list[object]]] = []
+def test_mcts_requires_a_packed_evaluator() -> None:
+    with pytest.raises(TypeError, match="PackedEvaluator"):
+        MCTS(evaluator=object())  # type: ignore[arg-type]
 
-    def evaluator(states, actions, hidden_states):
-        calls.append((list(states), list(actions), list(hidden_states)))
-        return [
-            Evaluation(state + 1, 0.0, 0.0, [0.0])
-            for state in states
-        ]
 
+def test_search_batch_evaluates_all_roots_once_per_simulation() -> None:
+    evaluator = PackedScalarEvaluator()
     config = MCTSConfig(num_simulations=4)
-    roots = [Evaluation(state, 0.0, 0.0, [0.0]) for state in range(3)]
-    results = MCTS(config, rng=random.Random(0)).search_batch(roots, evaluator)
+    states = torch.arange(3, dtype=torch.float32).unsqueeze(1)
 
-    assert len(calls) == config.num_simulations
-    assert all(len(states) == len(roots) for states, _, _ in calls)
-    assert len(results) == len(roots)
-    assert all(result.visit_counts == (4,) for result in results)
+    results = _make_mcts(config, evaluator=evaluator).search_batch(
+        states,
+        torch.zeros(3),
+        torch.zeros(3, 3),
+    )
+
+    assert evaluator.calls == config.num_simulations
+    assert results.visit_counts.shape == (states.shape[0], 3)
+    assert (results.visit_counts.sum(axis=1) == config.num_simulations).all()
 
 
 @pytest.mark.parametrize("seed", [0, 1, 4, 17])
@@ -169,82 +281,73 @@ def test_native_batch_search_matches_python_reference(seed: int) -> None:
         discount=0.9,
         value_prefix_horizon=3,
     )
-    roots = [
-        Evaluation(index, 0.0, float(index), [1.0, 0.2, -0.7], 0.0)
-        for index in range(3)
-    ]
+    states = torch.arange(3, dtype=torch.float32).unsqueeze(1)
+    root_values = torch.arange(3, dtype=torch.float32)
+    root_logits = torch.tensor([[1.0, 0.2, -0.7]]).expand(3, -1)
 
-    def evaluator(states, actions, hidden_states):
-        return [
-            Evaluation(
-                state * 3 + action + 1,
-                float(hidden or 0.0) + (action + 1) * 0.25,
-                float(state + action) / 10.0,
-                [0.3 - action, 0.1 + action, -0.2],
-                float(hidden or 0.0) + (action + 1) * 0.25,
-            )
-            for state, action, hidden in zip(
-                states,
-                actions,
-                hidden_states,
-                strict=True,
-            )
-        ]
-
-    native = MCTS(config, rng=random.Random(seed)).search_batch(
-        roots,
-        evaluator,
+    native = _make_mcts(config, seed=seed).search_batch(
+        states,
+        root_values,
+        root_logits,
         add_exploration_noise=True,
         _deterministic_ties=True,
     )
-    reference = MCTS(config, rng=random.Random(seed))._search_batch_python(
-        roots,
-        evaluator,
+    counts, values = _reference_batch(
+        config,
+        [
+            _Evaluation(index, 0.0, float(index), [1.0, 0.2, -0.7])
+            for index in range(3)
+        ],
+        seed=seed,
         add_exploration_noise=True,
-        _deterministic_ties=True,
     )
 
-    assert [result.visit_counts for result in native] == [
-        result.visit_counts for result in reference
-    ]
-    assert [result.root_value for result in native] == pytest.approx(
-        [result.root_value for result in reference],
+    assert native.visit_counts.tolist() == [list(row) for row in counts]
+    assert native.root_values.tolist() == pytest.approx(
+        values,
         rel=1e-5,
         abs=1e-6,
     )
 
 
+def test_temperature_zero_returns_greedy_action() -> None:
+    mcts = _make_mcts(MCTSConfig(num_simulations=7))
+    batch = mcts.search_batch(
+        torch.zeros(2, 1),
+        torch.zeros(2),
+        torch.tensor([[2.0, -2.0, -3.0]]).expand(2, -1),
+    )
+    results = mcts.materialize_results(batch, temperature=0.0)
+    assert all(
+        result.action
+        == max(range(len(result.visit_counts)), key=result.visit_counts.__getitem__)
+        for result in results
+    )
+
+
 def test_module_evaluator_uses_inference_and_eval_modes() -> None:
-    class ModuleEvaluator(torch.nn.Module):
+    class ModuleEvaluator(torch.nn.Module, PackedScalarEvaluator):
         def __init__(self) -> None:
-            super().__init__()
+            torch.nn.Module.__init__(self)
+            PackedScalarEvaluator.__init__(self)
             self.grad_enabled: list[bool] = []
             self.training_modes: list[bool] = []
 
-        def forward(self, state, action, hidden):
+        def evaluate_tensors(self, states, actions, hidden, resets=None):
             self.grad_enabled.append(torch.is_grad_enabled())
             self.training_modes.append(self.training)
-            return Evaluation(state + 1, 0.0, 0.0, [0.0])
+            return super().evaluate_tensors(states, actions, hidden, resets)
 
     evaluator = ModuleEvaluator()
-    assert evaluator.training
-
-    MCTS(MCTSConfig(num_simulations=2)).search(
-        Evaluation(0, 0.0, 0.0, [0.0]), evaluator
+    _make_mcts(
+        MCTSConfig(num_simulations=2),
+        evaluator=evaluator,
+    ).search_batch(
+        torch.zeros(2, 1),
+        torch.zeros(2),
+        torch.zeros(2, 3),
     )
 
     assert evaluator.grad_enabled == [False, False]
     assert evaluator.training_modes == [False, False]
     assert evaluator.training
-
-
-def test_root_prediction_remains_the_first_value_estimate() -> None:
-    def evaluator(state, action, hidden):
-        return Evaluation(state + 1, 0.0, 0.0, [0.0])
-
-    result = MCTS(MCTSConfig(num_simulations=1, discount=1.0)).search(
-        Evaluation(0, 0.0, 10.0, [0.0]), evaluator
-    )
-
-    assert sum(result.visit_counts) == 1
-    assert result.root_value == pytest.approx(5.0)

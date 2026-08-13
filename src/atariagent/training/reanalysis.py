@@ -152,14 +152,10 @@ class ReanalysisWorker:
     ) -> None:
         if not isinstance(cache_targets, bool):
             raise TypeError("cache_targets must be a boolean")
-        for value, name in (
-            (policy_chunk_size, "policy_chunk_size"),
-            (mcts_threads, "mcts_threads"),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise TypeError(f"{name} must be an integer")
-            if value <= 0:
-                raise ValueError(f"{name} must be positive")
+        if isinstance(mcts_threads, bool) or not isinstance(mcts_threads, int):
+            raise TypeError("mcts_threads must be an integer")
+        if mcts_threads <= 0:
+            raise ValueError("mcts_threads must be positive")
         set_num_threads(mcts_threads)
 
         self.device = torch.device(
@@ -178,8 +174,8 @@ class ReanalysisWorker:
             support_min=support_min,
             support_max=support_max,
             precision=precision,
+            chunk_size=policy_chunk_size,
         ).to(self.device)
-        self.policy_chunk_size = policy_chunk_size
         self.cache_targets = cache_targets
         self.weight_version = -1
         self._last_request_id = -1
@@ -228,10 +224,7 @@ class ReanalysisWorker:
             transfer_duration_ms = (
                 perf_counter() - transfer_started
             ) * 1_000.0
-            reanalyzed = self.target.reanalyze_batch(
-                device_batch,
-                policy_chunk_size=self.policy_chunk_size,
-            )
+            reanalyzed = self.target.reanalyze_batch(device_batch)
             output_transfer_started = perf_counter()
             value_targets = (
                 reanalyzed.value_targets.detach().cpu().contiguous()
