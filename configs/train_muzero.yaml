@@ -92,7 +92,6 @@ loss:
 
 checkpoint:
   path: checkpoints/Alien-v5/muzero_latest.pt
-  every: 1000
   # Keep snapshots at ten evenly spaced points across the complete run.
   keep_representative: 10
 

@@ -189,8 +189,6 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("batch_worker_timeout_seconds must be positive")
     if config.training.precision not in ("fp32", "bf16"):
         raise ValueError("training.precision must be fp32 or bf16")
-    if config.checkpoint.every < 0:
-        raise ValueError("checkpoint.every must be non-negative")
     if config.checkpoint.keep_representative <= 0:
         raise ValueError("checkpoint.keep_representative must be positive")
     if config.evaluation.enabled and config.evaluation.episodes <= 0:
@@ -470,11 +468,7 @@ def main(config: TrainMuZeroConfig) -> None:
                 training_progress.set_postfix(progress_stats, refresh=False)
             training_progress.update(1)
 
-            regular_checkpoint = (
-                config.checkpoint.every > 0
-                and update % config.checkpoint.every == 0
-            )
-            if regular_checkpoint or update in representative_updates:
+            if update in representative_updates:
                 checkpoint_and_evaluate()
 
         def run_updates(count: int) -> None:

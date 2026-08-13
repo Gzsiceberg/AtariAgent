@@ -93,10 +93,9 @@ class LossConfig:
 
 @dataclass
 class CheckpointConfig:
-    """Checkpoint destination, frequency, and representative snapshot count."""
+    """Checkpoint destination and representative snapshot count."""
 
     path: str = "checkpoints/muzero_latest.pt"
-    every: int = 1_000
     keep_representative: int = 10
 
 
