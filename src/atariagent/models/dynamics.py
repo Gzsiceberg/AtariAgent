@@ -101,12 +101,16 @@ class DynamicsNetwork(nn.Module):
         action_space_size: int,
         *,
         batch_norm_momentum: float = 0.1,
+        scale_state_gradient: bool = True,
     ) -> None:
         super().__init__()
         if action_space_size <= 0:
             raise ValueError("action_space_size must be positive")
+        if not isinstance(scale_state_gradient, bool):
+            raise TypeError("scale_state_gradient must be a boolean")
 
         self.action_space_size = action_space_size
+        self.scale_state_gradient = scale_state_gradient
         self.transition = nn.Sequential(
             conv3x3(65, 64),
             nn.BatchNorm2d(64, momentum=batch_norm_momentum),
@@ -137,6 +141,10 @@ class DynamicsNetwork(nn.Module):
 
         transition = self.transition(torch.cat((state, action_plane), dim=1))
         next_state = self.residual(self.relu(transition + state))
+        if self.scale_state_gradient:
+            # Placing this forward identity before reward prediction scales
+            # every gradient through the recurrent state without tensor hooks.
+            next_state = next_state * 0.5 + next_state.detach() * 0.5
         value_prefix, next_hidden = self.reward_prediction(
             next_state, reward_hidden
         )

@@ -13,7 +13,6 @@ from typing import Literal
 import torch
 from torch import Tensor, nn
 
-from atariagent.agent import categorical_to_scalar
 from atariagent.replay_batch import ReplayBatch
 
 
@@ -39,9 +38,187 @@ class MuZeroTrainMetrics:
     priorities: Tensor
 
 
-def _halve_gradient(gradient: Tensor) -> Tensor:
-    """Scale recurrent-state gradients as prescribed by MuZero."""
-    return gradient * 0.5
+class _MuZeroUnroll(nn.Module):
+    """Complete fixed-length MuZero forward and loss computation."""
+
+    def __init__(
+        self,
+        representation: nn.Module,
+        dynamics: nn.Module,
+        prediction: nn.Module,
+        *,
+        unroll_steps: int,
+        lstm_horizon: int,
+        policy_weight: float,
+        value_weight: float,
+        reward_weight: float,
+        support_min: int,
+        support_max: int,
+        priority_epsilon: float,
+    ) -> None:
+        super().__init__()
+        self.representation = representation
+        self.dynamics = dynamics
+        self.prediction = prediction
+        self.unroll_steps = unroll_steps
+        self.lstm_horizon = lstm_horizon
+        self.policy_weight = policy_weight
+        self.value_weight = value_weight
+        self.reward_weight = reward_weight
+        self.support_min = support_min
+        self.support_max = support_max
+        self.priority_epsilon = priority_epsilon
+
+    def _prediction_losses(
+        self,
+        policy_logits: Tensor,
+        value_logits: Tensor,
+        policy_targets: Tensor,
+        value_targets: Tensor,
+        policy_mask: Tensor,
+        value_mask: Tensor,
+        offset: int,
+    ) -> tuple[Tensor, Tensor]:
+        policy_loss = ReplayBatch._policy_cross_entropy(
+            policy_logits, policy_targets[:, offset]
+        ) * policy_mask[:, offset].to(policy_logits.dtype)
+        value_loss = ReplayBatch._scalar_loss(
+            value_logits,
+            value_targets[:, offset],
+            support_min=self.support_min,
+            support_max=self.support_max,
+        ) * value_mask[:, offset].to(value_logits.dtype)
+        return policy_loss, value_loss
+
+    def _decode_values(self, logits: Tensor) -> Tensor:
+        """Decode root values without the eager decoder's cached support."""
+        logits = logits.detach().float()
+        probabilities = torch.softmax(logits, dim=-1)
+        support = torch.arange(
+            self.support_min,
+            self.support_max + 1,
+            device=logits.device,
+            dtype=logits.dtype,
+        )
+        transformed = (probabilities * support).sum(dim=-1)
+        epsilon = 0.001
+        magnitude = (
+            (
+                torch.sqrt(
+                    1
+                    + 4
+                    * epsilon
+                    * (transformed.abs() + 1 + epsilon)
+                )
+                - 1
+            )
+            / (2 * epsilon)
+        ).square() - 1
+        scalar = torch.nan_to_num(transformed.sign() * magnitude)
+        return torch.where(scalar.abs() < epsilon, 0.0, scalar)
+
+    def forward(
+        self,
+        frames: Tensor,
+        actions: Tensor,
+        rewards: Tensor,
+        policy_targets: Tensor,
+        value_targets: Tensor,
+        action_mask: Tensor,
+        policy_mask: Tensor,
+        value_mask: Tensor,
+        importance_weights: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """Return the total losses and replay priorities for one batch."""
+        batch_size = actions.shape[0]
+        stack_size = frames.shape[1] - self.unroll_steps
+        observations = frames[:, :stack_size].reshape(
+            batch_size,
+            stack_size * frames.shape[2],
+            frames.shape[3],
+            frames.shape[4],
+        ).float().div(255.0)
+
+        prefix = torch.zeros_like(rewards[:, 0])
+        prefix_targets: list[Tensor] = []
+        for step in range(self.unroll_steps):
+            prefix = prefix + rewards[:, step] * action_mask[:, step].to(
+                rewards.dtype
+            )
+            prefix_targets.append(prefix)
+            if (step + 1) % self.lstm_horizon == 0:
+                prefix = torch.zeros_like(prefix)
+
+        recurrent_policy_loss = observations.new_zeros(batch_size)
+        recurrent_value_loss = observations.new_zeros(batch_size)
+        recurrent_reward_loss = observations.new_zeros(batch_size)
+
+        state = self.representation(observations)
+        policy_logits, value_logits = self.prediction(state)
+        root_policy_loss, root_value_loss = self._prediction_losses(
+            policy_logits,
+            value_logits,
+            policy_targets,
+            value_targets,
+            policy_mask,
+            value_mask,
+            0,
+        )
+        predicted_root_values = self._decode_values(value_logits)
+        priorities = (
+            predicted_root_values - value_targets[:, 0]
+        ).abs() + self.priority_epsilon
+
+        hidden = None
+        for step in range(self.unroll_steps):
+            state, hidden, value_prefix_logits = self.dynamics(
+                state,
+                actions[:, step],
+                hidden,
+            )
+            recurrent_reward_loss += ReplayBatch._scalar_loss(
+                value_prefix_logits,
+                prefix_targets[step],
+                support_min=self.support_min,
+                support_max=self.support_max,
+            ) * action_mask[:, step].to(value_prefix_logits.dtype)
+
+            policy_logits, value_logits = self.prediction(state)
+            step_policy_loss, step_value_loss = self._prediction_losses(
+                policy_logits,
+                value_logits,
+                policy_targets,
+                value_targets,
+                policy_mask,
+                value_mask,
+                step + 1,
+            )
+            recurrent_policy_loss += step_policy_loss
+            recurrent_value_loss += step_value_loss
+            if (step + 1) % self.lstm_horizon == 0:
+                hidden = None
+
+        loss_scale = 1.0 / self.unroll_steps
+        sample_weights = importance_weights.to(root_policy_loss.dtype)
+        policy_loss = (
+            sample_weights
+            * (root_policy_loss + recurrent_policy_loss)
+            * loss_scale
+        ).mean()
+        value_loss = (
+            sample_weights
+            * (root_value_loss + recurrent_value_loss)
+            * loss_scale
+        ).mean()
+        reward_loss = (
+            sample_weights * recurrent_reward_loss * loss_scale
+        ).mean()
+        loss = (
+            self.policy_weight * policy_loss
+            + self.value_weight * value_loss
+            + self.reward_weight * reward_loss
+        )
+        return loss, policy_loss, value_loss, reward_loss, priorities
 
 
 class MuZeroTrainer:
@@ -77,7 +254,7 @@ class MuZeroTrainer:
         priority_epsilon: float = 1e-6,
         precision: Precision = "fp32",
         compile_model: bool = False,
-        compile_mode: str = "default",
+        compile_mode: str = "max-autotune",
     ) -> None:
         if unroll_steps <= 0:
             raise ValueError("unroll_steps must be positive")
@@ -103,6 +280,10 @@ class MuZeroTrainer:
             raise ValueError("precision must be fp32 or bf16")
         if not compile_mode:
             raise ValueError("compile_mode must not be empty")
+        if getattr(dynamics, "scale_state_gradient", None) is not True:
+            raise ValueError(
+                "dynamics must enable recurrent-state gradient scaling"
+            )
         for weight, name in (
             (policy_weight, "policy_weight"),
             (value_weight, "value_weight"),
@@ -132,6 +313,7 @@ class MuZeroTrainer:
         self.representation = representation
         self.dynamics = dynamics
         self.prediction = prediction
+        self._unroll: nn.Module
         self.unroll_steps = unroll_steps
         self.lstm_horizon = lstm_horizon
         self.policy_weight = policy_weight
@@ -157,18 +339,32 @@ class MuZeroTrainer:
             momentum=momentum,
             weight_decay=weight_decay,
         )
-        # Compile wrappers share the original parameters. Keeping the original
-        # modules on the agent preserves checkpoint state-dict keys.
+        # Eager and compiled training share exactly one unroll implementation.
+        # The original modules retain checkpoint state-dict keys because the
+        # unroll and its compile wrapper reference the same parameters.
+        unroll = _MuZeroUnroll(
+            representation,
+            dynamics,
+            prediction,
+            unroll_steps=unroll_steps,
+            lstm_horizon=lstm_horizon,
+            policy_weight=policy_weight,
+            value_weight=value_weight,
+            reward_weight=reward_weight,
+            support_min=support_min,
+            support_max=support_max,
+            priority_epsilon=priority_epsilon,
+        )
         if compile_model:
-            self.representation = torch.compile(
-                representation, dynamic=False, mode=compile_mode
+            torch._dynamo.config.allow_rnn = True
+            self._unroll = torch.compile(
+                unroll,
+                dynamic=False,
+                fullgraph=True,
+                mode=compile_mode,
             )
-            self.dynamics = torch.compile(
-                dynamics, dynamic=False, mode=compile_mode
-            )
-            self.prediction = torch.compile(
-                prediction, dynamic=False, mode=compile_mode
-            )
+        else:
+            self._unroll = unroll
 
     def train_step(self, batch: ReplayBatch) -> MuZeroTrainMetrics:
         """Run one update from policy, n-step value, and value-prefix targets."""
@@ -179,14 +375,7 @@ class MuZeroTrainer:
         learning_rate = self._adjust_learning_rate()
         self.optimizer.zero_grad(set_to_none=True)
 
-        observations = batch.normalized_root_observation()
-        prefix_targets = batch.value_prefix_targets(
-            lstm_horizon=self.lstm_horizon
-        )
-
-        autocast_dtype = (
-            torch.bfloat16 if self.precision == "bf16" else None
-        )
+        autocast_dtype = torch.bfloat16 if self.precision == "bf16" else None
         autocast_context = (
             nullcontext()
             if autocast_dtype is None
@@ -196,82 +385,18 @@ class MuZeroTrainer:
             )
         )
         with autocast_context:
-            batch_size = batch.batch_size
-            recurrent_policy_loss = observations.new_zeros(batch_size)
-            recurrent_value_loss = observations.new_zeros(batch_size)
-            recurrent_reward_loss = observations.new_zeros(batch_size)
-
-            state = self.representation(observations)
-            policy_logits, value_logits = self.prediction(state)
-            root_policy_loss, root_value_loss = batch.prediction_losses(
-                policy_logits,
-                value_logits,
-                offset=0,
-                support_min=self.support_min,
-                support_max=self.support_max,
+            outputs = self._unroll(
+                batch.frames,
+                batch.actions,
+                batch.rewards,
+                batch.policy_targets,
+                batch.value_targets,
+                batch.action_mask,
+                batch.policy_mask,
+                batch.value_mask,
+                batch.importance_weights,
             )
-
-            # Decode in FP32 even when the model is autocast. This avoids
-            # low-precision inverse-transform operations in priorities.
-            predicted_root_values = categorical_to_scalar(
-                value_logits.detach().float(),
-                support_min=self.support_min,
-                support_max=self.support_max,
-            )
-            new_priorities = (
-                predicted_root_values - batch.value_targets[:, 0]
-            ).abs() + self.priority_epsilon
-
-            hidden = None
-            for step in range(self.unroll_steps):
-                state, hidden, value_prefix_logits = self.dynamics(
-                    state, batch.actions[:, step], hidden
-                )
-                recurrent_reward_loss += batch.value_prefix_loss(
-                    value_prefix_logits,
-                    prefix_targets[:, step],
-                    step=step,
-                    support_min=self.support_min,
-                    support_max=self.support_max,
-                )
-
-                policy_logits, value_logits = self.prediction(state)
-                step_policy_loss, step_value_loss = batch.prediction_losses(
-                    policy_logits,
-                    value_logits,
-                    offset=step + 1,
-                    support_min=self.support_min,
-                    support_max=self.support_max,
-                )
-                recurrent_policy_loss += step_policy_loss
-                recurrent_value_loss += step_value_loss
-                state.register_hook(_halve_gradient)
-
-                if (step + 1) % self.lstm_horizon == 0:
-                    hidden = None
-
-            loss_scale = 1.0 / self.unroll_steps
-            sample_weights = batch.importance_weights.to(
-                root_policy_loss.dtype
-            )
-            policy_loss = (
-                sample_weights
-                * (root_policy_loss + recurrent_policy_loss)
-                * loss_scale
-            ).mean()
-            value_loss = (
-                sample_weights
-                * (root_value_loss + recurrent_value_loss)
-                * loss_scale
-            ).mean()
-            reward_loss = (
-                sample_weights * recurrent_reward_loss * loss_scale
-            ).mean()
-            loss = (
-                self.policy_weight * policy_loss
-                + self.value_weight * value_loss
-                + self.reward_weight * reward_loss
-            )
+            loss, policy_loss, value_loss, reward_loss, new_priorities = outputs
 
         loss.backward()
 

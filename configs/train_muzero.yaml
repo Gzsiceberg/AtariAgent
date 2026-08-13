@@ -79,6 +79,7 @@ training:
   deterministic: false
   # Disable these checks in production after validating with them enabled.
   runtime_type_checks: false
+  # Compile the complete learner unroll/loss graph and autotune its kernels.
   compile_model: true
   compile_mode: default
   log_every: 10

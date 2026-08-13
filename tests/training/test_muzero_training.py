@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import pytest
 import torch
 import torch.nn.functional as functional
@@ -190,8 +192,14 @@ class _ScalarRepresentation(torch.nn.Module):
 
 
 class _IdentityDynamics(torch.nn.Module):
+    def __init__(self, *, scale_state_gradient=True):
+        super().__init__()
+        self.scale_state_gradient = scale_state_gradient
+
     def forward(self, state, action, hidden):
         next_state = state + 0.0
+        if self.scale_state_gradient:
+            next_state = next_state * 0.5 + next_state.detach() * 0.5
         value_prefix = torch.cat((next_state * 0.0, next_state * 0.0), dim=1)
         return next_state, None, value_prefix
 
@@ -201,6 +209,102 @@ class _ScalarPrediction(torch.nn.Module):
         policy = torch.cat((state, torch.zeros_like(state)), dim=1)
         value = torch.cat((state * 0.0, state * 0.0), dim=1)
         return policy, value
+
+
+class _RewardIdentityDynamics(_IdentityDynamics):
+    def forward(self, state, action, hidden):
+        next_state, _, _ = super().forward(state, action, hidden)
+        value_prefix = torch.cat((next_state, torch.zeros_like(next_state)), dim=1)
+        return next_state, None, value_prefix
+
+
+def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
+    compile_arguments = {}
+
+    def identity_compile(module, **kwargs):
+        compile_arguments.update(kwargs)
+        return module
+
+    monkeypatch.setattr(torch, "compile", identity_compile)
+    representation = _ScalarRepresentation()
+    dynamics = _RewardIdentityDynamics()
+    prediction = _ScalarPrediction()
+    compiled_modules = tuple(
+        deepcopy(module) for module in (representation, dynamics, prediction)
+    )
+    trainer_arguments = dict(
+        learning_rate=0.1,
+        momentum=0.0,
+        weight_decay=0.0,
+        lr_warmup_steps=0,
+        unroll_steps=2,
+        lstm_horizon=2,
+        support_min=0,
+        support_max=1,
+        max_gradient_norm=100.0,
+    )
+    eager = MuZeroTrainer(
+        representation,
+        dynamics,
+        prediction,
+        **trainer_arguments,
+    )
+    compiled = MuZeroTrainer(
+        *compiled_modules,
+        compile_model=True,
+        **trainer_arguments,
+    )
+    batch = ReplayBatch(
+        frames=torch.zeros(2, 3, 1, 1, 1, dtype=torch.uint8),
+        actions=torch.zeros(2, 2, 1, dtype=torch.long),
+        rewards=torch.tensor([[1.0, -0.5], [0.5, 0.25]]),
+        policy_targets=torch.tensor(
+            [
+                [[0.2, 0.8], [0.7, 0.3], [0.9, 0.1]],
+                [[0.8, 0.2], [0.4, 0.6], [0.1, 0.9]],
+            ]
+        ),
+        value_targets=torch.tensor([[0.0, 1.0, 0.5], [1.0, 0.0, 0.5]]),
+        action_mask=torch.ones(2, 2, dtype=torch.bool),
+        policy_mask=torch.ones(2, 3, dtype=torch.bool),
+        value_mask=torch.ones(2, 3, dtype=torch.bool),
+        indices=torch.arange(2),
+        importance_weights=torch.tensor([0.5, 1.0]),
+    )
+
+    eager_metrics = eager.train_step(batch)
+    compiled_metrics = compiled.train_step(batch)
+
+    assert compile_arguments == {
+        "dynamic": False,
+        "fullgraph": True,
+        "mode": "max-autotune",
+    }
+    for name in (
+        "loss",
+        "policy_loss",
+        "value_loss",
+        "reward_loss",
+        "gradient_norm",
+        "priorities",
+    ):
+        torch.testing.assert_close(
+            getattr(compiled_metrics, name), getattr(eager_metrics, name)
+        )
+    for eager_parameter, compiled_parameter in zip(
+        eager._parameters, compiled._parameters, strict=True
+    ):
+        torch.testing.assert_close(compiled_parameter, eager_parameter)
+        torch.testing.assert_close(compiled_parameter.grad, eager_parameter.grad)
+
+
+def test_muzero_requires_dynamics_gradient_scaling() -> None:
+    with pytest.raises(ValueError, match="gradient scaling"):
+        MuZeroTrainer(
+            _ScalarRepresentation(),
+            _IdentityDynamics(scale_state_gradient=False),
+            _ScalarPrediction(),
+        )
 
 
 def test_muzero_halves_each_recurrent_state_gradient() -> None:

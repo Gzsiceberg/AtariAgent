@@ -11,6 +11,7 @@ def test_dynamics_output_shapes() -> None:
 
     next_state, (hidden, cell), value_prefix = model(state, action)
 
+    assert model.scale_state_gradient
     assert next_state.shape == (2, 64, 6, 6)
     assert hidden.shape == (1, 2, 512)
     assert cell.shape == (1, 2, 512)

@@ -78,7 +78,7 @@ class TrainingConfig:
     deterministic: bool = True
     runtime_type_checks: bool = True
     compile_model: bool = False
-    compile_mode: str = "default"
+    compile_mode: str = "max-autotune"
     log_every: int = 10
 
 

@@ -21,6 +21,7 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.reanalysis_actor_num_threads == 4
     assert config.ray_object_store_memory is None
     assert config.target_update_interval == 200
+    assert config.compile_mode == "max-autotune"
 
 
 def test_collection_steps_stop_at_exact_transition_budget() -> None:
