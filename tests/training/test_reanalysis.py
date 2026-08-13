@@ -1,6 +1,7 @@
 from dataclasses import dataclass, replace
 from typing import Any
 
+import numpy as np
 import pytest
 import ray
 import torch
@@ -70,33 +71,56 @@ class _FakeActor:
         self.version = -1
         self.request_ids: list[int] = []
         self.requests: list[Any] = []
+        self.cache: dict[int, tuple[np.float32, np.ndarray]] = {}
         self.set_weights = _RemoteMethod(self._set_weights)
         self.reanalyze = _RemoteMethod(self._reanalyze)
 
-    def _set_weights(self, version, state_ref):
-        self.ray.get(state_ref)
+    def _set_weights(self, version, state):
+        del state
         self.version = version
+        self.cache.clear()
         return self.ray.put(version)
 
-    def _reanalyze(self, request_ref):
-        request = self.ray.get(request_ref)
+    def _reanalyze(self, request):
         self.request_ids.append(request.request_id)
         self.requests.append(request)
-        search_mask = request.batch.policy_mask
-        value_targets = request.batch.value_targets.clone()
-        value_targets[search_mask] += 1.0
-        policy_targets = request.batch.policy_targets.clone()
-        policy_targets[search_mask] = torch.tensor([1.0, 0.0])
-        result = ReanalysisResult(
-            request_id=request.request_id,
-            weight_version=request.weight_version,
-            value_targets=value_targets,
-            policy_targets=policy_targets,
-            actor_duration_ms=2.0,
-            transfer_duration_ms=0.5,
-            peak_memory_bytes=0,
+        value_targets = request.value_targets.copy()
+        policy_targets = request.policy_targets.copy()
+        requested = int(request.policy_mask.sum())
+        searched = 0
+        positions_by_id: dict[int, list[tuple[int, int]]] = {}
+        for sample, offset in np.argwhere(request.policy_mask):
+            state_id = int(request.indices[sample]) + int(offset)
+            positions_by_id.setdefault(state_id, []).append(
+                (int(sample), int(offset))
+            )
+        for state_id, positions in positions_by_id.items():
+            cached = self.cache.get(state_id)
+            if cached is None:
+                source = positions[0]
+                value = np.float32(value_targets[source] + 1.0)
+                policy = np.asarray([1.0, 0.0], dtype=np.float32)
+                self.cache[state_id] = (value, policy)
+                searched += 1
+            else:
+                value, policy = cached
+            for position in positions:
+                value_targets[position] = value
+                policy_targets[position] = policy
+        return self.ray.put(
+            ReanalysisResult(
+                request_id=request.request_id,
+                weight_version=request.weight_version,
+                value_targets=value_targets,
+                policy_targets=policy_targets,
+                actor_duration_ms=2.0,
+                transfer_duration_ms=0.5,
+                peak_memory_bytes=0,
+                policy_roots_requested=requested,
+                policy_roots_searched=searched,
+                cache_size=len(self.cache),
+            )
         )
-        return self.ray.put(result)
 
 
 def _batch(batch_size: int = 2) -> ReplayBatch:
@@ -116,12 +140,10 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
 
 def _fake_pipeline(*, max_weight_lag: int = 200):
     ray_api = _FakeRay()
-    actors = [_FakeActor(ray_api), _FakeActor(ray_api)]
-    ray_api.actors = actors
+    actor = _FakeActor(ray_api)
+    ray_api.actors = [actor]
     pipeline = ReanalysisPipeline(
-        actors,
-        reanalyze_targets=True,
-        policy_chunk_size=16,
+        actor,
         prefetch_batches=2,
         timeout_seconds=1.0,
         max_weight_lag=max_weight_lag,
@@ -131,7 +153,7 @@ def _fake_pipeline(*, max_weight_lag: int = 200):
     return pipeline, ray_api
 
 
-def test_pipeline_enforces_hard_backpressure_and_merges_by_request_id() -> None:
+def test_pipeline_enforces_prefetch_limit_for_individual_requests() -> None:
     pipeline, ray_api = _fake_pipeline()
 
     request_ids = [pipeline.submit(_batch()) for _ in range(2)]
@@ -152,14 +174,33 @@ def test_pipeline_enforces_hard_backpressure_and_merges_by_request_id() -> None:
     assert pipeline.pending_count == 1
     assert pipeline.cache_size == 3
     assert pipeline.needs_prefetch
-    assert pipeline.submit(_batch()) == 2
-    cached_request = ray_api.actors[0].requests[-1]
-    assert not cached_request.batch.policy_mask.any()
-    assert ray_api.actors[0].request_ids == [0, 2]
-    assert ray_api.actors[1].request_ids == [1]
+    assert ray_api.actors[0].request_ids == [0, 1]
     pipeline.close()
     assert ray_api.killed
-    assert ray_api.killed_count == 2
+    assert ray_api.killed_count == 1
+
+
+def test_worker_cache_reuses_targets_across_queued_batches() -> None:
+    pipeline, _ = _fake_pipeline()
+    pipeline.submit(_batch())
+    pipeline.submit(_batch())
+
+    first_ready = pipeline.wait_next()
+    second_ready = pipeline.wait_next()
+
+    assert first_ready.policy_roots_requested == 4
+    assert first_ready.policy_roots_searched == 3
+    assert second_ready.policy_roots_requested == 4
+    assert second_ready.policy_roots_searched == 0
+    torch.testing.assert_close(
+        second_ready.batch.value_targets,
+        first_ready.batch.value_targets,
+    )
+    torch.testing.assert_close(
+        second_ready.batch.policy_targets,
+        first_ready.batch.policy_targets,
+    )
+    pipeline.close()
 
 
 def test_pipeline_caches_value_and_policy_together() -> None:
@@ -177,28 +218,18 @@ def test_pipeline_caches_value_and_policy_together() -> None:
 
     assert pipeline.cache_size == 3
     assert ready.batch.value_targets[1, 0] == ready.batch.value_targets[0, 1]
-    cached_request_id = pipeline.submit(batch)
-    cached_request = next(
-        request
-        for actor in ray_api.actors
-        for request in actor.requests
-        if request.request_id == cached_request_id
-    )
+    pipeline.submit(batch)
+    cached = pipeline.wait_next()
+    assert cached.policy_roots_requested == 4
+    assert cached.policy_roots_searched == 0
+    torch.testing.assert_close(cached.batch.value_targets, ready.batch.value_targets)
     torch.testing.assert_close(
-        cached_request.batch.value_targets,
-        torch.ones_like(batch.value_targets),
+        cached.batch.policy_targets, ready.batch.policy_targets
     )
-    torch.testing.assert_close(
-        cached_request.batch.policy_targets[..., 0],
-        torch.ones_like(batch.value_targets),
-    )
-    assert not cached_request.batch.policy_mask.any()
-    assert cached_request.batch.value_bootstrap_mask is not None
-    assert not cached_request.batch.value_bootstrap_mask.any()
     pipeline.close()
 
 
-def test_pipeline_clears_target_cache_for_new_target_weights() -> None:
+def test_worker_clears_target_cache_for_new_target_weights() -> None:
     pipeline, _ = _fake_pipeline()
     pipeline.submit(_batch())
     pipeline.wait_next()
@@ -240,7 +271,8 @@ def test_local_ray_actor_reanalyzes_value_targets() -> None:
             in_channels=4,
             action_space_size=2,
             mcts_config=MCTSConfig(num_simulations=1),
-            policy_enabled=True,
+            policy_chunk_size=2,
+            cache_targets=True,
             rng_seed=3,
             support_min=-300,
             support_max=300,
@@ -248,8 +280,6 @@ def test_local_ray_actor_reanalyzes_value_targets() -> None:
         )
         pipeline = ReanalysisPipeline(
             actor,
-            reanalyze_targets=True,
-            policy_chunk_size=2,
             prefetch_batches=1,
             timeout_seconds=60.0,
             max_weight_lag=0,
@@ -273,6 +303,8 @@ def test_local_ray_actor_reanalyzes_value_targets() -> None:
         pipeline.submit(batch)
 
         ready = pipeline.wait_next()
+        pipeline.submit(batch)
+        cached = pipeline.wait_next()
 
         torch.testing.assert_close(
             ready.batch.value_targets,
@@ -280,6 +312,12 @@ def test_local_ray_actor_reanalyzes_value_targets() -> None:
             atol=1e-5,
             rtol=0.0,
         )
+        torch.testing.assert_close(
+            cached.batch.value_targets,
+            ready.batch.value_targets,
+        )
+        assert ready.policy_roots_searched == 3
+        assert cached.policy_roots_searched == 0
         assert ready.weight_version == 0
     finally:
         if pipeline is not None:

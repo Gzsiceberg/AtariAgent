@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark production-shaped local Ray reanalysis actor pools."""
+"""Benchmark one Ray reanalysis actor at several prefetch depths."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTSConfig
 from atariagent.training import (
     ReanalysisPipeline,
-    create_reanalysis_actors,
+    create_reanalysis_actor,
     initialize_local_ray,
     make_target_state,
 )
@@ -29,8 +29,8 @@ from atariagent.training import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--actor-counts", default="1,2,4")
-    parser.add_argument("--requests", type=int, default=4)
+    parser.add_argument("--prefetch-depths", default="1,2,4")
+    parser.add_argument("--requests", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--unroll-steps", type=int, default=5)
     parser.add_argument("--action-space-size", type=int, default=18)
@@ -76,16 +76,15 @@ def make_batch(args: argparse.Namespace) -> ReplayBatch:
     )
 
 
-def benchmark_count(
-    count: int,
+def benchmark_depth(
+    depth: int,
     args: argparse.Namespace,
     batch: ReplayBatch,
 ) -> dict[str, object]:
     representation = RepresentationNetwork(12)
     prediction = PredictionNetwork(args.action_space_size)
     dynamics = DynamicsNetwork(args.action_space_size)
-    actors = create_reanalysis_actors(
-        count=count,
+    actor = create_reanalysis_actor(
         num_gpus=(args.actor_gpus if torch.cuda.is_available() else 0.0),
         num_cpus=args.actor_threads,
         mcts_threads=args.actor_threads,
@@ -95,20 +94,18 @@ def benchmark_count(
             num_simulations=args.num_simulations,
             value_prefix_horizon=5,
         ),
-        policy_enabled=True,
+        policy_chunk_size=args.chunk_size,
+        cache_targets=False,
         rng_seed=0,
         support_min=-300,
         support_max=300,
         precision=args.precision,
     )
     pipeline = ReanalysisPipeline(
-        actors,
-        reanalyze_targets=True,
-        policy_chunk_size=args.chunk_size,
-        prefetch_batches=count,
+        actor,
+        prefetch_batches=depth,
         timeout_seconds=600.0,
         max_weight_lag=0,
-        cache_targets=False,
     )
     try:
         pipeline.publish_weights(
@@ -116,9 +113,11 @@ def benchmark_count(
             make_target_state(representation, prediction, dynamics),
             wait=True,
         )
-        for _ in range(count):
+
+        warmup_requests = depth
+        for _ in range(warmup_requests):
             pipeline.submit(batch)
-        for _ in range(count):
+        for _ in range(warmup_requests):
             pipeline.wait_next()
 
         submitted = 0
@@ -136,7 +135,8 @@ def benchmark_count(
             completed += 1
         elapsed = perf_counter() - started
         return {
-            "actor_count": count,
+            "prefetch_depth": depth,
+            "actor_request_batching": False,
             "elapsed_seconds": elapsed,
             "requests_per_second": args.requests / elapsed,
             "mean_actor_ms": mean(actor_times),
@@ -150,13 +150,13 @@ def benchmark_count(
 
 def main() -> None:
     args = parse_args()
-    actor_counts = tuple(
+    prefetch_depths = tuple(
         int(value.strip())
-        for value in args.actor_counts.split(",")
+        for value in args.prefetch_depths.split(",")
         if value.strip()
     )
-    if not actor_counts or any(count <= 0 for count in actor_counts):
-        raise ValueError("actor counts must be positive")
+    if not prefetch_depths or any(depth <= 0 for depth in prefetch_depths):
+        raise ValueError("prefetch depths must be positive")
     if args.requests <= 0:
         raise ValueError("requests must be positive")
 
@@ -164,7 +164,7 @@ def main() -> None:
     try:
         batch = make_batch(args)
         measurements = [
-            benchmark_count(count, args, batch) for count in actor_counts
+            benchmark_depth(depth, args, batch) for depth in prefetch_depths
         ]
         baseline = float(measurements[0]["requests_per_second"])
         for measurement in measurements:
@@ -178,6 +178,7 @@ def main() -> None:
                 if torch.cuda.is_available()
                 else None
             ),
+            "actor_count": 1,
             "batch_size": args.batch_size,
             "unroll_steps": args.unroll_steps,
             "action_space_size": args.action_space_size,

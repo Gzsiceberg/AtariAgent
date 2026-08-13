@@ -18,7 +18,7 @@ from atariagent.search import MCTSConfig
 from atariagent.training import (
     MuZeroTrainer,
     ReanalysisPipeline,
-    create_reanalysis_actors,
+    create_reanalysis_actor,
     initialize_local_ray,
     make_target_state,
 )
@@ -31,7 +31,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-simulations", type=int, default=2)
-    parser.add_argument("--actor-count", type=int, default=2)
     parser.add_argument("--actor-gpus", type=float, default=0.25)
     parser.add_argument("--actor-threads", type=int, default=4)
     return parser.parse_args()
@@ -92,28 +91,25 @@ def main() -> None:
             num_simulations=args.num_simulations,
             value_prefix_horizon=1,
         )
-        actors = create_reanalysis_actors(
-            count=args.actor_count,
+        actor = create_reanalysis_actor(
             num_gpus=(args.actor_gpus if torch.cuda.is_available() else 0.0),
             num_cpus=args.actor_threads,
             mcts_threads=args.actor_threads,
             in_channels=4,
             action_space_size=3,
             mcts_config=mcts_config,
-            policy_enabled=True,
+            policy_chunk_size=1024,
+            cache_targets=False,
             rng_seed=0,
             support_min=-300,
             support_max=300,
             precision="fp32",
         )
         pipeline = ReanalysisPipeline(
-            actors,
-            reanalyze_targets=True,
-            policy_chunk_size=1024,
+            actor,
             prefetch_batches=2,
             timeout_seconds=600.0,
             max_weight_lag=200,
-            cache_targets=False,
         )
         pipeline.publish_weights(
             0,
@@ -180,7 +176,7 @@ def main() -> None:
             ),
             "batch_size": args.batch_size,
             "num_simulations": args.num_simulations,
-            "actor_count": args.actor_count,
+            "actor_count": 1,
             "actor_threads": args.actor_threads,
             "policy_reanalysis_chunk_size": 1024,
             "prefetch_batches": 2,

@@ -22,7 +22,7 @@ from atariagent.search import MCTSConfig
 from atariagent.training import (
     MuZeroTrainer,
     ReanalysisPipeline,
-    create_reanalysis_actors,
+    create_reanalysis_actor,
     initialize_local_ray,
     make_target_state,
 )
@@ -39,7 +39,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--action-space-size", type=int, default=18)
     parser.add_argument("--num-simulations", type=int, default=50)
     parser.add_argument("--chunk-size", type=int, default=1024)
-    parser.add_argument("--actor-count", type=int, default=2)
     parser.add_argument("--actor-gpus", type=float, default=0.25)
     parser.add_argument("--actor-threads", type=int, default=4)
     parser.add_argument("--precision", choices=("fp32", "bf16"), default="bf16")
@@ -96,8 +95,7 @@ def main() -> None:
         if device.type == "cuda":
             torch.cuda.synchronize(device)
 
-        actors = create_reanalysis_actors(
-            count=args.actor_count,
+        actor = create_reanalysis_actor(
             num_gpus=(args.actor_gpus if device.type == "cuda" else 0.0),
             num_cpus=args.actor_threads,
             mcts_threads=args.actor_threads,
@@ -107,20 +105,18 @@ def main() -> None:
                 num_simulations=args.num_simulations,
                 value_prefix_horizon=5,
             ),
-            policy_enabled=True,
+            policy_chunk_size=args.chunk_size,
+            cache_targets=True,
             rng_seed=0,
             support_min=-300,
             support_max=300,
             precision=args.precision,
         )
         pipeline = ReanalysisPipeline(
-            actors,
-            reanalyze_targets=True,
-            policy_chunk_size=args.chunk_size,
-            prefetch_batches=args.actor_count,
+            actor,
+            prefetch_batches=2,
             timeout_seconds=600.0,
             max_weight_lag=0,
-            cache_targets=True,
         )
         pipeline.publish_weights(
             0,
@@ -170,7 +166,7 @@ def main() -> None:
             "batch_size": args.batch_size,
             "unroll_steps": args.unroll_steps,
             "num_simulations": args.num_simulations,
-            "actor_count": args.actor_count,
+            "actor_count": 1,
             "elapsed_seconds": elapsed,
             "updates_per_second": args.updates / elapsed,
             "mean_actor_ms": actor_time_ms / args.updates,

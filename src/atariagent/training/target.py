@@ -106,14 +106,9 @@ class ValueTargetNetwork(nn.Module):
         self,
         batch: ReplayBatch,
         *,
-        reanalyze_targets: bool,
         policy_chunk_size: int,
     ) -> ReplayBatch:
-        """Apply configured value and policy refreshes to one replay batch."""
-        if not isinstance(reanalyze_targets, bool):
-            raise TypeError("reanalyze_targets must be a boolean")
-        if not reanalyze_targets:
-            return batch
+        """Refresh value and policy targets for one replay batch."""
         batch = self.reanalyze_values(batch)
         return self.reanalyze_policies(
             batch,
