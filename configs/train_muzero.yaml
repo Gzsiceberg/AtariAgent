@@ -81,7 +81,6 @@ training:
   runtime_type_checks: false
   compile_model: true
   compile_mode: default
-  pin_memory: true
   log_every: 10
 
 # EfficientZero Atari policy, value, and value-prefix coefficients.

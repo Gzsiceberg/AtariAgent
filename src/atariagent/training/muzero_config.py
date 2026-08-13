@@ -79,7 +79,6 @@ class TrainingConfig:
     runtime_type_checks: bool = True
     compile_model: bool = False
     compile_mode: str = "default"
-    pin_memory: bool = True
     log_every: int = 10
 
 

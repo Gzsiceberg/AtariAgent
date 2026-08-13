@@ -534,6 +534,19 @@ def test_replay_validates_fixed_target_configuration(
         FIFOReplayBuffer(3, **{keyword: value})  # type: ignore[arg-type]
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_replay_can_construct_batches_in_pinned_memory() -> None:
+    replay = FIFOReplayBuffer(3, unroll_steps=1, td_steps=1)
+    replay.add(make_trajectory(2, terminated=True))
+
+    batch = replay.sample(2, pin_memory=True)
+
+    assert batch.frames.is_pinned()
+    assert batch.actions.is_pinned()
+    assert batch.value_targets.is_pinned()
+    assert batch.indices.is_pinned()
+
+
 def test_replay_sample_does_not_accept_target_configuration_overrides() -> None:
     replay = FIFOReplayBuffer(3, unroll_steps=1, td_steps=1, discount=0.5)
     replay.add(make_trajectory(1, terminated=True))

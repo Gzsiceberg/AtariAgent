@@ -63,10 +63,13 @@ def log(message: str) -> None:
 
 
 def resolve_device(name: str) -> torch.device:
-    """Resolve ``auto`` to CUDA when available and CPU otherwise."""
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(name)
+    """Resolve the required CUDA training device."""
+    if not torch.cuda.is_available():
+        raise RuntimeError("MuZero training requires a CUDA GPU")
+    device = torch.device("cuda" if name == "auto" else name)
+    if device.type != "cuda":
+        raise ValueError("training.device must select a CUDA GPU")
+    return device
 
 
 def configure_training_backend(deterministic: bool) -> None:
@@ -275,11 +278,7 @@ def main(config: TrainMuZeroConfig) -> None:
         target_version = 0
         if target_reanalysis_enabled:
             actor = create_reanalysis_actor(
-                num_gpus=(
-                    config.training.reanalysis_actor_num_gpus
-                    if torch.cuda.is_available()
-                    else 0.0
-                ),
+                num_gpus=config.training.reanalysis_actor_num_gpus,
                 num_cpus=config.training.reanalysis_actor_num_threads,
                 mcts_threads=config.training.reanalysis_actor_num_threads,
                 in_channels=config.environment.frame_stack * image_channels,
@@ -418,12 +417,13 @@ def main(config: TrainMuZeroConfig) -> None:
                     config.training.batch_size,
                     priority_beta=priority_beta,
                     include_value_bootstraps=include_value_bootstraps,
+                    pin_memory=True,
                 ),
                 priority_beta,
             )
 
-        def apply_update(
-            cpu_batch: ReplayBatch,
+        def apply_gpu_update(
+            batch: ReplayBatch,
             priority_beta: float,
             *,
             queue_wait_ms: float | None = None,
@@ -432,14 +432,6 @@ def main(config: TrainMuZeroConfig) -> None:
             policy_roots_searched: int = 0,
         ) -> None:
             nonlocal update, target_state, target_version
-            pin_batch = config.training.pin_memory and device.type == "cuda"
-            if pin_batch:
-                cpu_batch = cpu_batch.pin_memory()
-            batch = cpu_batch.to(
-                device,
-                non_blocking=pin_batch,
-                keep_indices_on_cpu=True,
-            )
             metrics = trainer.train_step(batch)
             replay.update_priorities(batch.indices, metrics.priorities)
 
@@ -499,16 +491,76 @@ def main(config: TrainMuZeroConfig) -> None:
             if regular_checkpoint or update in representative_updates:
                 checkpoint_and_evaluate()
 
+        def apply_update(
+            cpu_batch: ReplayBatch,
+            priority_beta: float,
+            **metrics: float | int | None,
+        ) -> None:
+            batch = cpu_batch.to(
+                device,
+                non_blocking=True,
+                keep_indices_on_cpu=True,
+            )
+            apply_gpu_update(
+                batch,
+                priority_beta,
+                **metrics,
+            )
+
+        transfer_stream = torch.cuda.Stream(device=device)
+
+        def run_direct_updates(count: int) -> None:
+            """Overlap the next pinned H2D copy with the current CUDA update."""
+            if count <= 0:
+                return
+
+            def enqueue(
+                cpu_batch: ReplayBatch,
+                priority_beta: float,
+            ) -> tuple[ReplayBatch, ReplayBatch, float, torch.cuda.Event]:
+                if not cpu_batch.frames.is_pinned():
+                    raise RuntimeError("overlapped replay batch must be pinned")
+                pinned_batch = cpu_batch
+                with torch.cuda.stream(transfer_stream):
+                    gpu_batch = pinned_batch.to(
+                        device,
+                        non_blocking=True,
+                        keep_indices_on_cpu=True,
+                    )
+                    ready = torch.cuda.Event()
+                    ready.record(transfer_stream)
+                return pinned_batch, gpu_batch, priority_beta, ready
+
+            cpu_batch, priority_beta = sample_batch(
+                update,
+                include_value_bootstraps=False,
+            )
+            current = enqueue(cpu_batch, priority_beta)
+            for offset in range(count):
+                following = None
+                if offset + 1 < count:
+                    cpu_batch, priority_beta = sample_batch(
+                        update + 1,
+                        include_value_bootstraps=False,
+                    )
+                    following = enqueue(cpu_batch, priority_beta)
+
+                pinned_batch, gpu_batch, current_beta, ready = current
+                training_stream = torch.cuda.current_stream(device)
+                training_stream.wait_event(ready)
+                gpu_batch.record_stream(training_stream)
+                # Retain pinned source storage until the update's priority copy
+                # synchronizes the training stream, which also completes H2D.
+                apply_gpu_update(gpu_batch, current_beta)
+                del pinned_batch
+                if following is not None:
+                    current = following
+
         def run_updates(count: int) -> None:
             if count <= 0:
                 return
             if not target_reanalysis_enabled:
-                for _ in range(count):
-                    cpu_batch, priority_beta = sample_batch(
-                        update,
-                        include_value_bootstraps=False,
-                    )
-                    apply_update(cpu_batch, priority_beta)
+                run_direct_updates(count)
                 return
 
             assert reanalysis_pipeline is not None
@@ -516,12 +568,7 @@ def main(config: TrainMuZeroConfig) -> None:
                 count,
                 max(0, config.training.reanalysis_start_step - update),
             )
-            for _ in range(direct_updates):
-                cpu_batch, priority_beta = sample_batch(
-                    update,
-                    include_value_bootstraps=False,
-                )
-                apply_update(cpu_batch, priority_beta)
+            run_direct_updates(direct_updates)
 
             async_updates = count - direct_updates
             if async_updates <= 0:
@@ -537,9 +584,7 @@ def main(config: TrainMuZeroConfig) -> None:
                 ):
                     cpu_batch, priority_beta = sample_batch(
                         async_start_step + submitted,
-                        include_value_bootstraps=(
-                            config.training.use_target_network_reanalysis
-                        ),
+                        include_value_bootstraps=True,
                     )
                     request_id = reanalysis_pipeline.submit(cpu_batch)
                     priority_betas[request_id] = priority_beta

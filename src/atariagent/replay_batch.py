@@ -353,6 +353,13 @@ class ReplayBatch:
             }
         )
 
+    def record_stream(self, stream: torch.cuda.Stream) -> None:
+        """Keep CUDA tensor storage alive on a consuming stream."""
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if isinstance(value, Tensor) and value.device.type == "cuda":
+                value.record_stream(stream)
+
     def to(
         self,
         device: torch.device | str,

@@ -517,9 +517,14 @@ class ReanalysisPipeline:
                 f"reanalysis result target-weight lag {lag} exceeds limit"
             )
         self._cache_size = result.cache_size
+        value_targets = torch.from_numpy(result.value_targets.copy())
+        policy_targets = torch.from_numpy(result.policy_targets.copy())
+        if pending.batch.frames.is_pinned():
+            value_targets = value_targets.pin_memory()
+            policy_targets = policy_targets.pin_memory()
         batch = pending.batch.with_reanalysis_targets(
-            value_targets=torch.from_numpy(result.value_targets.copy()),
-            policy_targets=torch.from_numpy(result.policy_targets.copy()),
+            value_targets=value_targets,
+            policy_targets=policy_targets,
         )
         return ReadyReanalysis(
             request_id=result.request_id,

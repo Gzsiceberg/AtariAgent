@@ -239,11 +239,14 @@ class FIFOReplayBuffer:
         *,
         priority_beta: float = 0.4,
         include_value_bootstraps: bool = True,
+        pin_memory: bool = False,
     ) -> ReplayBatch:
         """Prioritize unique starts and copy their prepared local context."""
         self._validate_sample_request(batch_size, priority_beta)
         if not isinstance(include_value_bootstraps, bool):
             raise TypeError("include_value_bootstraps must be a boolean")
+        if not isinstance(pin_memory, bool):
+            raise TypeError("pin_memory must be a boolean")
         assert self._action_space_size is not None
 
         locations, transition_ids, importance_weights = self._sample_context(
@@ -252,6 +255,7 @@ class FIFOReplayBuffer:
         arrays = self._allocate_batch_arrays(
             batch_size,
             include_value_bootstraps=include_value_bootstraps,
+            pin_memory=pin_memory,
         )
         self._fill_batch_arrays(
             arrays,
@@ -544,13 +548,24 @@ class FIFOReplayBuffer:
         batch_size: int,
         *,
         include_value_bootstraps: bool,
+        pin_memory: bool = False,
     ) -> dict[str, np.ndarray]:
+        specs = self._batch_array_specs(
+            batch_size,
+            include_value_bootstraps=include_value_bootstraps,
+        )
+        if not pin_memory:
+            return {
+                name: np.empty(shape, dtype=dtype)
+                for name, (shape, dtype) in specs.items()
+            }
         return {
-            name: np.empty(shape, dtype=dtype)
-            for name, (shape, dtype) in self._batch_array_specs(
-                batch_size,
-                include_value_bootstraps=include_value_bootstraps,
-            ).items()
+            name: torch.empty(
+                shape,
+                dtype=torch.from_numpy(np.empty(0, dtype=dtype)).dtype,
+                pin_memory=True,
+            ).numpy()
+            for name, (shape, dtype) in specs.items()
         }
 
     @staticmethod
