@@ -25,30 +25,49 @@ class ReplayAddResult:
 
 
 @dataclass(frozen=True, slots=True)
-class _ValueTarget:
-    """Replay value target and optional fixed-horizon bootstrap metadata."""
+class _StoredTrajectory:
+    """Contiguous replay data and targets prepared during insertion."""
 
-    value: float
-    valid: bool
-    bootstrap_location: tuple[GameTrajectory, int] | None = None
-    bootstrap_value: float = 0.0
-    bootstrap_discount: float = 0.0
+    environment_index: int
+    episode_id: int
+    block_id: int
+    stack_size: int
+    sampleable_transition_count: int
+    lookahead_steps: int
+    terminated: bool
+    truncated: bool
+    frames: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    policy_targets: np.ndarray
+    root_values: np.ndarray
+    value_targets: np.ndarray
+    value_valid_mask: np.ndarray
+
+    def __len__(self) -> int:
+        return self.sampleable_transition_count
+
+    @property
+    def stored_transition_count(self) -> int:
+        return int(self.actions.shape[0])
 
 
 class FIFOReplayBuffer:
-    """Store trajectories with FIFO eviction and prioritized sampling.
+    """Store prepared trajectories with FIFO prioritized sampling.
 
-    New sampleable transitions receive the current maximum priority; trailing
-    lookahead transitions remain attached to their trajectory as local target
-    context. Sampled transitions carry normalized importance weights and stable
-    IDs used to update their priorities after training. Reanalysis remains
-    outside this buffer.
+    Target horizons and discount are fixed for the buffer lifetime. New
+    sampleable transitions receive the current maximum priority; trailing
+    lookahead transitions remain local target context and are not replay starts.
+    Reanalysis remains outside this buffer.
     """
 
     def __init__(
         self,
         max_transitions: int,
         *,
+        unroll_steps: int = 5,
+        td_steps: int = 5,
+        discount: float = 0.997,
         seed: int = 0,
         priority_alpha: float = 0.6,
     ) -> None:
@@ -58,12 +77,29 @@ class FIFOReplayBuffer:
             raise TypeError("max_transitions must be an integer")
         if max_transitions <= 0:
             raise ValueError("max_transitions must be positive")
+        for value, name in (
+            (unroll_steps, "unroll_steps"),
+            (td_steps, "td_steps"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
+            raise ValueError("discount must be finite and in [0, 1]")
         if not np.isfinite(priority_alpha) or priority_alpha < 0.0:
             raise ValueError("priority_alpha must be finite and non-negative")
 
         self.max_transitions = max_transitions
+        self._unroll_steps = unroll_steps
+        self._td_steps = td_steps
+        self._discount = float(discount)
         self.priority_alpha = float(priority_alpha)
-        self._trajectories: deque[GameTrajectory] = deque()
+        self._reward_discounts = self.discount ** np.arange(
+            self.td_steps, dtype=np.float64
+        )
+        self._bootstrap_discount = float(self.discount**self.td_steps)
+        self._trajectories: deque[_StoredTrajectory] = deque()
         self._transition_ids = np.empty(0, dtype=np.int64)
         self._priorities = np.empty(0, dtype=np.float64)
         self._next_transition_id = 0
@@ -75,12 +111,24 @@ class FIFOReplayBuffer:
         self._rng = np.random.default_rng(seed)
 
     def __len__(self) -> int:
-        """Return the number of stored transitions."""
+        """Return the number of stored sampleable transitions."""
         return self._transition_count
 
     @property
     def trajectory_count(self) -> int:
         return len(self._trajectories)
+
+    @property
+    def unroll_steps(self) -> int:
+        return self._unroll_steps
+
+    @property
+    def td_steps(self) -> int:
+        return self._td_steps
+
+    @property
+    def discount(self) -> float:
+        return self._discount
 
     @property
     def action_space_size(self) -> int | None:
@@ -96,28 +144,29 @@ class FIFOReplayBuffer:
         return self._priorities.copy()
 
     def add(self, trajectory: GameTrajectory) -> ReplayAddResult:
-        """Append one trajectory and evict oldest complete blocks as needed."""
+        """Prepare one trajectory, then append it with FIFO eviction."""
         trajectory_length = len(trajectory)
         if trajectory_length > self.max_transitions:
             raise ValueError(
                 "trajectory length exceeds replay transition capacity"
             )
 
-        action_space_size = self._validate_trajectory(trajectory)
-        if self._action_space_size is None:
-            self._action_space_size = action_space_size
-            self._stack_size = trajectory.stack_size
-            self._frame_shape = trajectory.frames[0].shape
-        elif action_space_size != self._action_space_size:
-            raise ValueError("all trajectories must use the same action space")
-        elif trajectory.stack_size != self._stack_size:
-            raise ValueError("all trajectories must use the same stack size")
-        elif trajectory.frames[0].shape != self._frame_shape:
-            raise ValueError("all trajectories must use the same frame shape")
-
         key = self._trajectory_key(trajectory)
         if key in self._trajectory_keys:
             raise ValueError("trajectory identity already exists in replay")
+
+        # Preparation and all validation happen before replay state is mutated.
+        trajectory.validate_lookahead(self.unroll_steps, self.td_steps)
+        stored = self._prepare_trajectory(trajectory)
+        action_space_size = int(stored.policy_targets.shape[1])
+        frame_shape = tuple(stored.frames.shape[1:])
+        if self._action_space_size is not None:
+            if action_space_size != self._action_space_size:
+                raise ValueError("all trajectories must use the same action space")
+            if stored.stack_size != self._stack_size:
+                raise ValueError("all trajectories must use the same stack size")
+            if frame_shape != self._frame_shape:
+                raise ValueError("all trajectories must use the same frame shape")
 
         evicted_trajectories = 0
         evicted_transitions = 0
@@ -151,7 +200,11 @@ class FIFOReplayBuffer:
             )
         )
 
-        self._trajectories.append(trajectory)
+        if self._action_space_size is None:
+            self._action_space_size = action_space_size
+            self._stack_size = stored.stack_size
+            self._frame_shape = frame_shape
+        self._trajectories.append(stored)
         self._trajectory_keys.add(key)
         self._transition_count += trajectory_length
         return ReplayAddResult(
@@ -162,7 +215,7 @@ class FIFOReplayBuffer:
         )
 
     def extend(self, trajectories: Iterable[GameTrajectory]) -> ReplayAddResult:
-        """Append trajectories in order and combine their insertion statistics."""
+        """Append trajectories in order and combine insertion statistics."""
         added_trajectories = 0
         added_transitions = 0
         evicted_trajectories = 0
@@ -184,17 +237,11 @@ class FIFOReplayBuffer:
         self,
         batch_size: int,
         *,
-        unroll_steps: int = 5,
-        td_steps: int = 5,
-        discount: float = 0.997,
         priority_beta: float = 0.4,
         include_value_bootstraps: bool = True,
     ) -> ReplayBatch:
-        """Prioritize unique starts and slice their local lookahead context."""
-        self._validate_sample_request(
-            batch_size, unroll_steps, td_steps, discount, priority_beta
-        )
-        self._validate_lookahead(unroll_steps, td_steps)
+        """Prioritize unique starts and copy their prepared local context."""
+        self._validate_sample_request(batch_size, priority_beta)
         if not isinstance(include_value_bootstraps, bool):
             raise TypeError("include_value_bootstraps must be a boolean")
         assert self._action_space_size is not None
@@ -204,7 +251,6 @@ class FIFOReplayBuffer:
         )
         arrays = self._allocate_batch_arrays(
             batch_size,
-            unroll_steps,
             include_value_bootstraps=include_value_bootstraps,
         )
         self._fill_batch_arrays(
@@ -212,9 +258,6 @@ class FIFOReplayBuffer:
             locations,
             transition_ids=transition_ids,
             importance_weights=importance_weights,
-            unroll_steps=unroll_steps,
-            td_steps=td_steps,
-            discount=discount,
         )
         return self._batch_from_arrays(arrays)
 
@@ -263,9 +306,10 @@ class FIFOReplayBuffer:
             raise KeyError(f"transition ID {stale_id} is no longer in replay")
         self._priorities[offsets] = priority_array
 
-    def _validate_trajectory(self, trajectory: GameTrajectory) -> int:
+    def _prepare_trajectory(self, trajectory: GameTrajectory) -> _StoredTrajectory:
+        """Convert one immutable self-play block to contiguous replay data."""
         action_space_sizes = {
-            len(distribution) for distribution in trajectory.target_policy
+            len(result.visit_counts) for result in trajectory.search_results
         }
         if len(action_space_sizes) != 1:
             raise ValueError(
@@ -274,27 +318,122 @@ class FIFOReplayBuffer:
         action_space_size = action_space_sizes.pop()
         if action_space_size <= 0:
             raise ValueError("policy targets must not be empty")
-        return action_space_size
+
+        frames = np.ascontiguousarray(
+            np.asarray(trajectory.frames, dtype=np.uint8)
+        )
+        actions = np.ascontiguousarray(
+            np.asarray(trajectory.actions, dtype=np.int64)
+        )
+        rewards64 = np.asarray(trajectory.rewards, dtype=np.float64)
+        rewards = np.ascontiguousarray(rewards64, dtype=np.float32)
+        visit_counts = np.asarray(
+            [result.visit_counts for result in trajectory.search_results],
+            dtype=np.float32,
+        )
+        if visit_counts.shape != (
+            trajectory.stored_transition_count,
+            action_space_size,
+        ):
+            raise ValueError("policy targets have an invalid shape")
+        visit_totals = visit_counts.sum(axis=1, keepdims=True)
+        if np.any(visit_totals <= 0.0):
+            raise ValueError("MCTS search result must contain visited actions")
+        policy_targets = np.ascontiguousarray(visit_counts / visit_totals)
+        root_values64 = np.fromiter(
+            (result.root_value for result in trajectory.search_results),
+            dtype=np.float64,
+            count=trajectory.stored_transition_count,
+        )
+        root_values = np.ascontiguousarray(root_values64, dtype=np.float32)
+        value_targets, value_valid_mask = self._build_value_target_table(
+            rewards64,
+            root_values64,
+            terminated=trajectory.terminated,
+        )
+
+        arrays = (
+            frames,
+            actions,
+            rewards,
+            policy_targets,
+            root_values,
+            value_targets,
+            value_valid_mask,
+        )
+        for array in arrays:
+            array.setflags(write=False)
+
+        return _StoredTrajectory(
+            environment_index=trajectory.environment_index,
+            episode_id=trajectory.episode_id,
+            block_id=trajectory.block_id,
+            stack_size=trajectory.stack_size,
+            sampleable_transition_count=len(trajectory),
+            lookahead_steps=trajectory.lookahead_steps,
+            terminated=trajectory.terminated,
+            truncated=trajectory.truncated,
+            frames=frames,
+            actions=actions,
+            rewards=rewards,
+            policy_targets=policy_targets,
+            root_values=root_values,
+            value_targets=value_targets,
+            value_valid_mask=value_valid_mask,
+        )
+
+    def _build_value_target_table(
+        self,
+        rewards: np.ndarray,
+        root_values: np.ndarray,
+        *,
+        terminated: bool,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Precompute fixed-horizon values for every stored state."""
+        stored_count = int(rewards.shape[0])
+        bootstrap_count = max(0, stored_count - self.td_steps)
+        values64 = np.zeros(stored_count + 1, dtype=np.float64)
+        valid_mask = np.zeros(stored_count + 1, dtype=np.bool_)
+
+        if terminated:
+            # Terminal tail states have valid partial returns. Zero padding
+            # represents the absent rewards after the episode boundary.
+            padded_rewards = np.pad(rewards, (0, self.td_steps - 1))
+            reward_windows = np.lib.stride_tricks.sliding_window_view(
+                padded_rewards, self.td_steps
+            )[:stored_count]
+            values64[:stored_count] = (
+                reward_windows @ self._reward_discounts
+            )
+            valid_mask[:] = True
+        elif bootstrap_count:
+            # Lookahead makes every valid nonterminal reward window complete.
+            # Do not calculate targets for trailing context positions that
+            # cannot bootstrap and will always be masked.
+            reward_windows = np.lib.stride_tricks.sliding_window_view(
+                rewards, self.td_steps
+            )[:bootstrap_count]
+            values64[:bootstrap_count] = (
+                reward_windows @ self._reward_discounts
+            )
+            valid_mask[:bootstrap_count] = True
+
+        if bootstrap_count:
+            values64[:bootstrap_count] += (
+                self._bootstrap_discount
+                * root_values[self.td_steps : self.td_steps + bootstrap_count]
+            )
+        return values64.astype(np.float32), valid_mask
 
     def _validate_sample_request(
         self,
         batch_size: int,
-        unroll_steps: int,
-        td_steps: int,
-        discount: float,
         priority_beta: float,
     ) -> None:
-        for value, name in (
-            (batch_size, "batch_size"),
-            (unroll_steps, "unroll_steps"),
-            (td_steps, "td_steps"),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise TypeError(f"{name} must be an integer")
-            if value <= 0:
-                raise ValueError(f"{name} must be positive")
-        if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
-            raise ValueError("discount must be finite and in [0, 1]")
+        if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+            raise TypeError("batch_size must be an integer")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
         if not np.isfinite(priority_beta) or not 0.0 <= priority_beta <= 1.0:
             raise ValueError("priority_beta must be finite and in [0, 1]")
         if batch_size > self._transition_count:
@@ -303,15 +442,10 @@ class FIFOReplayBuffer:
                 f"a replay buffer containing {self._transition_count}"
             )
 
-    def _validate_lookahead(self, unroll_steps: int, td_steps: int) -> None:
-        """Require complete nonterminal tails to cover both target horizons."""
-        for trajectory in self._trajectories:
-            trajectory.validate_lookahead(unroll_steps, td_steps)
-
     def _sample_context(
         self, batch_size: int, priority_beta: float
     ) -> tuple[
-        list[tuple[GameTrajectory, int]],
+        list[tuple[_StoredTrajectory, int]],
         np.ndarray,
         np.ndarray,
     ]:
@@ -337,40 +471,45 @@ class FIFOReplayBuffer:
     def _batch_array_specs(
         self,
         batch_size: int,
-        unroll_steps: int,
         *,
         include_value_bootstraps: bool,
     ) -> dict[str, tuple[tuple[int, ...], np.dtype]]:
         assert self._action_space_size is not None
         assert self._stack_size is not None
         assert self._frame_shape is not None
-        states = unroll_steps + 1
+        states = self.unroll_steps + 1
         specs = {
             "frames": (
                 (
                     batch_size,
-                    self._stack_size + unroll_steps,
+                    self._stack_size + self.unroll_steps,
                     *self._frame_shape,
                 ),
                 np.dtype(np.uint8),
             ),
             "actions": (
-                (batch_size, unroll_steps, 1),
+                (batch_size, self.unroll_steps, 1),
                 np.dtype(np.int64),
             ),
-            "rewards": ((batch_size, unroll_steps), np.dtype(np.float32)),
+            "rewards": (
+                (batch_size, self.unroll_steps),
+                np.dtype(np.float32),
+            ),
             "policy_targets": (
                 (batch_size, states, self._action_space_size),
                 np.dtype(np.float32),
             ),
             "value_targets": ((batch_size, states), np.dtype(np.float32)),
-            "action_mask": ((batch_size, unroll_steps), np.dtype(np.bool_)),
+            "action_mask": (
+                (batch_size, self.unroll_steps),
+                np.dtype(np.bool_),
+            ),
             "policy_mask": ((batch_size, states), np.dtype(np.bool_)),
             "value_mask": ((batch_size, states), np.dtype(np.bool_)),
             "value_bootstrap_frames": (
                 (
                     batch_size,
-                    self._stack_size + unroll_steps,
+                    self._stack_size + self.unroll_steps,
                     *self._frame_shape,
                 ),
                 np.dtype(np.uint8),
@@ -403,7 +542,6 @@ class FIFOReplayBuffer:
     def _allocate_batch_arrays(
         self,
         batch_size: int,
-        unroll_steps: int,
         *,
         include_value_bootstraps: bool,
     ) -> dict[str, np.ndarray]:
@@ -411,7 +549,6 @@ class FIFOReplayBuffer:
             name: np.empty(shape, dtype=dtype)
             for name, (shape, dtype) in self._batch_array_specs(
                 batch_size,
-                unroll_steps,
                 include_value_bootstraps=include_value_bootstraps,
             ).items()
         }
@@ -443,7 +580,7 @@ class FIFOReplayBuffer:
 
     def _locations_for_indices(
         self, flat_indices: np.ndarray
-    ) -> list[tuple[GameTrajectory, int]]:
+    ) -> list[tuple[_StoredTrajectory, int]]:
         """Resolve flat replay offsets with vectorized cumulative boundaries."""
         trajectories = tuple(self._trajectories)
         lengths = np.fromiter(
@@ -465,19 +602,18 @@ class FIFOReplayBuffer:
     def _fill_batch_arrays(
         self,
         arrays: Mapping[str, np.ndarray],
-        locations: list[tuple[GameTrajectory, int]],
+        locations: list[tuple[_StoredTrajectory, int]],
         *,
         transition_ids: np.ndarray,
         importance_weights: np.ndarray,
-        unroll_steps: int,
-        td_steps: int,
-        discount: float,
     ) -> None:
-        """Fill a complete batch in reusable NumPy arrays."""
+        """Fill a complete batch from insertion-time prepared arrays."""
         assert self._stack_size is not None
 
         stack_size = self._stack_size
+        unroll_steps = self.unroll_steps
         state_count = unroll_steps + 1
+        full_frame_count = stack_size + unroll_steps
         frames = arrays["frames"]
         actions = arrays["actions"]
         rewards = arrays["rewards"]
@@ -490,195 +626,109 @@ class FIFOReplayBuffer:
         value_bootstrap_values = arrays.get("value_bootstrap_values")
         value_bootstrap_discounts = arrays.get("value_bootstrap_discounts")
         value_bootstrap_mask = arrays.get("value_bootstrap_mask")
-        arrays_to_clear = (
-            actions,
-            rewards,
-            policy_targets,
-            value_targets,
-            action_mask,
-            policy_mask,
-            value_mask,
-        )
-        if value_bootstrap_frames is not None:
-            assert value_bootstrap_values is not None
-            assert value_bootstrap_discounts is not None
-            assert value_bootstrap_mask is not None
-            arrays_to_clear += (
-                value_bootstrap_frames,
-                value_bootstrap_values,
-                value_bootstrap_discounts,
-                value_bootstrap_mask,
-            )
-        for array in arrays_to_clear:
-            array.fill(0)
 
         for batch_index, (trajectory, start) in enumerate(locations):
-            stored_count = len(trajectory) + trajectory.lookahead_steps
+            stored_count = trajectory.stored_transition_count
             action_count = min(unroll_steps, stored_count - start)
             frame_count = stack_size + action_count
-            frames[batch_index, :frame_count] = np.asarray(
-                trajectory.frames[start : start + frame_count],
-                dtype=np.uint8,
-            )
-            if frame_count < stack_size + unroll_steps:
+            frames[batch_index, :frame_count] = trajectory.frames[
+                start : start + frame_count
+            ]
+            if frame_count < full_frame_count:
                 frames[batch_index, frame_count:] = frames[
                     batch_index, frame_count - 1
                 ]
 
+            if action_count < unroll_steps:
+                actions[batch_index].fill(0)
+                rewards[batch_index].fill(0)
+                action_mask[batch_index].fill(False)
+            else:
+                action_mask[batch_index].fill(True)
             action_end = start + action_count
-            actions[batch_index, :action_count, 0] = np.asarray(
-                trajectory.actions[start:action_end], dtype=np.int64
-            )
-            rewards[batch_index, :action_count] = np.asarray(
-                trajectory.rewards[start:action_end], dtype=np.float32
-            )
-            action_mask[batch_index, :action_count] = True
+            actions[batch_index, :action_count, 0] = trajectory.actions[
+                start:action_end
+            ]
+            rewards[batch_index, :action_count] = trajectory.rewards[
+                start:action_end
+            ]
+            if action_count < unroll_steps:
+                action_mask[batch_index, :action_count] = True
 
             policy_count = min(state_count, stored_count - start)
-            policy_end = start + policy_count
-            visit_counts = np.asarray(
-                tuple(
-                    result.visit_counts
-                    for result in trajectory.search_results[start:policy_end]
-                ),
-                dtype=np.float32,
+            if policy_count < state_count:
+                policy_targets[batch_index].fill(0)
+                policy_mask[batch_index].fill(False)
+            else:
+                policy_mask[batch_index].fill(True)
+            policy_targets[batch_index, :policy_count] = (
+                trajectory.policy_targets[start : start + policy_count]
             )
-            policy_targets[batch_index, :policy_count] = visit_counts / (
-                visit_counts.sum(axis=1, keepdims=True)
-            )
-            policy_mask[batch_index, :policy_count] = True
+            if policy_count < state_count:
+                policy_mask[batch_index, :policy_count] = True
 
-            value_target_items = self._n_step_value_targets(
-                trajectory,
-                start,
-                target_count=state_count,
-                td_steps=td_steps,
-                discount=discount,
+            value_count = min(state_count, stored_count + 1 - start)
+            if value_count < state_count:
+                value_targets[batch_index].fill(0)
+                value_mask[batch_index].fill(False)
+            value_targets[batch_index, :value_count] = trajectory.value_targets[
+                start : start + value_count
+            ]
+            value_mask[batch_index, :value_count] = (
+                trajectory.value_valid_mask[start : start + value_count]
             )
-            for target_offset, target in enumerate(value_target_items):
-                if target.valid:
-                    value_targets[batch_index, target_offset] = target.value
-                    value_mask[batch_index, target_offset] = True
-                if (
-                    target.bootstrap_location is not None
-                    and value_bootstrap_frames is not None
-                ):
-                    assert value_bootstrap_values is not None
-                    assert value_bootstrap_discounts is not None
-                    assert value_bootstrap_mask is not None
-                    bootstrap_block, bootstrap_position = (
-                        target.bootstrap_location
+
+            if value_bootstrap_frames is not None:
+                assert value_bootstrap_values is not None
+                assert value_bootstrap_discounts is not None
+                assert value_bootstrap_mask is not None
+                bootstrap_start = start + self.td_steps
+                bootstrap_count = min(
+                    state_count, max(0, stored_count - bootstrap_start)
+                )
+                bootstrap_frame_count = (
+                    bootstrap_count + stack_size - 1
+                    if bootstrap_count
+                    else 0
+                )
+                if bootstrap_frame_count < full_frame_count:
+                    value_bootstrap_frames[batch_index].fill(0)
+                if bootstrap_count < state_count:
+                    value_bootstrap_values[batch_index].fill(0)
+                    value_bootstrap_discounts[batch_index].fill(0)
+                    value_bootstrap_mask[batch_index].fill(False)
+                else:
+                    value_bootstrap_discounts[batch_index].fill(
+                        self._bootstrap_discount
                     )
+                    value_bootstrap_mask[batch_index].fill(True)
+                if bootstrap_count:
                     value_bootstrap_frames[
-                        batch_index,
-                        target_offset : target_offset + stack_size,
-                    ] = np.asarray(
-                        bootstrap_block.frames[
-                            bootstrap_position : bootstrap_position + stack_size
-                        ],
-                        dtype=np.uint8,
-                    )
+                        batch_index, :bootstrap_frame_count
+                    ] = trajectory.frames[
+                        bootstrap_start
+                        : bootstrap_start + bootstrap_frame_count
+                    ]
                     value_bootstrap_values[
-                        batch_index, target_offset
-                    ] = target.bootstrap_value
-                    value_bootstrap_discounts[
-                        batch_index, target_offset
-                    ] = target.bootstrap_discount
-                    value_bootstrap_mask[batch_index, target_offset] = True
+                        batch_index, :bootstrap_count
+                    ] = trajectory.root_values[
+                        bootstrap_start : bootstrap_start + bootstrap_count
+                    ]
+                    if bootstrap_count < state_count:
+                        value_bootstrap_discounts[
+                            batch_index, :bootstrap_count
+                        ] = self._bootstrap_discount
+                        value_bootstrap_mask[
+                            batch_index, :bootstrap_count
+                        ] = True
 
         arrays["indices"][:] = transition_ids
         arrays["importance_weights"][:] = importance_weights
 
-    def _n_step_value_targets(
-        self,
-        trajectory: GameTrajectory,
-        position: int,
-        *,
-        target_count: int,
-        td_steps: int,
-        discount: float,
-    ) -> list[_ValueTarget]:
-        """Build consecutive n-step targets from one trajectory in linear time.
-
-        The trajectory's duplicated lookahead tail supplies rewards and root
-        values beyond its sampleable range, so no next-block lookup is needed.
-        Discounted suffix sums produce each reward return in constant time.
-        """
-        maximum_rewards = target_count - 1 + td_steps
-        stored_count = len(trajectory) + trajectory.lookahead_steps
-        available_transitions = stored_count - position
-        reward_count = min(maximum_rewards, available_transitions)
-        rewards = np.asarray(
-            trajectory.rewards[position : position + reward_count],
-            dtype=np.float64,
-        )
-        ended_at_terminal = (
-            trajectory.terminated and reward_count == available_transitions
-        )
-
-        discount_powers = discount ** np.arange(td_steps + 1)
-        discounted_suffix = np.zeros(reward_count + 1, dtype=np.float64)
-        for reward_offset in range(reward_count - 1, -1, -1):
-            discounted_suffix[reward_offset] = (
-                rewards[reward_offset]
-                + discount * discounted_suffix[reward_offset + 1]
-            )
-
-        targets: list[_ValueTarget] = []
-        terminal_state = available_transitions if ended_at_terminal else -1
-        for target_offset in range(target_count):
-            if target_offset == terminal_state:
-                targets.append(_ValueTarget(value=0.0, valid=True))
-                continue
-            if target_offset >= available_transitions:
-                targets.append(_ValueTarget(value=0.0, valid=False))
-                continue
-
-            bootstrap_offset = target_offset + td_steps
-            reward_end = min(bootstrap_offset, reward_count)
-            reward_horizon = reward_end - target_offset
-            reward_return = float(
-                discounted_suffix[target_offset]
-                - discount_powers[reward_horizon]
-                * discounted_suffix[reward_end]
-            )
-
-            if bootstrap_offset > reward_count:
-                targets.append(
-                    _ValueTarget(
-                        value=(reward_return if ended_at_terminal else 0.0),
-                        valid=ended_at_terminal,
-                    )
-                )
-                continue
-            if bootstrap_offset == terminal_state:
-                targets.append(_ValueTarget(value=reward_return, valid=True))
-                continue
-
-            bootstrap_position = position + bootstrap_offset
-            if bootstrap_position >= stored_count:
-                targets.append(_ValueTarget(value=0.0, valid=False))
-                continue
-
-            bootstrap_value = trajectory.search_results[
-                bootstrap_position
-            ].root_value
-            bootstrap_discount = float(discount_powers[td_steps])
-            targets.append(
-                _ValueTarget(
-                    value=(
-                        reward_return + bootstrap_discount * bootstrap_value
-                    ),
-                    valid=True,
-                    bootstrap_location=(trajectory, bootstrap_position),
-                    bootstrap_value=bootstrap_value,
-                    bootstrap_discount=bootstrap_discount,
-                )
-            )
-        return targets
-
     @staticmethod
-    def _trajectory_key(trajectory: GameTrajectory) -> tuple[int, int, int]:
+    def _trajectory_key(
+        trajectory: GameTrajectory | _StoredTrajectory,
+    ) -> tuple[int, int, int]:
         return (
             trajectory.environment_index,
             trajectory.episode_id,

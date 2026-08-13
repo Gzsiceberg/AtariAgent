@@ -260,6 +260,9 @@ def main(config: TrainMuZeroConfig) -> None:
         )
         replay = FIFOReplayBuffer(
             config.replay.max_transitions,
+            unroll_steps=config.training.unroll_steps,
+            td_steps=config.training.td_steps,
+            discount=discount,
             seed=config.seed,
             priority_alpha=config.replay.priority_alpha,
         )
@@ -424,9 +427,6 @@ def main(config: TrainMuZeroConfig) -> None:
             return (
                 replay.sample(
                     config.training.batch_size,
-                    unroll_steps=config.training.unroll_steps,
-                    td_steps=config.training.td_steps,
-                    discount=discount,
                     priority_beta=priority_beta,
                     include_value_bootstraps=include_value_bootstraps,
                 ),
