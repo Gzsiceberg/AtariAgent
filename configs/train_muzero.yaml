@@ -83,6 +83,13 @@ training:
   compile_mode: default
   log_every: 10
 
+# EfficientZero V1 applies separate augmentation draws to the root stack and
+# the temporally aligned sequence of consistency targets.
+augmentation:
+  enabled: true
+  transforms: [shift, intensity]
+  shift_delta: 4
+
 # EfficientZero Atari policy, value, value-prefix, and consistency settings.
 # Reward supervises an LSTM value prefix. Consistency aligns each recurrent
 # dynamics state with the representation of its corresponding observation.

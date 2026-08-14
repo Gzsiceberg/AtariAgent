@@ -84,6 +84,17 @@ class TrainingConfig:
 
 
 @dataclass
+class AugmentationConfig:
+    """EfficientZero V1 image augmentation settings."""
+
+    enabled: bool = True
+    transforms: list[str] = field(
+        default_factory=lambda: ["shift", "intensity"]
+    )
+    shift_delta: int = 4
+
+
+@dataclass
 class LossConfig:
     """Policy, value, value-prefix, and consistency loss settings."""
 
@@ -130,6 +141,7 @@ class TrainMuZeroConfig:
     self_play: SelfPlayConfig = field(default_factory=SelfPlayConfig)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
@@ -197,6 +209,7 @@ def register_train_muzero_config() -> None:
 
 
 __all__ = [
+    "AugmentationConfig",
     "CheckpointConfig",
     "EnvironmentConfig",
     "EvaluationConfig",
