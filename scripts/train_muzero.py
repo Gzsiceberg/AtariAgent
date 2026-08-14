@@ -30,6 +30,7 @@ from atariagent.evaluation import (
     plot_evaluation_history,
     write_evaluation_history,
 )
+from atariagent.models import ConsistencyNetwork
 from atariagent.search import MCTSConfig
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
@@ -141,6 +142,11 @@ def save_checkpoint(
         "representation": agent.representation_network.state_dict(),
         "dynamics": agent.dynamics_network.state_dict(),
         "prediction": agent.prediction_network.state_dict(),
+        "consistency": (
+            trainer.consistency_network.state_dict()
+            if trainer.consistency_network is not None
+            else None
+        ),
         "target_network": dict(target_state),
         "target_version": target_version,
         "optimizer": trainer.optimizer.state_dict(),
@@ -189,6 +195,10 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("batch_worker_timeout_seconds must be positive")
     if config.training.precision not in ("fp32", "bf16"):
         raise ValueError("training.precision must be fp32 or bf16")
+    if not isinstance(config.loss.consistency_enabled, bool):
+        raise TypeError("loss.consistency_enabled must be a boolean")
+    if config.loss.consistency_weight < 0.0:
+        raise ValueError("loss.consistency_weight must be non-negative")
     if config.checkpoint.keep_representative <= 0:
         raise ValueError("checkpoint.keep_representative must be positive")
     if config.evaluation.enabled and config.evaluation.episodes <= 0:
@@ -240,10 +250,16 @@ def main(config: TrainMuZeroConfig) -> None:
             ),
             mcts_rng=random.Random(config.seed),
         ).to(device)
+        consistency_network = (
+            ConsistencyNetwork().to(device)
+            if config.loss.consistency_enabled
+            else None
+        )
         trainer = MuZeroTrainer(
             agent.representation_network,
             agent.dynamics_network,
             agent.prediction_network,
+            consistency_network=consistency_network,
             learning_rate=config.training.learning_rate,
             momentum=config.training.momentum,
             weight_decay=config.training.weight_decay,
@@ -255,6 +271,7 @@ def main(config: TrainMuZeroConfig) -> None:
             policy_weight=config.loss.policy_weight,
             value_weight=config.loss.value_weight,
             reward_weight=config.loss.reward_weight,
+            consistency_weight=config.loss.consistency_weight,
             max_gradient_norm=config.training.max_gradient_norm,
             priority_epsilon=config.replay.priority_epsilon,
             precision=config.training.precision,
@@ -444,6 +461,7 @@ def main(config: TrainMuZeroConfig) -> None:
                     # "policy": f"{metrics.policy_loss:.3f}",
                     # "value": f"{metrics.value_loss:.3f}",
                     # "reward": f"{metrics.reward_loss:.3f}",
+                    # "consistency": f"{metrics.consistency_loss:.3f}",
                     # "grad": f"{metrics.gradient_norm:.2f}",
                     "lr": f"{metrics.learning_rate:.5f}",
                     "beta": f"{ready.priority_beta:.3f}",

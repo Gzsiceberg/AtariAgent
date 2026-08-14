@@ -4,7 +4,12 @@ import pytest
 import torch
 import torch.nn.functional as functional
 
-from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
+from atariagent.models import (
+    ConsistencyNetwork,
+    DynamicsNetwork,
+    PredictionNetwork,
+    RepresentationNetwork,
+)
 from atariagent.replay_batch import ReplayBatch
 from atariagent.training import MuZeroTrainer
 
@@ -125,10 +130,16 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
     representation = RepresentationNetwork(4)
     dynamics = DynamicsNetwork(action_space_size=3)
     prediction = PredictionNetwork(action_space_size=3)
+    consistency = ConsistencyNetwork(
+        projection_dim=32,
+        projection_hidden_dim=64,
+        prediction_hidden_dim=16,
+    )
     trainer = MuZeroTrainer(
         representation,
         dynamics,
         prediction,
+        consistency_network=consistency,
         lr_warmup_steps=0,
         unroll_steps=1,
         lstm_horizon=1,
@@ -136,10 +147,12 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
     policy_output = prediction.policy.projection[-1]
     value_output = prediction.value.projection[-1]
     reward_output = dynamics.reward_prediction.projection[-1]
+    consistency_output = consistency.predictor.network[-1]
     assert not hasattr(trainer, "target_network")
     initial_policy = policy_output.weight.detach().clone()
     initial_value = value_output.weight.detach().clone()
     initial_reward = reward_output.weight.detach().clone()
+    initial_consistency = consistency_output.weight.detach().clone()
 
     batch = ReplayBatch(
         frames=torch.randint(0, 256, (2, 5, 1, 96, 96), dtype=torch.uint8),
@@ -171,15 +184,19 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
         metrics.policy_loss
         + 0.25 * metrics.value_loss
         + metrics.reward_loss
+        + 2.0 * metrics.consistency_loss
     )
     assert metrics.policy_loss > 0.0
     assert metrics.value_loss > 0.0
     assert metrics.reward_loss > 0.0
+    assert torch.isfinite(metrics.consistency_loss)
+    assert metrics.consistency_loss.abs() > 0.0
     assert metrics.learning_rate == pytest.approx(0.2)
     assert metrics.priorities == pytest.approx((1.000001, 1.000001))
     assert not torch.equal(policy_output.weight, initial_policy)
     assert not torch.equal(value_output.weight, initial_value)
     assert not torch.equal(reward_output.weight, initial_reward)
+    assert not torch.equal(consistency_output.weight, initial_consistency)
 
 
 class _ScalarRepresentation(torch.nn.Module):
@@ -285,6 +302,7 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         "policy_loss",
         "value_loss",
         "reward_loss",
+        "consistency_loss",
         "gradient_norm",
         "priorities",
     ):
@@ -380,6 +398,7 @@ def test_muzero_scales_root_and_recurrent_losses_together() -> None:
     assert metrics.reward_loss == pytest.approx(
         torch.log(torch.tensor(601.0)).item()
     )
+    assert metrics.consistency_loss == 0.0
 
 
 def test_fp16_precision_is_not_supported() -> None:

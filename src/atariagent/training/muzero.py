@@ -13,8 +13,8 @@ from typing import Literal
 import torch
 from torch import Tensor, nn
 
+from atariagent.models import consist_loss_func
 from atariagent.replay_batch import ReplayBatch
-
 
 Precision = Literal["fp32", "bf16"]
 
@@ -33,6 +33,7 @@ class MuZeroTrainMetrics:
     policy_loss: Tensor
     value_loss: Tensor
     reward_loss: Tensor
+    consistency_loss: Tensor
     gradient_norm: Tensor
     learning_rate: float
     priorities: Tensor
@@ -46,12 +47,14 @@ class _MuZeroUnroll(nn.Module):
         representation: nn.Module,
         dynamics: nn.Module,
         prediction: nn.Module,
+        consistency_network: nn.Module | None,
         *,
         unroll_steps: int,
         lstm_horizon: int,
         policy_weight: float,
         value_weight: float,
         reward_weight: float,
+        consistency_weight: float,
         support_min: int,
         support_max: int,
         priority_epsilon: float,
@@ -60,11 +63,13 @@ class _MuZeroUnroll(nn.Module):
         self.representation = representation
         self.dynamics = dynamics
         self.prediction = prediction
+        self.consistency_network = consistency_network
         self.unroll_steps = unroll_steps
         self.lstm_horizon = lstm_horizon
         self.policy_weight = policy_weight
         self.value_weight = value_weight
         self.reward_weight = reward_weight
+        self.consistency_weight = consistency_weight
         self.support_min = support_min
         self.support_max = support_max
         self.priority_epsilon = priority_epsilon
@@ -128,7 +133,7 @@ class _MuZeroUnroll(nn.Module):
         policy_mask: Tensor,
         value_mask: Tensor,
         importance_weights: Tensor,
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """Return the total losses and replay priorities for one batch."""
         batch_size = actions.shape[0]
         stack_size = frames.shape[1] - self.unroll_steps
@@ -152,6 +157,7 @@ class _MuZeroUnroll(nn.Module):
         recurrent_policy_loss = observations.new_zeros(batch_size)
         recurrent_value_loss = observations.new_zeros(batch_size)
         recurrent_reward_loss = observations.new_zeros(batch_size)
+        recurrent_consistency_loss = observations.new_zeros(batch_size)
 
         state = self.representation(observations)
         policy_logits, value_logits = self.prediction(state)
@@ -195,6 +201,25 @@ class _MuZeroUnroll(nn.Module):
             )
             recurrent_policy_loss += step_policy_loss
             recurrent_value_loss += step_value_loss
+
+            if self.consistency_network is not None:
+                target_observations = frames[
+                    :, step + 1 : step + 1 + stack_size
+                ].reshape(
+                    batch_size,
+                    stack_size * frames.shape[2],
+                    frames.shape[3],
+                    frames.shape[4],
+                ).float().div(255.0)
+                with torch.no_grad():
+                    target_state = self.representation(target_observations)
+                predicted_projection, target_projection = (
+                    self.consistency_network(state, target_state)
+                )
+                recurrent_consistency_loss += consist_loss_func(
+                    predicted_projection, target_projection
+                ) * action_mask[:, step].to(predicted_projection.dtype)
+
             if (step + 1) % self.lstm_horizon == 0:
                 hidden = None
 
@@ -213,12 +238,23 @@ class _MuZeroUnroll(nn.Module):
         reward_loss = (
             sample_weights * recurrent_reward_loss * loss_scale
         ).mean()
+        consistency_loss = (
+            sample_weights * recurrent_consistency_loss * loss_scale
+        ).mean()
         loss = (
             self.policy_weight * policy_loss
             + self.value_weight * value_loss
             + self.reward_weight * reward_loss
+            + self.consistency_weight * consistency_loss
         )
-        return loss, policy_loss, value_loss, reward_loss, priorities
+        return (
+            loss,
+            policy_loss,
+            value_loss,
+            reward_loss,
+            consistency_loss,
+            priorities,
+        )
 
 
 class MuZeroTrainer:
@@ -227,8 +263,10 @@ class MuZeroTrainer:
     Root and recurrent losses are summed and scaled by ``1 / unroll_steps``.
     Recurrent latent-state gradients are halved as in MuZero and EfficientZero.
     Replay batches already contain asynchronously refreshed value and policy
-    targets. The default Atari loss coefficients are policy 1, value 0.25, and
-    value-prefix reward 1.
+    targets. When a consistency network is supplied, recurrent dynamics states
+    are aligned with stop-gradient representation states from the corresponding
+    observations. The default Atari loss coefficients are policy 1, value 0.25,
+    value-prefix reward 1, and consistency 2.
     """
 
     def __init__(
@@ -237,6 +275,7 @@ class MuZeroTrainer:
         dynamics: nn.Module,
         prediction: nn.Module,
         *,
+        consistency_network: nn.Module | None = None,
         learning_rate: float = 0.2,
         momentum: float = 0.9,
         weight_decay: float = 1e-4,
@@ -248,6 +287,7 @@ class MuZeroTrainer:
         policy_weight: float = 1.0,
         value_weight: float = 0.25,
         reward_weight: float = 1.0,
+        consistency_weight: float = 2.0,
         max_gradient_norm: float = 5.0,
         support_min: int = -300,
         support_max: int = 300,
@@ -288,11 +328,21 @@ class MuZeroTrainer:
             (policy_weight, "policy_weight"),
             (value_weight, "value_weight"),
             (reward_weight, "reward_weight"),
+            (consistency_weight, "consistency_weight"),
         ):
             if weight < 0.0:
                 raise ValueError(f"{name} must be non-negative")
 
-        original_modules = (representation, dynamics, prediction)
+        original_modules = tuple(
+            module
+            for module in (
+                representation,
+                dynamics,
+                prediction,
+                consistency_network,
+            )
+            if module is not None
+        )
         parameters = [
             parameter
             for module in original_modules
@@ -310,15 +360,18 @@ class MuZeroTrainer:
         self.original_representation = representation
         self.original_dynamics = dynamics
         self.original_prediction = prediction
+        self.original_consistency_network = consistency_network
         self.representation = representation
         self.dynamics = dynamics
         self.prediction = prediction
+        self.consistency_network = consistency_network
         self._unroll: nn.Module
         self.unroll_steps = unroll_steps
         self.lstm_horizon = lstm_horizon
         self.policy_weight = policy_weight
         self.value_weight = value_weight
         self.reward_weight = reward_weight
+        self.consistency_weight = consistency_weight
         self.max_gradient_norm = max_gradient_norm
         self.support_min = support_min
         self.support_max = support_max
@@ -346,11 +399,13 @@ class MuZeroTrainer:
             representation,
             dynamics,
             prediction,
+            consistency_network,
             unroll_steps=unroll_steps,
             lstm_horizon=lstm_horizon,
             policy_weight=policy_weight,
             value_weight=value_weight,
             reward_weight=reward_weight,
+            consistency_weight=consistency_weight,
             support_min=support_min,
             support_max=support_max,
             priority_epsilon=priority_epsilon,
@@ -396,7 +451,14 @@ class MuZeroTrainer:
                 batch.value_mask,
                 batch.importance_weights,
             )
-            loss, policy_loss, value_loss, reward_loss, new_priorities = outputs
+            (
+                loss,
+                policy_loss,
+                value_loss,
+                reward_loss,
+                consistency_loss,
+                new_priorities,
+            ) = outputs
 
         loss.backward()
 
@@ -412,16 +474,22 @@ class MuZeroTrainer:
             policy_loss=policy_loss.detach(),
             value_loss=value_loss.detach(),
             reward_loss=reward_loss.detach(),
+            consistency_loss=consistency_loss.detach(),
             gradient_norm=gradient_norm.detach(),
             learning_rate=learning_rate,
             priorities=new_priorities.detach(),
         )
 
     def _original_modules(self) -> tuple[nn.Module, ...]:
-        return (
-            self.original_representation,
-            self.original_dynamics,
-            self.original_prediction,
+        return tuple(
+            module
+            for module in (
+                self.original_representation,
+                self.original_dynamics,
+                self.original_prediction,
+                self.original_consistency_network,
+            )
+            if module is not None
         )
 
     def _adjust_learning_rate(self) -> float:
@@ -490,7 +558,7 @@ class MuZeroTrainer:
 
 
 __all__ = [
-    "MuZeroTrainer",
     "MuZeroTrainMetrics",
+    "MuZeroTrainer",
     "Precision",
 ]

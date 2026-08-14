@@ -1,10 +1,18 @@
 import pytest
 
 from atariagent.training.muzero_config import (
+    LossConfig,
     TrainingConfig,
     next_collection_vector_steps,
     visit_softmax_temperature,
 )
+
+
+def test_consistency_loss_uses_efficientzero_defaults() -> None:
+    config = LossConfig()
+
+    assert config.consistency_enabled
+    assert config.consistency_weight == pytest.approx(2.0)
 
 
 def test_target_network_uses_efficientzero_hard_copy_interval() -> None:

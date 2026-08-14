@@ -84,11 +84,13 @@ class TrainingConfig:
 
 @dataclass
 class LossConfig:
-    """Policy, value, and value-prefix loss coefficients."""
+    """Policy, value, value-prefix, and consistency loss settings."""
 
     policy_weight: float = 1.0
     value_weight: float = 0.25
     reward_weight: float = 1.0
+    consistency_enabled: bool = True
+    consistency_weight: float = 2.0
 
 
 @dataclass
@@ -169,11 +171,11 @@ __all__ = [
     "EnvironmentConfig",
     "EvaluationConfig",
     "LossConfig",
-    "next_collection_vector_steps",
     "ReplayConfig",
     "SelfPlayConfig",
-    "TrainingConfig",
     "TrainMuZeroConfig",
+    "TrainingConfig",
+    "next_collection_vector_steps",
     "register_train_muzero_config",
     "visit_softmax_temperature",
 ]
