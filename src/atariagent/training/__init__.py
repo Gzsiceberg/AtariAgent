@@ -5,7 +5,6 @@ from .checkpoint import (
     representative_checkpoint_path,
     representative_checkpoint_updates,
 )
-from .dynamics import DynamicsTrainer, DynamicsTrainMetrics, scalar_reward_loss
 from .muzero import MuZeroTrainer, MuZeroTrainMetrics
 from .reanalysis import (
     ReadyReanalysis,
@@ -17,8 +16,6 @@ from .target import ValueTargetNetwork
 
 __all__ = [
     "BatchWorker",
-    "DynamicsTrainer",
-    "DynamicsTrainMetrics",
     "MuZeroTrainer",
     "MuZeroTrainMetrics",
     "ReadyBatch",
@@ -29,5 +26,4 @@ __all__ = [
     "replay_batch_nbytes",
     "representative_checkpoint_path",
     "representative_checkpoint_updates",
-    "scalar_reward_loss",
 ]
