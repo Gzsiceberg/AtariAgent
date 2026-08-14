@@ -6,7 +6,7 @@ defaults:
 seed: 0
 
 environment:
-  id: ALE/Alien-v5
+  id: ALE/Pong-v5
   frame_stack: 4
   frame_skip: 4
   screen_size: 96
@@ -94,16 +94,16 @@ loss:
   consistency_weight: 2.0
 
 checkpoint:
-  path: checkpoints/Alien-v5/muzero_latest.pt
+  path: checkpoints/${environment_slug:${environment.id}}/muzero_latest.pt
   # Keep snapshots at ten evenly spaced points across the complete run.
   keep_representative: 10
 
 evaluation:
   enabled: true
-  episodes: 3
-  num_envs: 3
-  data_path: evaluations/Alien-v5/muzero_evaluations.json
-  plot_path: evaluations/Alien-v5/muzero_evaluation.png
+  episodes: 16
+  num_envs: 16
+  data_path: evaluations/${environment_slug:${environment.id}}/muzero_evaluations.json
+  plot_path: evaluations/${environment_slug:${environment.id}}/muzero_evaluation.png
 
 hydra:
   run:

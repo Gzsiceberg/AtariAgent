@@ -12,9 +12,13 @@ import torch
 
 from atariagent.evaluation import evaluate_agent, load_agent_checkpoint
 from atariagent.selfplay import Environment, make_atari_environment
+from atariagent.training.muzero_config import (
+    EnvironmentConfig,
+    checkpoint_path_for_environment,
+)
 
 
-DEFAULT_CHECKPOINT = Path("checkpoints/muzero_latest.pt")
+DEFAULT_ENVIRONMENT_ID = EnvironmentConfig().id
 
 
 def resolve_device(name: str) -> torch.device:
@@ -32,13 +36,21 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         type=Path,
         default=None,
-        help=f"checkpoint path (default: {DEFAULT_CHECKPOINT})",
+        help="checkpoint path (default: derived from --environment)",
     )
     parser.add_argument(
         "--checkpoint",
         dest="checkpoint_option",
         type=Path,
         help="checkpoint path (alternative to the positional argument)",
+    )
+    parser.add_argument(
+        "--environment",
+        default=DEFAULT_ENVIRONMENT_ID,
+        help=(
+            "environment ID used to derive the default checkpoint path "
+            f"(default: {DEFAULT_ENVIRONMENT_ID})"
+        ),
     )
     parser.add_argument(
         "--episodes",
@@ -71,7 +83,9 @@ def main() -> int:
     args = parse_args()
     if args.checkpoint is not None and args.checkpoint_option is not None:
         raise SystemExit("pass a checkpoint either positionally or with --checkpoint")
-    checkpoint_path = args.checkpoint_option or args.checkpoint or DEFAULT_CHECKPOINT
+    checkpoint_path = args.checkpoint_option or args.checkpoint or Path(
+        checkpoint_path_for_environment(args.environment)
+    )
     if not checkpoint_path.is_file():
         raise SystemExit(f"checkpoint not found: {checkpoint_path}")
     if args.episodes is not None and args.episodes <= 0:

@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from hydra.core.config_store import ConfigStore
+from omegaconf import OmegaConf
 
 
 @dataclass
@@ -97,7 +98,9 @@ class LossConfig:
 class CheckpointConfig:
     """Checkpoint destination and representative snapshot count."""
 
-    path: str = "checkpoints/muzero_latest.pt"
+    path: str = (
+        "checkpoints/${environment_slug:${environment.id}}/muzero_latest.pt"
+    )
     keep_representative: int = 10
 
 
@@ -108,8 +111,14 @@ class EvaluationConfig:
     enabled: bool = True
     episodes: int = 10
     num_envs: int = 4
-    data_path: str = "evaluations/muzero_evaluations.json"
-    plot_path: str = "evaluations/muzero_evaluation.png"
+    data_path: str = (
+        "evaluations/${environment_slug:${environment.id}}/"
+        "muzero_evaluations.json"
+    )
+    plot_path: str = (
+        "evaluations/${environment_slug:${environment.id}}/"
+        "muzero_evaluation.png"
+    )
 
 
 @dataclass
@@ -124,6 +133,22 @@ class TrainMuZeroConfig:
     loss: LossConfig = field(default_factory=LossConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+
+
+def environment_slug(environment_id: str) -> str:
+    """Return the final, filesystem-safe name from an environment ID."""
+    if not isinstance(environment_id, str):
+        raise TypeError("environment_id must be a string")
+    normalized = environment_id.strip()
+    slug = normalized.rsplit("/", maxsplit=1)[-1]
+    if slug in {"", ".", ".."}:
+        raise ValueError("environment_id must contain a valid final component")
+    return slug
+
+
+def checkpoint_path_for_environment(environment_id: str) -> str:
+    """Return the default latest-checkpoint path for an environment."""
+    return f"checkpoints/{environment_slug(environment_id)}/muzero_latest.pt"
 
 
 def next_collection_vector_steps(
@@ -159,7 +184,12 @@ def visit_softmax_temperature(trained_steps: int, training_steps: int) -> float:
 
 
 def register_train_muzero_config() -> None:
-    """Register the structured schema before Hydra composes the YAML file."""
+    """Register the structured schema and environment-path resolver."""
+    OmegaConf.register_new_resolver(
+        "environment_slug",
+        environment_slug,
+        replace=True,
+    )
     ConfigStore.instance().store(
         name="train_muzero_schema",
         node=TrainMuZeroConfig,
@@ -175,6 +205,8 @@ __all__ = [
     "SelfPlayConfig",
     "TrainMuZeroConfig",
     "TrainingConfig",
+    "checkpoint_path_for_environment",
+    "environment_slug",
     "next_collection_vector_steps",
     "register_train_muzero_config",
     "visit_softmax_temperature",

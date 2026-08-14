@@ -3,9 +3,22 @@ import pytest
 from atariagent.training.muzero_config import (
     LossConfig,
     TrainingConfig,
+    checkpoint_path_for_environment,
+    environment_slug,
     next_collection_vector_steps,
     visit_softmax_temperature,
 )
+
+
+def test_output_paths_are_derived_from_environment_id() -> None:
+    assert environment_slug("ALE/Pong-v5") == "Pong-v5"
+    assert environment_slug("Pong-v5") == "Pong-v5"
+    assert checkpoint_path_for_environment("ALE/Breakout-v5") == (
+        "checkpoints/Breakout-v5/muzero_latest.pt"
+    )
+
+    with pytest.raises(ValueError, match="valid final component"):
+        environment_slug("ALE/")
 
 
 def test_consistency_loss_uses_efficientzero_defaults() -> None:

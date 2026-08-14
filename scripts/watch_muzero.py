@@ -14,9 +14,13 @@ import torch
 
 from atariagent.evaluation import evaluate_agent, load_agent_checkpoint
 from atariagent.selfplay import Environment, make_atari_environment
+from atariagent.training.muzero_config import (
+    EnvironmentConfig,
+    checkpoint_path_for_environment,
+)
 
 
-DEFAULT_CHECKPOINT = Path("checkpoints/Alien-v5/muzero_latest.pt")
+DEFAULT_ENVIRONMENT_ID = EnvironmentConfig().id
 
 
 def resolve_device(name: str) -> torch.device:
@@ -41,8 +45,16 @@ def parse_args() -> argparse.Namespace:
         "checkpoint",
         nargs="?",
         type=Path,
-        default=DEFAULT_CHECKPOINT,
-        help=f"checkpoint path (default: {DEFAULT_CHECKPOINT})",
+        default=None,
+        help="checkpoint path (default: derived from --environment)",
+    )
+    parser.add_argument(
+        "--environment",
+        default=DEFAULT_ENVIRONMENT_ID,
+        help=(
+            "environment ID used to derive the default checkpoint path "
+            f"(default: {DEFAULT_ENVIRONMENT_ID})"
+        ),
     )
     parser.add_argument(
         "--episodes",
@@ -61,8 +73,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if not args.checkpoint.is_file():
-        raise SystemExit(f"checkpoint not found: {args.checkpoint}")
+    checkpoint_path = args.checkpoint or Path(
+        checkpoint_path_for_environment(args.environment)
+    )
+    if not checkpoint_path.is_file():
+        raise SystemExit(f"checkpoint not found: {checkpoint_path}")
     if args.episodes is not None and args.episodes <= 0:
         raise SystemExit("--episodes must be positive")
 
@@ -77,7 +92,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     config = require_mapping(checkpoint.get("config"), "training")
     environment_config = require_mapping(config.get("environment"), "environment")
     evaluation_config = config.get("evaluation", {})
@@ -105,12 +120,12 @@ def main() -> int:
 
     device = resolve_device(args.device)
     agent, _ = load_agent_checkpoint(
-        args.checkpoint,
+        checkpoint_path,
         action_space_size=action_space_size,
         device=device,
     )
 
-    print(f"Checkpoint:  {args.checkpoint}")
+    print(f"Checkpoint:  {checkpoint_path}")
     print(f"Environment: {environment_config['id']}")
     print(f"Device:      {device}")
     print("Close the game window or press Ctrl-C to stop.\n")

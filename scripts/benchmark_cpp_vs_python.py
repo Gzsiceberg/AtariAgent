@@ -26,6 +26,10 @@ from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTS as PythonMCTS
 from atariagent.search import MCTSConfig
 from atariagent.training import ValueTargetNetwork as PythonValueTargetNetwork
+from atariagent.training.muzero_config import (
+    EnvironmentConfig,
+    checkpoint_path_for_environment,
+)
 from atariagent.typecheck import set_runtime_typechecking
 
 Operation = Callable[[], object]
@@ -34,9 +38,15 @@ Operation = Callable[[], object]
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--environment",
+        default=EnvironmentConfig().id,
+        help="environment ID used to derive the default checkpoint path",
+    )
+    parser.add_argument(
         "--checkpoint",
         type=Path,
-        default=Path("checkpoints/Alien-v5/muzero_latest.pt"),
+        default=None,
+        help="checkpoint path (default: derived from --environment)",
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--model-batch-size", type=int, default=64)
@@ -222,6 +232,10 @@ def assert_nested_close(actual, expected) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.checkpoint is None:
+        args.checkpoint = Path(
+            checkpoint_path_for_environment(args.environment)
+        )
     sizes = (
         args.model_batch_size,
         args.search_roots,
