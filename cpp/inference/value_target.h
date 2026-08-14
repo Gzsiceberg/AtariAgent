@@ -2,6 +2,7 @@
 
 #include "inference/mcts.h"
 #include "models/representation.h"
+#include "models/state_dict.h"
 
 #include <pybind11/pybind11.h>
 
@@ -35,6 +36,11 @@ public:
 
     void eval();
     void to(const std::string& device);
+    void synchronize(
+        const TensorState& representation,
+        const TensorState& prediction,
+        const TensorState& dynamics
+    );
     void synchronize(
         const pybind11::dict& representation,
         const pybind11::dict& prediction,

@@ -118,14 +118,26 @@ void ValueTargetNetwork::to(const std::string& device) {
 }
 
 void ValueTargetNetwork::synchronize(
-    const py::dict& representation,
-    const py::dict& prediction,
-    const py::dict& dynamics
+    const TensorState& representation,
+    const TensorState& prediction,
+    const TensorState& dynamics
 ) {
     load_state_dict(*representation_, representation);
     load_state_dict(*prediction_, prediction);
     load_state_dict(*dynamics_, dynamics);
     eval();
+}
+
+void ValueTargetNetwork::synchronize(
+    const py::dict& representation,
+    const py::dict& prediction,
+    const py::dict& dynamics
+) {
+    synchronize(
+        tensor_state_from_dict(representation),
+        tensor_state_from_dict(prediction),
+        tensor_state_from_dict(dynamics)
+    );
 }
 
 torch::Tensor ValueTargetNetwork::decoded_values(

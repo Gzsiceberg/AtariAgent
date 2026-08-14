@@ -1,17 +1,21 @@
 #pragma once
 
+#include "inference/value_target.h"
+
 #include <pybind11/pybind11.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace atariagent::native {
 
 class NativeReanalysisEngine {
 public:
     NativeReanalysisEngine(
-        pybind11::object target,
+        std::shared_ptr<ValueTargetNetwork> target,
+        const std::string& device,
         int prefetch_batches,
         double timeout_seconds,
         int target_update_interval,
@@ -24,9 +28,9 @@ public:
 
     void publish_weights(
         std::int64_t version,
-        pybind11::object representation,
-        pybind11::object prediction,
-        pybind11::object dynamics
+        const pybind11::dict& representation,
+        const pybind11::dict& prediction,
+        const pybind11::dict& dynamics
     );
     std::int64_t submit(pybind11::object batch);
     pybind11::dict wait_next();

@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
 import math
-from typing import Mapping
+from dataclasses import dataclass, fields
 
 import torch
 from torch import Tensor, nn
 
-from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
+from atariagent.models.native import (
+    DynamicsNetwork,
+    InferenceModels,
+    NativeReanalysisEngine,
+    PredictionNetwork,
+    RepresentationNetwork,
+    make_value_target,
+)
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTSConfig
-from atariagent.search._mcts_native import (
-    NativeReanalysisEngine,
-    set_num_threads,
-)
-from .target import Precision, ValueTargetNetwork
+from atariagent.search._mcts_native import set_num_threads
 
+from .target import Precision
 
 TargetState = dict[str, Tensor]
 
@@ -66,49 +69,14 @@ def make_target_state(
     return state
 
 
-class _StateSnapshot:
-    """State-dict adapter accepted by ValueTargetNetwork.synchronize."""
-
-    def __init__(self, state: Mapping[str, Tensor], prefix: str) -> None:
-        self._state = {
-            name.removeprefix(f"{prefix}."): value
-            for name, value in state.items()
-            if name.startswith(f"{prefix}.")
-        }
-
-    def state_dict(self) -> dict[str, Tensor]:
-        return self._state
-
-
-class _TargetExecutor:
-    """Execute target inference on its device and return CPU target tensors."""
-
-    def __init__(self, target: ValueTargetNetwork, device: torch.device) -> None:
-        self.target = target
-        self.device = device
-
-    def synchronize(
-        self,
-        representation: nn.Module,
-        prediction: nn.Module,
-        dynamics: nn.Module,
-    ) -> None:
-        self.target.synchronize(representation, prediction, dynamics)
-
-    def reanalyze_batch(self, batch: ReplayBatch) -> ReplayBatch:
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
-            torch.cuda.reset_peak_memory_stats(self.device)
-        device_batch = batch.to_reanalysis_device(self.device)
-        reanalyzed = self.target.reanalyze_batch(device_batch)
-        values = reanalyzed.value_targets.detach().cpu().contiguous()
-        policies = reanalyzed.policy_targets.detach().cpu().contiguous()
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
-        return batch.with_reanalysis_targets(
-            value_targets=values,
-            policy_targets=policies,
-        )
+def _state_section(state: TargetState, prefix: str) -> dict[str, Tensor]:
+    """Return one network's unprefixed tensor state."""
+    marker = f"{prefix}."
+    return {
+        name.removeprefix(marker): value
+        for name, value in state.items()
+        if name.startswith(marker)
+    }
 
 
 class ReanalysisPipeline:
@@ -138,9 +106,7 @@ class ReanalysisPipeline:
             raise TypeError("mcts_threads must be an integer")
         if mcts_threads <= 0:
             raise ValueError("mcts_threads must be positive")
-        if isinstance(prefetch_batches, bool) or not isinstance(
-            prefetch_batches, int
-        ):
+        if isinstance(prefetch_batches, bool) or not isinstance(prefetch_batches, int):
             raise TypeError("prefetch_batches must be an integer")
         if prefetch_batches <= 0:
             raise ValueError("prefetch_batches must be positive")
@@ -159,34 +125,39 @@ class ReanalysisPipeline:
             if device is not None
             else ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        representation = RepresentationNetwork(in_channels)
-        prediction = PredictionNetwork(action_space_size)
-        dynamics = DynamicsNetwork(action_space_size)
-        self.target = ValueTargetNetwork(
-            representation,
-            prediction,
-            dynamics=dynamics,
-            action_space_size=action_space_size,
-            mcts_config=mcts_config,
-            rng_seed=rng_seed,
+        if self.device.type == "cuda" and self.device.index is None:
+            self.device = torch.device("cuda", torch.cuda.current_device())
+        models = (
+            InferenceModels(
+                representation=RepresentationNetwork(in_channels),
+                prediction=PredictionNetwork(action_space_size),
+                dynamics=DynamicsNetwork(action_space_size),
+            )
+            .eval()
+            .to(self.device)
+        )
+        self.target = make_value_target(
+            models,
+            action_space_size,
+            mcts_config,
+            seed=rng_seed,
             support_min=support_min,
             support_max=support_max,
             precision=precision,
             chunk_size=policy_chunk_size,
-        ).to(self.device)
+        )
         self.prefetch_batches = prefetch_batches
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
-        self._executor = _TargetExecutor(self.target, self.device)
         self._engine = NativeReanalysisEngine(
-            self._executor,
+            self.target,
+            str(self.device),
             prefetch_batches,
             timeout_seconds,
             target_update_interval,
             cache_targets,
         )
         self._latest_target_state: TargetState | None = None
-        self._published_snapshots: list[_StateSnapshot] = []
         self._closed = False
         self.max_observed_pending = 0
         self.max_observed_pending_bytes = 0
@@ -226,20 +197,12 @@ class ReanalysisPipeline:
         """Queue an ordered immutable target snapshot and wait for activation."""
         del wait  # Native publication is deliberately synchronous for ordering.
         self._require_open()
-        representation = _StateSnapshot(state, "representation")
-        prediction = _StateSnapshot(state, "prediction")
-        dynamics = _StateSnapshot(state, "dynamics")
         self._engine.publish_weights(
             version,
-            representation,
-            prediction,
-            dynamics,
+            _state_section(state, "representation"),
+            _state_section(state, "prediction"),
+            _state_section(state, "dynamics"),
         )
-        self._published_snapshots = [
-            representation,
-            prediction,
-            dynamics,
-        ]
         self._latest_target_state = dict(state)
 
     def submit(self, batch: ReplayBatch) -> int:

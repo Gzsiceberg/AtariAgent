@@ -7,6 +7,7 @@
 #include "models/prediction.h"
 #include "models/representation.h"
 #include "models/state_dict.h"
+#include "reanalysis/engine.h"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -305,7 +306,12 @@ PYBIND11_MODULE(_models_native, module) {
         }, py::arg("device"), py::return_value_policy::reference_internal)
         .def(
             "synchronize",
-            &ValueTargetNetwork::synchronize,
+            [](ValueTargetNetwork& self,
+               const py::dict& representation,
+               const py::dict& prediction,
+               const py::dict& dynamics) {
+                self.synchronize(representation, prediction, dynamics);
+            },
             py::arg("representation"),
             py::arg("prediction"),
             py::arg("dynamics")
@@ -341,6 +347,47 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("batch"),
             py::arg("add_exploration_noise") = true,
             py::arg("deterministic_ties") = false
+        );
+
+    py::class_<NativeReanalysisEngine>(module, "NativeReanalysisEngine")
+        .def(
+            py::init<
+                std::shared_ptr<ValueTargetNetwork>,
+                const std::string&,
+                int,
+                double,
+                int,
+                bool
+            >(),
+            py::arg("target"),
+            py::arg("device"),
+            py::arg("prefetch_batches"),
+            py::arg("timeout_seconds"),
+            py::arg("target_update_interval"),
+            py::arg("cache_targets")
+        )
+        .def(
+            "publish_weights",
+            &NativeReanalysisEngine::publish_weights,
+            py::arg("version"),
+            py::arg("representation"),
+            py::arg("prediction"),
+            py::arg("dynamics")
+        )
+        .def("submit", &NativeReanalysisEngine::submit, py::arg("batch"))
+        .def("wait_next", &NativeReanalysisEngine::wait_next)
+        .def("close", &NativeReanalysisEngine::close)
+        .def_property_readonly(
+            "pending_count", &NativeReanalysisEngine::pending_count
+        )
+        .def_property_readonly(
+            "max_pending", &NativeReanalysisEngine::max_pending
+        )
+        .def_property_readonly(
+            "cache_size", &NativeReanalysisEngine::cache_size
+        )
+        .def_property_readonly(
+            "weight_version", &NativeReanalysisEngine::weight_version
         );
 
     module.def(

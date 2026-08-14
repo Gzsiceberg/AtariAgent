@@ -55,7 +55,6 @@ pybind11_add_module(
         cpp/mcts_bindings.cpp
         cpp/native_search.cpp
         cpp/search/batch_tree.cpp
-        cpp/reanalysis/engine.cpp
 )
 target_include_directories(_mcts_native PRIVATE cpp)
 configure_torch_extension(_mcts_native)
@@ -76,9 +75,14 @@ pybind11_add_module(
         cpp/inference/evaluator.cpp
         cpp/inference/mcts.cpp
         cpp/inference/value_target.cpp
+        cpp/reanalysis/cache.cpp
+        cpp/reanalysis/engine.cpp
 )
 target_include_directories(_models_native PRIVATE cpp)
 configure_torch_extension(_models_native)
+if(TARGET torch_cuda)
+    target_compile_definitions(_models_native PRIVATE ATARIAGENT_HAS_CUDA=1)
+endif()
 
 install(TARGETS _mcts_native DESTINATION atariagent/search)
 install(TARGETS _models_native DESTINATION atariagent/models)
