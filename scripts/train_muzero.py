@@ -195,12 +195,6 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("batch_worker_timeout_seconds must be positive")
     if config.training.precision not in ("fp32", "bf16"):
         raise ValueError("training.precision must be fp32 or bf16")
-    if not isinstance(config.augmentation.enabled, bool):
-        raise TypeError("augmentation.enabled must be a boolean")
-    if config.augmentation.shift_delta < 0:
-        raise ValueError("augmentation.shift_delta must be non-negative")
-    if config.augmentation.enabled and not config.augmentation.transforms:
-        raise ValueError("augmentation.transforms must not be empty when enabled")
     if not isinstance(config.loss.consistency_enabled, bool):
         raise TypeError("loss.consistency_enabled must be a boolean")
     if config.loss.consistency_weight < 0.0:
@@ -266,17 +260,6 @@ def main(config: TrainMuZeroConfig) -> None:
             agent.dynamics_network,
             agent.prediction_network,
             consistency_network=consistency_network,
-            augmentation=(
-                config.augmentation.transforms
-                if config.augmentation.enabled
-                and config.loss.consistency_enabled
-                else None
-            ),
-            augmentation_shift_delta=config.augmentation.shift_delta,
-            image_shape=(
-                config.environment.screen_size,
-                config.environment.screen_size,
-            ),
             learning_rate=config.training.learning_rate,
             momentum=config.training.momentum,
             weight_decay=config.training.weight_decay,

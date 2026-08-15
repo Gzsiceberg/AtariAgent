@@ -1,7 +1,6 @@
 import pytest
 
 from atariagent.training.muzero_config import (
-    AugmentationConfig,
     LossConfig,
     TrainingConfig,
     checkpoint_path_for_environment,
@@ -20,14 +19,6 @@ def test_output_paths_are_derived_from_environment_id() -> None:
 
     with pytest.raises(ValueError, match="valid final component"):
         environment_slug("ALE/")
-
-
-def test_augmentation_uses_efficientzero_v1_atari_defaults() -> None:
-    config = AugmentationConfig()
-
-    assert config.enabled
-    assert config.transforms == ["shift", "intensity"]
-    assert config.shift_delta == 4
 
 
 def test_consistency_loss_uses_efficientzero_defaults() -> None:

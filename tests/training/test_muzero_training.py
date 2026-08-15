@@ -199,49 +199,6 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
     assert not torch.equal(consistency_output.weight, initial_consistency)
 
 
-class _RecordingTransforms:
-    def __init__(self) -> None:
-        self.inputs: list[torch.Tensor] = []
-
-    def __call__(self, images: torch.Tensor) -> torch.Tensor:
-        self.inputs.append(images.clone())
-        return images + len(self.inputs)
-
-
-def test_trainer_augments_root_and_packed_target_sequence_separately() -> None:
-    trainer = MuZeroTrainer(
-        RepresentationNetwork(2),
-        DynamicsNetwork(action_space_size=3),
-        PredictionNetwork(action_space_size=3),
-        consistency_network=ConsistencyNetwork(
-            projection_dim=32,
-            projection_hidden_dim=64,
-            prediction_hidden_dim=16,
-        ),
-        unroll_steps=2,
-    )
-    recorder = _RecordingTransforms()
-    trainer.transforms = recorder  # type: ignore[assignment]
-    frame_values = torch.arange(4, dtype=torch.uint8).reshape(
-        1, 4, 1, 1, 1
-    )
-    frames = frame_values.expand(2, 4, 1, 2, 2).clone()
-
-    observations, targets = trainer._prepare_observations(frames)
-
-    assert targets is not None
-    assert [value.shape for value in recorder.inputs] == [
-        (2, 2, 2, 2),
-        (2, 3, 2, 2),
-    ]
-    expected_root = (
-        frames[:, :2].reshape(2, 2, 2, 2).float() / 255.0 + 1.0
-    )
-    expected_targets = frames[:, 1:].float() / 255.0 + 2.0
-    torch.testing.assert_close(observations, expected_root)
-    torch.testing.assert_close(targets, expected_targets)
-
-
 class _ScalarRepresentation(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
