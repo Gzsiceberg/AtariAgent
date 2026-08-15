@@ -43,11 +43,16 @@ training:
   unroll_steps: 5
   td_steps: 5
   lstm_horizon: 5
+  # EfficientZero V2 uses TD values early/recently and MCTS root values for
+  # stale replay states after the model has become reliable.
+  value_target: mixed
+  mixed_value_start_step: 30000
+  mixed_value_threshold: 5000
   # Refresh replay values and policies with the delayed target network.
   use_target_network_reanalysis: true
   # Two 768-root chunks are faster here than 1024+512 and use less memory.
   policy_reanalysis_chunk_size: 768
-  # Cache corrected values and MCTS policies by transition and target version.
+  # Cache corrected TD values, MCTS root values, and policies by target version.
   cache_reanalyzed_targets: true
   # Keep replay-stored value and policy targets for the first learner updates.
   reanalysis_start_step: 1000
@@ -61,7 +66,7 @@ training:
   reanalysis_timeout_seconds: 600.0
   # Cap native OpenMP tree traversal to avoid CPU oversubscription.
   reanalysis_worker_num_threads: 4
-  # Hard-copy online representation/value weights for direct value reanalysis.
+  # Hard-copy all online model weights used by target reanalysis.
   target_update_interval: 1000
   # Per raw frame; training and MCTS use discount ** frame_skip.
   discount: 0.997

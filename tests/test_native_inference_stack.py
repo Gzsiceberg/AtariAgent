@@ -171,3 +171,9 @@ def test_native_value_target_matches_python_reanalysis() -> None:
 
     torch.testing.assert_close(actual.value_targets, expected.value_targets)
     torch.testing.assert_close(actual.policy_targets, expected.policy_targets)
+    assert actual.search_value_targets is not None
+    assert expected.search_value_targets is not None
+    torch.testing.assert_close(
+        actual.search_value_targets,
+        expected.search_value_targets,
+    )

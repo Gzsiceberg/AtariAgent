@@ -199,7 +199,8 @@ public:
             "with_reanalysis_targets"
         )(
             py::arg("value_targets") = job->value_targets,
-            py::arg("policy_targets") = job->policy_targets
+            py::arg("policy_targets") = job->policy_targets,
+            py::arg("search_value_targets") = job->search_value_targets
         );
         py::dict result;
         result["request_id"] = job->request_id;
@@ -273,6 +274,7 @@ private:
         torch::Tensor policy_mask;
         torch::Tensor policy_targets;
         torch::Tensor value_targets;
+        torch::Tensor search_value_targets;
         torch::Tensor indices;
         std::optional<torch::Tensor> value_bootstrap_frames;
         std::optional<torch::Tensor> value_bootstrap_values;
@@ -511,6 +513,9 @@ private:
             job->cache_misses = std::move(prepared.misses);
             job->roots_searched = prepared.roots_searched;
             job->value_targets = std::move(prepared.value_targets);
+            job->search_value_targets = std::move(
+                prepared.search_value_targets
+            );
             job->policy_targets = std::move(prepared.policy_targets);
             effective_policy_mask = job->policy_mask & prepared.miss_mask;
             if (job->value_bootstrap_mask) {
@@ -520,6 +525,9 @@ private:
         } else {
             job->roots_searched = job->roots_requested;
             job->value_targets = job->value_targets.clone();
+            job->search_value_targets = torch::zeros_like(
+                job->value_targets
+            );
             job->policy_targets = job->policy_targets.clone();
         }
 
@@ -531,6 +539,7 @@ private:
                 cache_.resolve(
                     job->cache_misses,
                     job->value_targets,
+                    job->search_value_targets,
                     job->policy_targets
                 );
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -540,6 +549,7 @@ private:
         {
             c10::InferenceMode normal_tensor_guard(false);
             job->value_targets = job->value_targets.clone();
+            job->search_value_targets = job->search_value_targets.clone();
             job->policy_targets = job->policy_targets.clone();
         }
         job->worker_duration_ms = std::chrono::duration<double, std::milli>(
@@ -562,6 +572,8 @@ private:
         torch::Tensor device_frames = job->frames.to(device_);
         torch::Tensor device_policy_targets = job->policy_targets.to(device_);
         torch::Tensor device_value_targets = job->value_targets.to(device_);
+        torch::Tensor device_search_values =
+            job->search_value_targets.to(device_);
         if (bootstrap_mask) {
             device_value_targets = target_->reanalyze_values(
                 job->value_bootstrap_frames->to(device_),
@@ -572,15 +584,23 @@ private:
                 job->stack_size
             );
         }
-        device_policy_targets = target_->reanalyze_policies(
-            device_frames,
-            policy_mask.to(device_),
-            device_policy_targets,
-            job->stack_size,
-            true,
-            false
+        torch::Tensor device_policy_mask = policy_mask.to(device_);
+        auto [reanalyzed_policies, searched_values] =
+            target_->reanalyze_policies(
+                device_frames,
+                device_policy_mask,
+                device_policy_targets,
+                job->stack_size,
+                true,
+                false
+            );
+        device_policy_targets = std::move(reanalyzed_policies);
+        device_search_values = torch::where(
+            device_policy_mask, searched_values, device_search_values
         );
         job->value_targets = device_value_targets.cpu().contiguous();
+        job->search_value_targets =
+            device_search_values.cpu().contiguous();
         job->policy_targets = device_policy_targets.cpu().contiguous();
     }
 

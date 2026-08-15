@@ -23,8 +23,9 @@ class ReplayBatch:
     policy targets. ``value_mask`` identifies states whose fixed-horizon return can
     be computed; a true terminal state has a valid zero-value target without
     an MCTS policy. Value-bootstrap fields carry compact real observations and
-    stored bootstrap terms so the learner can substitute fresh target-network
-    values without changing stored replay data.
+    stored bootstrap terms so reanalysis can refresh TD endpoints without
+    changing replay. Search values and transition ages are temporary metadata
+    used to select EfficientZero V2's mixed value target before training.
     """
 
     frames: UInt8[Tensor, "batch frames channels height width"]
@@ -43,6 +44,8 @@ class ReplayBatch:
     value_bootstrap_values: Float[Tensor, "batch states"] | None = None
     value_bootstrap_discounts: Float[Tensor, "batch states"] | None = None
     value_bootstrap_mask: Bool[Tensor, "batch states"] | None = None
+    search_value_targets: Float[Tensor, "batch states"] | None = None
+    transition_ages: Int[Tensor, "batch"] | None = None
 
     @property
     def batch_size(self) -> int:
@@ -159,6 +162,7 @@ class ReplayBatch:
         *,
         value_targets: Float[Tensor, "batch states"],
         policy_targets: Float[Tensor, "batch states actions"],
+        search_value_targets: Float[Tensor, "batch states"] | None = None,
     ) -> ReplayBatch:
         """Merge target-only asynchronous reanalysis output into this batch."""
         if value_targets.shape != self.value_targets.shape:
@@ -169,11 +173,59 @@ class ReplayBatch:
             raise ValueError("reanalyzed value targets are on the wrong device")
         if policy_targets.device != self.policy_targets.device:
             raise ValueError("reanalyzed policy targets are on the wrong device")
+        if search_value_targets is not None:
+            if search_value_targets.shape != self.value_targets.shape:
+                raise ValueError("search value targets have an invalid shape")
+            if search_value_targets.device != self.value_targets.device:
+                raise ValueError("search value targets are on the wrong device")
         return replace(
             self,
             value_targets=value_targets,
             policy_targets=policy_targets,
+            search_value_targets=search_value_targets,
         )
+
+    def with_selected_value_targets(
+        self,
+        *,
+        mode: str,
+        learner_step: int,
+        mixed_start_step: int,
+        freshness_threshold: int,
+    ) -> ReplayBatch:
+        """Select EfficientZero V2 TD or search values for training."""
+        if mode not in {"td", "search", "mixed"}:
+            raise ValueError("value target mode must be td, search, or mixed")
+        for value, name in (
+            (learner_step, "learner_step"),
+            (mixed_start_step, "mixed_start_step"),
+            (freshness_threshold, "freshness_threshold"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if mode == "td" or (
+            mode == "mixed" and learner_step < mixed_start_step
+        ):
+            return self
+        if self.search_value_targets is None:
+            raise ValueError("batch has no MCTS search value targets")
+
+        search_mask = self.policy_mask & self.value_mask
+        if mode == "mixed":
+            if self.transition_ages is None:
+                raise ValueError("batch has no replay transition ages")
+            if self.transition_ages.shape != (self.batch_size,):
+                raise ValueError("transition ages have an invalid shape")
+            sample_uses_search = self.transition_ages >= freshness_threshold
+            search_mask = search_mask & sample_uses_search[:, None]
+        selected = torch.where(
+            search_mask,
+            self.search_value_targets,
+            self.value_targets,
+        )
+        return replace(self, value_targets=selected)
 
     def with_reanalyzed_policy_targets(
         self,
@@ -330,6 +382,11 @@ class ReplayBatch:
             "policy_targets": self.policy_targets.to(device),
             "policy_mask": self.policy_mask.to(device),
             "value_targets": self.value_targets.to(device),
+            "search_value_targets": (
+                None
+                if self.search_value_targets is None
+                else self.search_value_targets.to(device)
+            ),
         }
         for name in (
             "value_bootstrap_frames",
@@ -342,13 +399,21 @@ class ReplayBatch:
         return replace(self, **updates)
 
     def without_value_bootstraps(self) -> ReplayBatch:
-        """Drop target-reanalysis metadata that the learner does not consume."""
+        """Drop direct-value reanalysis metadata."""
         return replace(
             self,
             value_bootstrap_frames=None,
             value_bootstrap_values=None,
             value_bootstrap_discounts=None,
             value_bootstrap_mask=None,
+        )
+
+    def without_reanalysis_metadata(self) -> ReplayBatch:
+        """Drop all temporary target metadata before learner transfer."""
+        return replace(
+            self.without_value_bootstraps(),
+            search_value_targets=None,
+            transition_ages=None,
         )
 
     def pin_memory(self) -> ReplayBatch:

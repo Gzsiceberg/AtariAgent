@@ -65,6 +65,9 @@ def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:
 
     batch = replay.sample(3)
     assert torch.all(batch.frames[:, 0] >= 10)
+    assert batch.transition_ages is not None
+    age_by_id = dict(zip(batch.indices.tolist(), batch.transition_ages.tolist()))
+    assert age_by_id == {3: 3, 4: 2, 5: 1}
     final_sample = int(
         (batch.frames[:, 0, 0, 0, 0] == 12).nonzero().item()
     )
@@ -102,6 +105,9 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.indices.dtype == torch.long
     assert batch.importance_weights.shape == (3,)
     assert batch.importance_weights.dtype == torch.float32
+    assert batch.transition_ages is not None
+    assert batch.transition_ages.shape == (3,)
+    assert batch.transition_ages.dtype == torch.long
     assert batch.importance_weights.max() == pytest.approx(1.0)
 
     sampled_start_values = batch.frames[:, 0, 0, 0, 0]

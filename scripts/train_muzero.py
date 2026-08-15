@@ -170,6 +170,40 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("log_every must be positive")
     if config.training.reanalysis_start_step < 0:
         raise ValueError("reanalysis_start_step must be non-negative")
+    if config.training.value_target not in {"td", "search", "mixed"}:
+        raise ValueError("training.value_target must be td, search, or mixed")
+    for value, name in (
+        (
+            config.training.mixed_value_start_step,
+            "mixed_value_start_step",
+        ),
+        (
+            config.training.mixed_value_threshold,
+            "mixed_value_threshold",
+        ),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"training.{name} must be an integer")
+        if value < 0:
+            raise ValueError(f"training.{name} must be non-negative")
+    if (
+        config.training.value_target in {"search", "mixed"}
+        and not config.training.use_target_network_reanalysis
+    ):
+        raise ValueError("search value targets require target reanalysis")
+    if (
+        config.training.value_target == "mixed"
+        and config.training.reanalysis_start_step
+        > config.training.mixed_value_start_step
+    ):
+        raise ValueError(
+            "reanalysis must start before the mixed-value switch"
+        )
+    if (
+        config.training.value_target == "search"
+        and config.training.reanalysis_start_step != 0
+    ):
+        raise ValueError("search value targets require reanalysis from step 0")
     if config.training.target_update_interval <= 0:
         raise ValueError("target_update_interval must be positive")
     if config.training.policy_reanalysis_chunk_size <= 0:
@@ -429,6 +463,11 @@ def main(config: TrainMuZeroConfig) -> None:
             device=device,
             reanalysis_pipeline=reanalysis_pipeline,
             reanalysis_start_step=config.training.reanalysis_start_step,
+            value_target=config.training.value_target,
+            mixed_value_start_step=(
+                config.training.mixed_value_start_step
+            ),
+            mixed_value_threshold=config.training.mixed_value_threshold,
             max_in_flight=config.training.batch_max_in_flight,
             ready_prefetch=config.training.batch_ready_prefetch,
             timeout_seconds=config.training.batch_worker_timeout_seconds,

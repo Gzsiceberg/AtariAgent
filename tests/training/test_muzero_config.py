@@ -30,6 +30,9 @@ def test_consistency_loss_uses_efficientzero_defaults() -> None:
 
 def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     config = TrainingConfig()
+    assert config.value_target == "mixed"
+    assert config.mixed_value_start_step == 30_000
+    assert config.mixed_value_threshold == 5_000
     assert config.use_target_network_reanalysis
     assert config.policy_reanalysis_chunk_size == 768
     assert config.cache_reanalyzed_targets

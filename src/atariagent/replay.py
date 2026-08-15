@@ -584,6 +584,7 @@ class FIFOReplayBuffer:
             ),
             "indices": ((batch_size,), np.dtype(np.int64)),
             "importance_weights": ((batch_size,), np.dtype(np.float32)),
+            "transition_ages": ((batch_size,), np.dtype(np.int64)),
         }
         if not include_value_bootstraps:
             for name in (
@@ -643,6 +644,7 @@ class FIFOReplayBuffer:
                 "value_bootstrap_discounts"
             ),
             value_bootstrap_mask=optional_tensor("value_bootstrap_mask"),
+            transition_ages=torch.from_numpy(arrays["transition_ages"]),
         )
 
     def _locations_for_indices(
@@ -791,6 +793,7 @@ class FIFOReplayBuffer:
 
         arrays["indices"][:] = transition_ids
         arrays["importance_weights"][:] = importance_weights
+        arrays["transition_ages"][:] = self._next_transition_id - transition_ids
 
     @staticmethod
     def _trajectory_key(

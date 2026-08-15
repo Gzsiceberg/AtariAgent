@@ -18,6 +18,7 @@ struct CacheMiss {
 struct CachePreparation {
     torch::Tensor miss_mask;
     torch::Tensor value_targets;
+    torch::Tensor search_value_targets;
     torch::Tensor policy_targets;
     std::vector<CacheMiss> misses;
     std::int64_t roots_searched = 0;
@@ -40,6 +41,7 @@ public:
     void resolve(
         const std::vector<CacheMiss>& misses,
         torch::Tensor& value_targets,
+        torch::Tensor& search_value_targets,
         torch::Tensor& policy_targets
     );
     void clear();

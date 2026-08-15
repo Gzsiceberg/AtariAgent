@@ -111,6 +111,12 @@ def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
             cached.batch.policy_targets,
             first.batch.policy_targets,
         )
+        assert cached.batch.search_value_targets is not None
+        assert first.batch.search_value_targets is not None
+        torch.testing.assert_close(
+            cached.batch.search_value_targets,
+            first.batch.search_value_targets,
+        )
 
         representation = RepresentationNetwork(4)
         prediction = PredictionNetwork(2)

@@ -190,7 +190,8 @@ torch::Tensor ValueTargetNetwork::reanalyze_values(
     );
 }
 
-torch::Tensor ValueTargetNetwork::reanalyze_policies(
+std::tuple<torch::Tensor, torch::Tensor>
+ValueTargetNetwork::reanalyze_policies(
     const torch::Tensor& frames,
     const torch::Tensor& policy_mask,
     const torch::Tensor& policy_targets,
@@ -201,8 +202,12 @@ torch::Tensor ValueTargetNetwork::reanalyze_policies(
     c10::InferenceMode inference_guard;
     BFloat16AutocastGuard autocast_guard(frames, use_bfloat16_);
     torch::Tensor positions = torch::nonzero(policy_mask).contiguous();
+    torch::Tensor search_values = torch::zeros(
+        policy_mask.sizes(),
+        policy_targets.options().dtype(torch::kFloat32)
+    );
     if (positions.size(0) == 0) {
-        return policy_targets;
+        return {policy_targets, search_values};
     }
     torch::Tensor fresh_policies = policy_targets.clone();
     using namespace torch::indexing;
@@ -233,8 +238,12 @@ torch::Tensor ValueTargetNetwork::reanalyze_policies(
         fresh_policies.index_put_(
             {chunk.select(1, 0), chunk.select(1, 1)}, policies
         );
+        search_values.index_put_(
+            {chunk.select(1, 0), chunk.select(1, 1)},
+            root_values.to(search_values.device(), torch::kFloat32)
+        );
     }
-    return fresh_policies;
+    return {fresh_policies, search_values};
 }
 
 py::object ValueTargetNetwork::reanalyze_batch(
@@ -264,7 +273,7 @@ py::object ValueTargetNetwork::reanalyze_batch(
             py::cast<std::int64_t>(batch.attr("stack_size"))
         );
     }
-    torch::Tensor policies = reanalyze_policies(
+    auto [policies, search_values] = reanalyze_policies(
         py::cast<torch::Tensor>(batch.attr("frames")),
         py::cast<torch::Tensor>(batch.attr("policy_mask")),
         py::cast<torch::Tensor>(batch.attr("policy_targets")),
@@ -274,7 +283,8 @@ py::object ValueTargetNetwork::reanalyze_batch(
     );
     return batch.attr("with_reanalysis_targets")(
         py::arg("value_targets") = values,
-        py::arg("policy_targets") = policies
+        py::arg("policy_targets") = policies,
+        py::arg("search_value_targets") = search_values
     );
 }
 

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from threading import Event, Lock
 from time import monotonic, sleep
 
@@ -167,6 +168,47 @@ class _FakeReanalysisPipeline:
     def publish_weights(self, version: int, state) -> None:
         del state
         self.published_versions.append(version)
+
+
+def test_worker_applies_mixed_values_before_learner_transfer() -> None:
+    pipeline = _FakeReanalysisPipeline()
+
+    def sample(step: int, include: bool):
+        assert include
+        batch = _batch(step)
+        batch = replace(
+            batch,
+            search_value_targets=torch.tensor(
+                [[10.0, 20.0], [30.0, 40.0]]
+            ),
+            transition_ages=torch.tensor([5_000, 4_999]),
+        )
+        return batch, 0.5
+
+    with BatchWorker(
+        _FakeReplay(sample),  # type: ignore[arg-type]
+        batch_size=2,
+        training_steps=100,
+        device="cpu",
+        reanalysis_pipeline=pipeline,  # type: ignore[arg-type]
+        reanalysis_start_step=0,
+        value_target="mixed",
+        mixed_value_start_step=30,
+        mixed_value_threshold=5_000,
+        max_in_flight=1,
+        ready_prefetch=1,
+        timeout_seconds=2.0,
+    ) as worker:
+        worker.start(30, 1)
+        ready = worker.next_ready()
+        torch.testing.assert_close(
+            ready.gpu_batch.value_targets,
+            torch.tensor([[10.0, 20.0], [0.0, 0.0]]),
+        )
+        assert ready.gpu_batch.search_value_targets is None
+        assert ready.gpu_batch.transition_ages is None
+        worker.complete(ready, torch.ones(2))
+        worker.wait_idle()
 
 
 def test_worker_handles_direct_then_reanalysis_batches_in_order() -> None:

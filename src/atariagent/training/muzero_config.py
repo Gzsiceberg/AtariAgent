@@ -56,6 +56,9 @@ class TrainingConfig:
     unroll_steps: int = 5
     td_steps: int = 5
     lstm_horizon: int = 5
+    value_target: str = "mixed"
+    mixed_value_start_step: int = 30_000
+    mixed_value_threshold: int = 5_000
     use_target_network_reanalysis: bool = True
     policy_reanalysis_chunk_size: int = 768
     cache_reanalyzed_targets: bool = True

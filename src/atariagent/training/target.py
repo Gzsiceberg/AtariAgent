@@ -163,20 +163,24 @@ class ValueTargetNetwork(nn.Module):
             return batch
 
         fresh_policies = batch.policy_targets.clone()
+        search_values = batch.value_targets.clone()
         with self._autocast_context():
             for start in range(0, positions.shape[0], self.chunk_size):
                 chunk = positions[start : start + self.chunk_size]
                 observations = self._policy_observations(batch, chunk)
-                policies = self._search_policies(observations)
+                policies, root_values = self._search_policies(observations)
                 fresh_policies[chunk[:, 0], chunk[:, 1]] = policies.to(
                     dtype=fresh_policies.dtype,
                 )
+                search_values[chunk[:, 0], chunk[:, 1]] = root_values.to(
+                    dtype=search_values.dtype,
+                )
 
-        # Every changed position came directly from policy_mask; the cloned
-        # tensor already preserves all unselected stored targets.
+        # The policy mask also identifies states with a valid search value.
         return batch.with_reanalysis_targets(
             value_targets=batch.value_targets,
             policy_targets=fresh_policies,
+            search_value_targets=search_values,
         )
 
     @torch.no_grad()
@@ -228,8 +232,8 @@ class ValueTargetNetwork(nn.Module):
     def _search_policies(
         self,
         observations: Tensor,
-    ) -> Tensor:
-        """Run packed native MCTS and return normalized visit policies."""
+    ) -> tuple[Tensor, Tensor]:
+        """Run MCTS and return normalized visits and empirical root values."""
         assert self._mcts is not None
         assert self._policy_evaluator is not None
         states = self.representation(observations)
@@ -250,7 +254,11 @@ class ValueTargetNetwork(nn.Module):
             dtype=policy_logits.dtype,
             device=policy_logits.device,
         )
-        return visits / visits.sum(dim=1, keepdim=True)
+        root_values = torch.from_numpy(results.root_values).to(
+            dtype=torch.float32,
+            device=policy_logits.device,
+        )
+        return visits / visits.sum(dim=1, keepdim=True), root_values
 
     @staticmethod
     def _validate_chunk_size(chunk_size: int) -> None:

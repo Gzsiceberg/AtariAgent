@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <tuple>
 
 namespace atariagent::native {
 
@@ -55,7 +56,7 @@ public:
         const torch::Tensor& value_targets,
         std::int64_t stack_size
     );
-    torch::Tensor reanalyze_policies(
+    std::tuple<torch::Tensor, torch::Tensor> reanalyze_policies(
         const torch::Tensor& frames,
         const torch::Tensor& policy_mask,
         const torch::Tensor& policy_targets,

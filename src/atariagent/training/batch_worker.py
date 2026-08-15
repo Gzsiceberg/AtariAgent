@@ -81,6 +81,9 @@ class BatchWorker:
         device: torch.device | str,
         reanalysis_pipeline: ReanalysisPipeline | None = None,
         reanalysis_start_step: int = 0,
+        value_target: str = "td",
+        mixed_value_start_step: int = 30_000,
+        mixed_value_threshold: int = 5_000,
         max_in_flight: int = 3,
         ready_prefetch: int = 1,
         timeout_seconds: float = 600.0,
@@ -89,6 +92,8 @@ class BatchWorker:
             (batch_size, "batch_size"),
             (training_steps, "training_steps"),
             (reanalysis_start_step, "reanalysis_start_step"),
+            (mixed_value_start_step, "mixed_value_start_step"),
+            (mixed_value_threshold, "mixed_value_threshold"),
             (max_in_flight, "max_in_flight"),
             (ready_prefetch, "ready_prefetch"),
         ):
@@ -100,6 +105,10 @@ class BatchWorker:
             raise ValueError("training_steps must be positive")
         if reanalysis_start_step < 0:
             raise ValueError("reanalysis_start_step must be non-negative")
+        if value_target not in {"td", "search", "mixed"}:
+            raise ValueError("value_target must be td, search, or mixed")
+        if mixed_value_start_step < 0 or mixed_value_threshold < 0:
+            raise ValueError("mixed value thresholds must be non-negative")
         if max_in_flight <= 0:
             raise ValueError("max_in_flight must be positive")
         if ready_prefetch <= 0:
@@ -115,6 +124,9 @@ class BatchWorker:
         self.device = torch.device(device)
         self.reanalysis_pipeline = reanalysis_pipeline
         self.reanalysis_start_step = reanalysis_start_step
+        self.value_target = value_target
+        self.mixed_value_start_step = mixed_value_start_step
+        self.mixed_value_threshold = mixed_value_threshold
         self.max_in_flight = max_in_flight
         self.ready_prefetch = ready_prefetch
         self.timeout_seconds = timeout_seconds
@@ -341,11 +353,10 @@ class BatchWorker:
             result = pipeline.wait_next()
             token, sample_step, beta, sample_ms = pending.pop(result.request_id)
             try:
-                cpu_batch = result.batch.without_value_bootstraps()
                 completed[sample_step] = self._transfer(
                     token,
                     sample_step,
-                    cpu_batch,
+                    result.batch,
                     beta,
                     sample_duration_ms=sample_ms,
                     queue_wait_ms=result.queue_wait_ms,
@@ -406,6 +417,12 @@ class BatchWorker:
         policy_roots_searched: int = 0,
     ) -> ReadyBatch:
         started = perf_counter()
+        cpu_batch = cpu_batch.with_selected_value_targets(
+            mode=self.value_target,
+            learner_step=sample_step,
+            mixed_start_step=self.mixed_value_start_step,
+            freshness_threshold=self.mixed_value_threshold,
+        ).without_reanalysis_metadata()
         ready_event: torch.cuda.Event | None = None
         if self._transfer_stream is None:
             gpu_batch = cpu_batch.to(

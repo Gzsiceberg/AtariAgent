@@ -22,6 +22,7 @@ torch::Tensor vector_tensor(
 
 struct CacheEntry {
     float value = 0.0F;
+    float search_value = 0.0F;
     std::vector<float> policy;
 };
 
@@ -73,6 +74,7 @@ public:
             result.misses.size()
         );
         result.value_targets = value_targets.clone();
+        result.search_value_targets = torch::zeros_like(value_targets);
         result.policy_targets = policy_targets.clone();
         apply_hits(hits, action_count, result);
         result.miss_mask = make_miss_mask(policy_mask, result.misses);
@@ -82,6 +84,7 @@ public:
     void resolve(
         const std::vector<CacheMiss>& misses,
         torch::Tensor& value_targets,
+        torch::Tensor& search_value_targets,
         torch::Tensor& policy_targets
     ) {
         const auto action_count = policy_targets.size(2);
@@ -96,18 +99,23 @@ public:
         const torch::Tensor miss_values = value_targets.view({-1})
             .index_select(0, source_tensor)
             .contiguous();
+        const torch::Tensor miss_search_values = search_value_targets
+            .view({-1}).index_select(0, source_tensor).contiguous();
         const torch::Tensor miss_policies = policy_targets
             .view({-1, action_count})
             .index_select(0, source_tensor)
             .contiguous();
         const auto* value_data = miss_values.data_ptr<float>();
+        const auto* search_value_data = miss_search_values.data_ptr<float>();
         const auto* policy_data = miss_policies.data_ptr<float>();
         std::vector<std::int64_t> duplicate_indices;
         std::vector<float> duplicate_values;
+        std::vector<float> duplicate_search_values;
         std::vector<float> duplicate_policies;
         for (std::size_t index = 0; index < misses.size(); ++index) {
             CacheEntry entry;
             entry.value = value_data[index];
+            entry.search_value = search_value_data[index];
             entry.policy.assign(
                 policy_data + index * action_count,
                 policy_data + (index + 1) * action_count
@@ -117,6 +125,7 @@ public:
                 entry,
                 duplicate_indices,
                 duplicate_values,
+                duplicate_search_values,
                 duplicate_policies
             );
             entries_[misses[index].state_id] = std::move(entry);
@@ -124,9 +133,11 @@ public:
         apply_duplicates(
             duplicate_indices,
             duplicate_values,
+            duplicate_search_values,
             duplicate_policies,
             action_count,
             value_targets,
+            search_value_targets,
             policy_targets
         );
     }
@@ -145,13 +156,16 @@ private:
         }
         std::vector<std::int64_t> hit_indices;
         std::vector<float> hit_values;
+        std::vector<float> hit_search_values;
         std::vector<float> hit_policies;
         hit_indices.reserve(hits.size());
         hit_values.reserve(hits.size());
+        hit_search_values.reserve(hits.size());
         hit_policies.reserve(hits.size() * action_count);
         for (const auto& [flat, entry] : hits) {
             hit_indices.push_back(flat);
             hit_values.push_back(entry->value);
+            hit_search_values.push_back(entry->search_value);
             hit_policies.insert(
                 hit_policies.end(), entry->policy.begin(), entry->policy.end()
             );
@@ -161,6 +175,10 @@ private:
         );
         result.value_targets.view({-1}).index_put_(
             {hit_index_tensor}, vector_tensor(hit_values, torch::kFloat)
+        );
+        result.search_value_targets.view({-1}).index_put_(
+            {hit_index_tensor},
+            vector_tensor(hit_search_values, torch::kFloat)
         );
         result.policy_targets.view({-1, action_count}).index_put_(
             {hit_index_tensor},
@@ -196,6 +214,7 @@ private:
         const CacheEntry& entry,
         std::vector<std::int64_t>& indices,
         std::vector<float>& values,
+        std::vector<float>& search_values,
         std::vector<float>& policies
     ) {
         for (std::size_t duplicate = 1;
@@ -205,6 +224,7 @@ private:
                 miss.positions[duplicate]
             ));
             values.push_back(entry.value);
+            search_values.push_back(entry.search_value);
             policies.insert(
                 policies.end(), entry.policy.begin(), entry.policy.end()
             );
@@ -214,9 +234,11 @@ private:
     static void apply_duplicates(
         const std::vector<std::int64_t>& indices,
         const std::vector<float>& values,
+        const std::vector<float>& search_values,
         const std::vector<float>& policies,
         std::int64_t action_count,
         torch::Tensor& value_targets,
+        torch::Tensor& search_value_targets,
         torch::Tensor& policy_targets
     ) {
         if (indices.empty()) {
@@ -227,6 +249,9 @@ private:
         );
         value_targets.view({-1}).index_put_(
             {index_tensor}, vector_tensor(values, torch::kFloat)
+        );
+        search_value_targets.view({-1}).index_put_(
+            {index_tensor}, vector_tensor(search_values, torch::kFloat)
         );
         policy_targets.view({-1, action_count}).index_put_(
             {index_tensor},
@@ -258,9 +283,12 @@ CachePreparation ReanalysisCache::prepare(
 void ReanalysisCache::resolve(
     const std::vector<CacheMiss>& misses,
     torch::Tensor& value_targets,
+    torch::Tensor& search_value_targets,
     torch::Tensor& policy_targets
 ) {
-    impl_->resolve(misses, value_targets, policy_targets);
+    impl_->resolve(
+        misses, value_targets, search_value_targets, policy_targets
+    );
 }
 
 void ReanalysisCache::clear() { impl_->clear(); }

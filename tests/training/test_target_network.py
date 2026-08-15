@@ -154,6 +154,8 @@ def test_target_network_reanalyzes_all_policy_samples() -> None:
     )
     changed_samples = reanalyzed.policy_targets[:, 0].ne(0.5).any(dim=1)
     assert changed_samples.all()
+    assert reanalyzed.search_value_targets is not None
+    assert reanalyzed.search_value_targets.shape == batch.value_targets.shape
     torch.testing.assert_close(
         reanalyzed.policy_targets[changed_samples, 0].sum(dim=1),
         torch.ones(100),
@@ -194,6 +196,8 @@ def test_policy_reanalysis_runs_with_atari_networks() -> None:
         torch.ones(2, 2),
     )
     assert reanalyzed.policy_targets.ne(0.5).any()
+    assert reanalyzed.search_value_targets is not None
+    assert reanalyzed.search_value_targets.shape == batch.value_targets.shape
 
 
 def test_target_network_validates_constructor_chunk_size() -> None:
