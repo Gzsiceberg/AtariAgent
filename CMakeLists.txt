@@ -11,6 +11,24 @@ execute_process(
     COMMAND_ERROR_IS_FATAL ANY
 )
 list(APPEND CMAKE_PREFIX_PATH "${TORCH_CMAKE_PREFIX_PATH}")
+
+# CUDA-enabled PyTorch asks CMake to enable CUDA even though this extension only
+# contains C++. nvcc is commonly installed outside PATH (for example under
+# /usr/local/cuda), so give CMake a portable hint before Torch is discovered.
+if(NOT CMAKE_CUDA_COMPILER AND NOT DEFINED ENV{CUDACXX})
+    find_program(
+        ATARIAGENT_NVCC
+        NAMES nvcc
+        HINTS
+            "$ENV{CUDA_HOME}/bin"
+            "$ENV{CUDA_PATH}/bin"
+            "/usr/local/cuda/bin"
+    )
+    if(ATARIAGENT_NVCC)
+        set(CMAKE_CUDA_COMPILER "${ATARIAGENT_NVCC}" CACHE FILEPATH "CUDA compiler")
+    endif()
+endif()
+
 find_package(Torch REQUIRED)
 execute_process(
     COMMAND "${Python_EXECUTABLE}" -c
