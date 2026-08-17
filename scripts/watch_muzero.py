@@ -17,6 +17,7 @@ from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training.muzero_config import (
     EnvironmentConfig,
     checkpoint_path_for_environment,
+    final_evaluation_max_episode_steps,
 )
 
 
@@ -101,12 +102,13 @@ def main() -> int:
     episodes = args.episodes or int(evaluation_config.get("episodes", 1))
 
     def make_environment(*, visible: bool) -> Environment:
+        frame_skip = int(environment_config["frame_skip"])
         return make_atari_environment(
             str(environment_config["id"]),
             frame_stack=int(environment_config["frame_stack"]),
-            frame_skip=int(environment_config["frame_skip"]),
+            frame_skip=frame_skip,
             screen_size=int(environment_config["screen_size"]),
-            max_episode_steps=int(environment_config["max_episode_steps"]),
+            max_episode_steps=final_evaluation_max_episode_steps(frame_skip),
             grayscale_obs=bool(environment_config["grayscale"]),
             terminal_on_life_loss=False,
             render_mode="human" if visible else None,

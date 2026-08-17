@@ -6,6 +6,9 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import OmegaConf
 
 
+FINAL_EVALUATION_RAW_FRAMES = 108_000
+
+
 @dataclass
 class EnvironmentConfig:
     """Atari environment and preprocessing settings."""
@@ -154,6 +157,17 @@ def checkpoint_path_for_environment(environment_id: str) -> str:
     return f"checkpoints/{environment_slug(environment_id)}/muzero_latest.pt"
 
 
+def final_evaluation_max_episode_steps(frame_skip: int) -> int:
+    """Return EfficientZero V1's 108k-frame final evaluation horizon."""
+    if isinstance(frame_skip, bool) or not isinstance(frame_skip, int):
+        raise TypeError("frame_skip must be an integer")
+    if not 0 < frame_skip <= FINAL_EVALUATION_RAW_FRAMES:
+        raise ValueError(
+            "frame_skip must be positive and no greater than the raw-frame horizon"
+        )
+    return FINAL_EVALUATION_RAW_FRAMES // frame_skip
+
+
 def next_collection_vector_steps(
     collected_transitions: int,
     total_transitions: int,
@@ -210,6 +224,7 @@ __all__ = [
     "TrainingConfig",
     "checkpoint_path_for_environment",
     "environment_slug",
+    "final_evaluation_max_episode_steps",
     "next_collection_vector_steps",
     "register_train_muzero_config",
     "visit_softmax_temperature",

@@ -839,7 +839,12 @@ class FIFOReplayBuffer:
 
         arrays["indices"][:] = transition_ids
         arrays["importance_weights"][:] = importance_weights
-        arrays["transition_ages"][:] = self._next_transition_id - transition_ids
+        # Age is the number of newer transitions, so the newest transition
+        # has age zero and exactly ``freshness_threshold`` transitions satisfy
+        # ``age < freshness_threshold``.
+        arrays["transition_ages"][:] = (
+            self._next_transition_id - 1 - transition_ids
+        )
 
     @staticmethod
     def _trajectory_key(

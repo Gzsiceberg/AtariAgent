@@ -45,6 +45,7 @@ from atariagent.training import (
 from atariagent.typecheck import set_runtime_typechecking
 from atariagent.training.muzero_config import (
     TrainMuZeroConfig,
+    final_evaluation_max_episode_steps,
     next_collection_vector_steps,
     register_train_muzero_config,
     visit_softmax_temperature,
@@ -119,7 +120,9 @@ def create_evaluation_environment(config: TrainMuZeroConfig) -> Environment:
         frame_stack=config.environment.frame_stack,
         frame_skip=config.environment.frame_skip,
         screen_size=config.environment.screen_size,
-        max_episode_steps=config.environment.max_episode_steps,
+        max_episode_steps=final_evaluation_max_episode_steps(
+            config.environment.frame_skip
+        ),
         grayscale_obs=config.environment.grayscale,
         terminal_on_life_loss=False,
     )

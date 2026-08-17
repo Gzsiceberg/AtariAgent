@@ -23,8 +23,9 @@ class ReplayBatch:
     be computed; a true terminal state has a valid zero-value target without
     an MCTS policy. Value-bootstrap fields carry compact real observations and
     stored bootstrap terms so reanalysis can refresh TD endpoints without
-    changing replay. Search values and transition ages are temporary metadata
-    used to select EfficientZero V2's mixed value target before training.
+    changing replay. Search values and zero-based transition ages (the number
+    of newer replay transitions) are temporary metadata used to select
+    EfficientZero V2's mixed value target before training.
     """
 
     frames: UInt8[Tensor, "batch frames channels height width"]

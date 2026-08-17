@@ -44,7 +44,7 @@ class Predictor(nn.Module):
     def __init__(
         self,
         input_dim: int = 1024,
-        hidden_dim: int = 256,
+        hidden_dim: int = 512,
         output_dim: int = 1024,
     ) -> None:
         super().__init__()
@@ -70,7 +70,7 @@ class ConsistencyNetwork(nn.Module):
         *,
         projection_dim: int = 1024,
         projection_hidden_dim: int = 1024,
-        prediction_hidden_dim: int = 256,
+        prediction_hidden_dim: int = 512,
     ) -> None:
         super().__init__()
         self.projector = Projector(

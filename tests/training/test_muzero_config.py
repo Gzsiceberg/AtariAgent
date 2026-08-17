@@ -5,6 +5,7 @@ from atariagent.training.muzero_config import (
     TrainingConfig,
     checkpoint_path_for_environment,
     environment_slug,
+    final_evaluation_max_episode_steps,
     next_collection_vector_steps,
     visit_softmax_temperature,
 )
@@ -45,6 +46,13 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.reanalysis_worker_num_threads == 4
     assert config.target_update_interval == 200
     assert config.compile_mode == "max-autotune"
+
+
+def test_final_evaluation_uses_efficientzero_v1_raw_frame_horizon() -> None:
+    assert final_evaluation_max_episode_steps(4) == 27_000
+
+    with pytest.raises(ValueError, match="frame_skip"):
+        final_evaluation_max_episode_steps(0)
 
 
 def test_collection_steps_stop_at_exact_transition_budget() -> None:

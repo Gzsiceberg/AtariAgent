@@ -65,7 +65,7 @@ def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:
     assert torch.all(batch.frames[:, 0] >= 10)
     assert batch.transition_ages is not None
     age_by_id = dict(zip(batch.indices.tolist(), batch.transition_ages.tolist()))
-    assert age_by_id == {3: 3, 4: 2, 5: 1}
+    assert age_by_id == {3: 2, 4: 1, 5: 0}
     final_sample = int((batch.frames[:, 0, 0, 0, 0] == 12).nonzero().item())
     torch.testing.assert_close(
         batch.policy_mask[final_sample],

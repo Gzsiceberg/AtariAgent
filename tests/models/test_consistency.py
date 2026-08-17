@@ -3,6 +3,12 @@ import torch
 from atariagent.models import ConsistencyNetwork, consist_loss_func
 
 
+def test_consistency_network_uses_efficientzero_v1_predictor_width() -> None:
+    model = ConsistencyNetwork()
+
+    assert model.predictor.network[0].out_features == 512
+
+
 def test_consistency_network_shapes_and_stop_gradient() -> None:
     model = ConsistencyNetwork(
         projection_dim=32,
