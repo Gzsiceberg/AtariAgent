@@ -6,7 +6,7 @@ defaults:
 seed: 0
 
 environment:
-  id: ALE/Pong-v5
+  id: ALE/Asterix-v5
   frame_stack: 4
   frame_skip: 4
   screen_size: 96
