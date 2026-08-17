@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -190,11 +191,10 @@ torch::Tensor ValueTargetNetwork::reanalyze_values(
     );
 }
 
-std::tuple<torch::Tensor, torch::Tensor>
-ValueTargetNetwork::reanalyze_policies(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+ValueTargetNetwork::policy_reanalysis_outputs(
     const torch::Tensor& frames,
     const torch::Tensor& policy_mask,
-    const torch::Tensor& policy_targets,
     std::int64_t stack_size,
     bool add_exploration_noise,
     bool deterministic_ties
@@ -202,14 +202,21 @@ ValueTargetNetwork::reanalyze_policies(
     c10::InferenceMode inference_guard;
     BFloat16AutocastGuard autocast_guard(frames, use_bfloat16_);
     torch::Tensor positions = torch::nonzero(policy_mask).contiguous();
-    torch::Tensor search_values = torch::zeros(
-        policy_mask.sizes(),
-        policy_targets.options().dtype(torch::kFloat32)
-    );
     if (positions.size(0) == 0) {
-        return {policy_targets, search_values};
+        return {
+            positions.cpu(),
+            torch::empty({0, 0}, torch::kFloat32),
+            torch::empty({0}, torch::kFloat32),
+        };
     }
-    torch::Tensor fresh_policies = policy_targets.clone();
+    std::vector<torch::Tensor> policy_chunks;
+    std::vector<torch::Tensor> value_chunks;
+    policy_chunks.reserve(
+        static_cast<std::size_t>(
+            (positions.size(0) + chunk_size_ - 1) / chunk_size_
+        )
+    );
+    value_chunks.reserve(policy_chunks.capacity());
     using namespace torch::indexing;
     for (std::int64_t start = 0; start < positions.size(0);
          start += chunk_size_) {
@@ -231,18 +238,51 @@ ValueTargetNetwork::reanalyze_policies(
             add_exploration_noise,
             deterministic_ties
         );
-        torch::Tensor policies = visits.to(
-            policy_targets.device(), policy_targets.scalar_type()
-        );
-        policies = policies / policies.sum(1, true);
-        fresh_policies.index_put_(
-            {chunk.select(1, 0), chunk.select(1, 1)}, policies
-        );
-        search_values.index_put_(
-            {chunk.select(1, 0), chunk.select(1, 1)},
-            root_values.to(search_values.device(), torch::kFloat32)
-        );
+        torch::Tensor policies = visits.to(torch::kFloat32);
+        policies.div_(policies.sum(1, true));
+        policy_chunks.push_back(std::move(policies));
+        value_chunks.push_back(std::move(root_values));
     }
+    return {
+        positions.cpu().contiguous(),
+        torch::cat(policy_chunks, 0).contiguous(),
+        torch::cat(value_chunks, 0).contiguous(),
+    };
+}
+
+std::tuple<torch::Tensor, torch::Tensor>
+ValueTargetNetwork::reanalyze_policies(
+    const torch::Tensor& frames,
+    const torch::Tensor& policy_mask,
+    const torch::Tensor& policy_targets,
+    std::int64_t stack_size,
+    bool add_exploration_noise,
+    bool deterministic_ties
+) {
+    auto [positions, cpu_policies, cpu_values] = policy_reanalysis_outputs(
+        frames,
+        policy_mask,
+        stack_size,
+        add_exploration_noise,
+        deterministic_ties
+    );
+    torch::Tensor search_values = torch::zeros(
+        policy_mask.sizes(),
+        policy_targets.options().dtype(torch::kFloat32)
+    );
+    if (positions.size(0) == 0) {
+        return {policy_targets, search_values};
+    }
+    torch::Tensor device_positions = positions.to(policy_targets.device());
+    torch::Tensor fresh_policies = policy_targets.clone();
+    fresh_policies.index_put_(
+        {device_positions.select(1, 0), device_positions.select(1, 1)},
+        cpu_policies.to(policy_targets.device(), policy_targets.scalar_type())
+    );
+    search_values.index_put_(
+        {device_positions.select(1, 0), device_positions.select(1, 1)},
+        cpu_values.to(search_values.device(), torch::kFloat32)
+    );
     return {fresh_policies, search_values};
 }
 

@@ -3,11 +3,40 @@
 #include "native_search.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <stdexcept>
+#include <span>
 #include <utility>
 #include <vector>
 
+#ifdef ATARIAGENT_HAS_OPENMP
+#include <omp.h>
+#endif
+
 namespace atariagent::native {
+namespace {
+
+std::atomic<int> mcts_num_threads{1};
+
+int configured_mcts_num_threads() {
+    return mcts_num_threads.load(std::memory_order_relaxed);
+}
+
+}  // namespace
+
+int set_mcts_num_threads(int count) {
+    if (count <= 0) {
+        throw std::invalid_argument("thread count must be positive");
+    }
+    mcts_num_threads.store(count, std::memory_order_relaxed);
+#ifdef ATARIAGENT_HAS_OPENMP
+    omp_set_num_threads(count);
+    return count;
+#else
+    return 1;
+#endif
+}
 
 MCTS::MCTS(
     std::shared_ptr<BatchedNetworkEvaluator> evaluator,
@@ -151,32 +180,45 @@ std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
         torch::TensorOptions().dtype(torch::kLong).device(device)
     );
 
+    const bool pin_staging = device.is_cuda();
+    const auto cpu_long_options = torch::TensorOptions()
+        .dtype(torch::kLong).pinned_memory(pin_staging);
+    const auto cpu_bool_options = torch::TensorOptions()
+        .dtype(torch::kBool).pinned_memory(pin_staging);
+    torch::Tensor cpu_state_slots = torch::empty({root_count}, cpu_long_options);
+    torch::Tensor cpu_actions = torch::empty({root_count, 1}, cpu_long_options);
+    torch::Tensor cpu_resets = torch::empty({root_count}, cpu_bool_options);
+    torch::Tensor state_slots = torch::empty(
+        {root_count},
+        torch::TensorOptions().dtype(torch::kLong).device(device)
+    );
+    torch::Tensor action_tensor = torch::empty(
+        {root_count, 1},
+        torch::TensorOptions().dtype(torch::kLong).device(device)
+    );
+    torch::Tensor reset_tensor = torch::empty(
+        {root_count},
+        torch::TensorOptions().dtype(torch::kBool).device(device)
+    );
+    auto* slot_data = cpu_state_slots.data_ptr<std::int64_t>();
+    auto* action_data = cpu_actions.data_ptr<std::int64_t>();
+    auto* reset_data = cpu_resets.data_ptr<bool>();
     using namespace torch::indexing;
     for (std::int64_t simulation = 0; simulation < num_simulations_; ++simulation) {
-        std::vector<std::int64_t> slots(root_count);
-        std::vector<std::int64_t> actions(root_count);
-        std::vector<std::int64_t> resets(root_count);
+#pragma omp parallel for if(root_count >= 32) schedule(static) \
+    num_threads(configured_mcts_num_threads())
         for (std::int64_t root = 0; root < root_count; ++root) {
             auto [slot, action, reset] = trees[root].traverse(
                 static_cast<float>(pb_c_base_),
                 static_cast<float>(pb_c_init_)
             );
-            slots[root] = slot;
-            actions[root] = action;
-            resets[root] = reset ? 1 : 0;
+            slot_data[root] = slot;
+            action_data[root] = action;
+            reset_data[root] = reset;
         }
-        torch::Tensor state_slots = torch::tensor(
-            slots,
-            torch::TensorOptions().dtype(torch::kLong).device(device)
-        );
-        torch::Tensor action_tensor = torch::tensor(
-            actions,
-            torch::TensorOptions().dtype(torch::kLong).device(device)
-        ).reshape({root_count, 1});
-        torch::Tensor reset_tensor = torch::tensor(
-            resets,
-            torch::TensorOptions().dtype(torch::kBool).device(device)
-        );
+        state_slots.copy_(cpu_state_slots, /*non_blocking=*/pin_staging);
+        action_tensor.copy_(cpu_actions, /*non_blocking=*/pin_staging);
+        reset_tensor.copy_(cpu_resets, /*non_blocking=*/pin_staging);
         torch::Tensor states = state_store.index({root_indices, state_slots});
         LSTMHidden hidden{
             hidden_store.index({root_indices, state_slots}).unsqueeze(0),
@@ -197,17 +239,26 @@ std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
         torch::Tensor output = torch::cat(
             {prefixes.unsqueeze(1), values.unsqueeze(1), policy_logits}, 1
         ).to(torch::kFloat32).cpu().contiguous();
-        auto output_data = output.accessor<float, 2>();
+        const auto output_stride = output.size(1);
+        const auto* output_data = output.data_ptr<float>();
+        if (!std::all_of(
+                output_data,
+                output_data + output.numel(),
+                [](float value) { return std::isfinite(value); }
+            )) {
+            throw std::invalid_argument(
+                "recurrent inference output must be finite"
+            );
+        }
+#pragma omp parallel for if(root_count >= 32) schedule(static) \
+    num_threads(configured_mcts_num_threads())
         for (std::int64_t root = 0; root < root_count; ++root) {
-            std::vector<float> logits(action_count);
-            for (std::int64_t action = 0; action < action_count; ++action) {
-                logits[action] = output_data[root][action + 2];
-            }
+            const float* row = output_data + root * output_stride;
             trees[root].expand_and_back_up(
                 static_cast<int>(next_slot),
-                output_data[root][0],
-                output_data[root][1],
-                logits
+                row[0],
+                row[1],
+                std::span<const float>(row + 2, action_count)
             );
         }
     }
@@ -219,13 +270,14 @@ std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
     torch::Tensor values = torch::empty(
         {root_count}, torch::TensorOptions().dtype(torch::kFloat32)
     );
-    auto visits_data = visits.accessor<std::int32_t, 2>();
-    auto roots_data = values.accessor<float, 1>();
+    auto* visits_data = visits.data_ptr<std::int32_t>();
+    auto* roots_data = values.data_ptr<float>();
+#pragma omp parallel for if(root_count >= 32) schedule(static) \
+    num_threads(configured_mcts_num_threads())
     for (std::int64_t root = 0; root < root_count; ++root) {
-        const std::vector<int> counts = trees[root].visit_counts();
-        for (std::int64_t action = 0; action < action_count; ++action) {
-            visits_data[root][action] = counts[action];
-        }
+        trees[root].write_visit_counts(
+            visits_data + root * action_count
+        );
         roots_data[root] = trees[root].root_value();
     }
     return {visits, values};

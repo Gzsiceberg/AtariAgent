@@ -51,6 +51,11 @@ void add_inference_module_methods(
 
 PYBIND11_MODULE(_models_native, module) {
     module.doc() = "Inference-only LibTorch implementations of AtariAgent";
+    module.def(
+        "set_mcts_num_threads",
+        &set_mcts_num_threads,
+        py::arg("count")
+    );
 
     auto residual = py::class_<ResidualBlockImpl, std::shared_ptr<ResidualBlockImpl>>(
         module, "ResidualBlock"

@@ -27,6 +27,7 @@ from ._models_native import (
     ValueNetwork,
     ValueTargetNetwork,
     categorical_to_scalar,
+    set_mcts_num_threads,
 )
 
 
@@ -174,4 +175,5 @@ __all__ = [
     "load_inference_checkpoint",
     "make_mcts",
     "make_value_target",
+    "set_mcts_num_threads",
 ]

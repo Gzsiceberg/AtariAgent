@@ -170,10 +170,7 @@ public:
         for (py::ssize_t index = 0;
              index < static_cast<py::ssize_t>(roots_.size());
              ++index) {
-            const std::vector<int> counts = roots_[index].visit_counts();
-            for (int action = 0; action < action_count_; ++action) {
-                output(index, action) = counts[action];
-            }
+            roots_[index].write_visit_counts(&output(index, 0));
         }
         return result;
     }

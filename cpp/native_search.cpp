@@ -31,7 +31,7 @@ float MinMaxStats::normalize(float value) const {
     return std::clamp(value, 0.0F, 1.0F);
 }
 
-bool SearchNode::expanded() const { return !children.empty(); }
+bool SearchNode::expanded() const { return first_child >= 0; }
 
 float SearchNode::value() const {
     return visit_count == 0
@@ -60,6 +60,11 @@ RootTree::RootTree(
         throw std::invalid_argument("root policy must not be empty");
     }
     nodes_.reserve(1 + action_count_ * (std::max(simulations, 0) + 1));
+    const auto scratch_capacity = static_cast<std::size_t>(
+        std::max(simulations, 0) + 2
+    );
+    path_.reserve(scratch_capacity);
+    min_max_stack_.reserve(scratch_capacity);
     SearchNode root;
     root.prior = 1.0F;
     root.state_slot = 0;
@@ -67,7 +72,7 @@ RootTree::RootTree(
     root.visit_count = 1;
     root.value_sum = root_value;
     nodes_.push_back(std::move(root));
-    expand(0, 0, root_value_prefix, root_priors, false, true);
+    expand_probabilities(0, 0, root_value_prefix, root_priors, false);
 }
 
 std::tuple<int, int, bool> RootTree::traverse(
@@ -98,106 +103,119 @@ void RootTree::expand_and_back_up(
     int state_slot,
     float value_prefix,
     float value,
-    const std::vector<float>& policy_logits
+    std::span<const float> policy_logits
 ) {
     if (path_.empty()) {
         throw std::runtime_error("traverse must precede expansion");
     }
     const int leaf_index = path_.back();
     const bool reset = nodes_[leaf_index].depth % value_prefix_horizon_ == 0;
-    expand(
-        leaf_index,
-        state_slot,
-        value_prefix,
-        softmax(policy_logits),
-        reset,
-        false
-    );
+    expand_logits(leaf_index, state_slot, value_prefix, policy_logits, reset);
     back_up(value);
     rebuild_min_max();
 }
 
-std::vector<int> RootTree::visit_counts() const {
-    std::vector<int> counts;
-    counts.reserve(action_count_);
-    for (const int child_index : nodes_[0].children) {
-        counts.push_back(nodes_[child_index].visit_count);
+void RootTree::write_visit_counts(std::int32_t* output) const {
+    const int first_child = nodes_[0].first_child;
+    for (int action = 0; action < action_count_; ++action) {
+        output[action] = nodes_[first_child + action].visit_count;
     }
-    return counts;
 }
 
 float RootTree::root_value() const { return nodes_[0].value(); }
 
-std::vector<float> RootTree::softmax(const std::vector<float>& logits) {
-    if (logits.empty()) {
-        throw std::invalid_argument("policy logits must not be empty");
-    }
-    const float maximum = *std::max_element(logits.begin(), logits.end());
-    std::vector<float> probabilities;
-    probabilities.reserve(logits.size());
-    float total = 0.0F;
-    for (const float logit : logits) {
-        if (!std::isfinite(logit)) {
-            throw std::invalid_argument("policy logits must be finite");
-        }
-        const float probability = std::exp(logit - maximum);
-        probabilities.push_back(probability);
-        total += probability;
-    }
-    for (float& probability : probabilities) {
-        probability /= total;
-    }
-    return probabilities;
-}
-
-void RootTree::expand(
+void RootTree::expand_probabilities(
     int node_index,
     int state_slot,
     float value_prefix,
-    const std::vector<float>& priors,
-    bool reset,
-    bool priors_are_probabilities
+    std::span<const float> priors,
+    bool reset
 ) {
     if (static_cast<int>(priors.size()) != action_count_) {
         throw std::invalid_argument("policy action count changed during search");
     }
+    float total = 0.0F;
+    for (const float prior : priors) {
+        if (!std::isfinite(prior) || prior < 0.0F) {
+            throw std::invalid_argument(
+                "root priors must be finite and non-negative"
+            );
+        }
+        total += prior;
+    }
+    if (!(total > 0.0F)) {
+        throw std::invalid_argument("root priors must have positive mass");
+    }
+    initialize_children(node_index, state_slot, value_prefix, reset);
+    const int child_depth = nodes_[node_index].depth + 1;
+    for (int action = 0; action < action_count_; ++action) {
+        append_child(node_index, action, priors[action], child_depth);
+    }
+}
+
+void RootTree::expand_logits(
+    int node_index,
+    int state_slot,
+    float value_prefix,
+    std::span<const float> logits,
+    bool reset
+) {
+    if (static_cast<int>(logits.size()) != action_count_) {
+        throw std::invalid_argument("policy action count changed during search");
+    }
+    float maximum = -std::numeric_limits<float>::infinity();
+    for (const float logit : logits) {
+        if (!std::isfinite(logit)) {
+            throw std::invalid_argument("policy logits must be finite");
+        }
+        maximum = std::max(maximum, logit);
+    }
+    float total = 0.0F;
+    for (const float logit : logits) {
+        total += std::exp(logit - maximum);
+    }
+    initialize_children(node_index, state_slot, value_prefix, reset);
+    const int child_depth = nodes_[node_index].depth + 1;
+    for (int action = 0; action < action_count_; ++action) {
+        append_child(
+            node_index,
+            action,
+            std::exp(logits[action] - maximum) / total,
+            child_depth
+        );
+    }
+}
+
+void RootTree::initialize_children(
+    int node_index,
+    int state_slot,
+    float value_prefix,
+    bool reset
+) {
     if (!std::isfinite(value_prefix)) {
         throw std::invalid_argument("value prefix must be finite");
     }
     if (nodes_[node_index].expanded()) {
         throw std::runtime_error("cannot expand a node more than once");
     }
-    if (priors_are_probabilities) {
-        float total = 0.0F;
-        for (const float prior : priors) {
-            if (!std::isfinite(prior) || prior < 0.0F) {
-                throw std::invalid_argument(
-                    "root priors must be finite and non-negative"
-                );
-            }
-            total += prior;
-        }
-        if (!(total > 0.0F)) {
-            throw std::invalid_argument("root priors must have positive mass");
-        }
-    }
-
     nodes_[node_index].state_slot = state_slot;
     nodes_[node_index].value_prefix = value_prefix;
     nodes_[node_index].reset_value_prefix = reset;
-    nodes_[node_index].children.reserve(action_count_);
-    const int child_depth = nodes_[node_index].depth + 1;
-    for (int action = 0; action < action_count_; ++action) {
-        SearchNode child;
-        child.prior = priors[action];
-        child.parent = node_index;
-        child.action = action;
-        child.depth = child_depth;
-        nodes_.push_back(std::move(child));
-        nodes_[node_index].children.push_back(
-            static_cast<int>(nodes_.size()) - 1
-        );
-    }
+    nodes_[node_index].first_child = static_cast<int>(nodes_.size());
+}
+
+void RootTree::append_child(
+    int node_index,
+    int action,
+    float prior,
+    int depth
+) {
+    SearchNode child;
+    child.prior = prior;
+    child.parent = node_index;
+    child.action = action;
+    child.depth = depth;
+    nodes_.push_back(std::move(child));
 }
 
 float RootTree::reward(int node_index) const {
@@ -222,7 +240,9 @@ float RootTree::node_mean_q(
 ) const {
     float sum = 0.0F;
     int count = 0;
-    for (const int child_index : nodes_[node_index].children) {
+    const int first_child = nodes_[node_index].first_child;
+    for (int action = 0; action < action_count_; ++action) {
+        const int child_index = first_child + action;
         if (nodes_[child_index].visit_count > 0) {
             sum += q_value(child_index);
             ++count;
@@ -240,17 +260,20 @@ int RootTree::select_child(
     float pb_c_base,
     float pb_c_init
 ) {
+    const int first_child = nodes_[node_index].first_child;
     int child_visits = 0;
-    for (const int child_index : nodes_[node_index].children) {
-        child_visits += nodes_[child_index].visit_count;
+    for (int action = 0; action < action_count_; ++action) {
+        child_visits += nodes_[first_child + action].visit_count;
     }
     const float exploration_scale = pb_c_init + std::log(
         (static_cast<float>(child_visits) + pb_c_base + 1.0F) / pb_c_base
     );
     const float sqrt_visits = std::sqrt(static_cast<float>(child_visits));
     float best_score = -std::numeric_limits<float>::infinity();
-    std::vector<int> best_children;
-    for (const int child_index : nodes_[node_index].children) {
+    int selected_child = -1;
+    int tie_count = 0;
+    for (int action = 0; action < action_count_; ++action) {
+        const int child_index = first_child + action;
         const SearchNode& child = nodes_[child_index];
         const float prior_score = child.prior * sqrt_visits
             / static_cast<float>(1 + child.visit_count)
@@ -259,21 +282,22 @@ int RootTree::select_child(
         const float score = stats_.normalize(q) + prior_score;
         if (score > best_score + 1.0e-12F) {
             best_score = score;
-            best_children.assign(1, child_index);
+            selected_child = child_index;
+            tie_count = 1;
         } else if (std::abs(score - best_score) <= 1.0e-12F) {
-            best_children.push_back(child_index);
+            ++tie_count;
+            if (!deterministic_ties_) {
+                std::uniform_int_distribution<int> distribution(1, tie_count);
+                if (distribution(rng_) == 1) {
+                    selected_child = child_index;
+                }
+            }
         }
     }
-    if (best_children.empty()) {
+    if (selected_child < 0) {
         throw std::runtime_error("expanded node has no selectable child");
     }
-    if (deterministic_ties_) {
-        return best_children.front();
-    }
-    std::uniform_int_distribution<std::size_t> distribution(
-        0, best_children.size() - 1
-    );
-    return best_children[distribution(rng_)];
+    return selected_child;
 }
 
 void RootTree::back_up(float leaf_value) {
@@ -291,14 +315,20 @@ void RootTree::back_up(float leaf_value) {
 
 void RootTree::rebuild_min_max() {
     stats_.clear();
-    std::vector<int> stack{0};
-    while (!stack.empty()) {
-        const int node_index = stack.back();
-        stack.pop_back();
-        for (const int child_index : nodes_[node_index].children) {
+    min_max_stack_.clear();
+    min_max_stack_.push_back(0);
+    while (!min_max_stack_.empty()) {
+        const int node_index = min_max_stack_.back();
+        min_max_stack_.pop_back();
+        if (!nodes_[node_index].expanded()) {
+            continue;
+        }
+        const int first_child = nodes_[node_index].first_child;
+        for (int action = 0; action < action_count_; ++action) {
+            const int child_index = first_child + action;
             if (nodes_[child_index].visit_count > 0) {
                 stats_.update(q_value(child_index));
-                stack.push_back(child_index);
+                min_max_stack_.push_back(child_index);
             }
         }
     }

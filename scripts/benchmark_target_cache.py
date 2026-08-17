@@ -62,7 +62,11 @@ def main() -> None:
         unroll_steps=args.unroll_steps, lstm_horizon=5,
         precision=args.precision, compile_model=True, lr_warmup_steps=0,
     )
-    trainer.train_step(base_batch.to(device, keep_indices_on_cpu=True))
+    trainer.train_step(
+        base_batch.without_reanalysis_metadata().to(
+            device, keep_indices_on_cpu=True
+        )
+    )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     pipeline = ReanalysisPipeline(
@@ -101,7 +105,7 @@ def main() -> None:
             requested += ready.policy_roots_requested
             searched += ready.policy_roots_searched
             worker_ms += ready.worker_duration_ms
-            learner_batch = ready.batch.without_value_bootstraps()
+            learner_batch = ready.batch.without_reanalysis_metadata()
             trainer.train_step(
                 learner_batch.to(device, keep_indices_on_cpu=True)
             )

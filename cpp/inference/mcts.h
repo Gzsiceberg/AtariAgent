@@ -10,6 +10,8 @@
 
 namespace atariagent::native {
 
+int set_mcts_num_threads(int count);
+
 class MCTS {
 public:
     MCTS(

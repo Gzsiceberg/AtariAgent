@@ -14,6 +14,7 @@ from atariagent.search import MCTSConfig
 from atariagent.training.reanalysis import (
     ReanalysisPipeline,
     make_target_state,
+    replay_batch_nbytes,
 )
 
 
@@ -86,6 +87,26 @@ def test_native_pipeline_enforces_prefetch_bound_and_matches_requests() -> None:
         ready_ids = {pipeline.wait_next().request_id, pipeline.wait_next().request_id}
         assert ready_ids == {0, 1}
         assert pipeline.pending_count == 0
+    finally:
+        pipeline.close()
+
+
+def test_native_pipeline_accepts_consolidated_reanalysis_frames() -> None:
+    pipeline = _pipeline(prefetch_batches=1)
+    batch = _batch()
+    combined = torch.zeros(batch.batch_size, 6, 1, 96, 96, dtype=torch.uint8)
+    shared_batch = replace(
+        batch,
+        frames=combined[:, :5],
+        value_bootstrap_frames=combined[:, 1:],
+        reanalysis_frames=combined,
+    )
+    assert replay_batch_nbytes(shared_batch) < replay_batch_nbytes(batch)
+    try:
+        pipeline.submit(shared_batch)
+        ready = pipeline.wait_next()
+        assert ready.batch.search_value_targets is not None
+        assert ready.policy_roots_searched == 3
     finally:
         pipeline.close()
 

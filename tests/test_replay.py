@@ -95,6 +95,14 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.value_mask.dtype == torch.bool
     assert batch.value_bootstrap_frames is not None
     assert batch.value_bootstrap_frames.shape == batch.frames.shape
+    assert batch.reanalysis_frames is not None
+    assert batch.reanalysis_frames.shape == (3, 11, 1, 2, 2)
+    shared_storage = batch.reanalysis_frames.untyped_storage().data_ptr()
+    assert batch.frames.untyped_storage().data_ptr() == shared_storage
+    assert (
+        batch.value_bootstrap_frames.untyped_storage().data_ptr()
+        == shared_storage
+    )
     assert batch.value_bootstrap_values is not None
     assert batch.value_bootstrap_values.shape == (3, 6)
     assert batch.value_bootstrap_discounts is not None
@@ -156,6 +164,7 @@ def test_replay_can_skip_target_network_bootstrap_metadata() -> None:
     )
 
     assert batch.value_bootstrap_frames is None
+    assert batch.reanalysis_frames is None
     assert batch.value_bootstrap_values is None
     assert batch.value_bootstrap_discounts is None
     assert batch.value_bootstrap_mask is None
@@ -577,6 +586,14 @@ def test_replay_can_construct_batches_in_pinned_memory() -> None:
     batch = replay.sample(2, pin_memory=True)
 
     assert batch.frames.is_pinned()
+    assert batch.reanalysis_frames is not None
+    assert batch.reanalysis_frames.is_pinned()
+    assert batch.value_bootstrap_frames is not None
+    assert batch.value_bootstrap_frames.is_pinned()
+    assert (
+        batch.frames.untyped_storage().data_ptr()
+        == batch.reanalysis_frames.untyped_storage().data_ptr()
+    )
     assert batch.actions.is_pinned()
     assert batch.value_targets.is_pinned()
     assert batch.indices.is_pinned()

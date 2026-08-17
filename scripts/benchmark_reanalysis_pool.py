@@ -34,10 +34,17 @@ def parse_args() -> argparse.Namespace:
 
 def make_batch(args: argparse.Namespace) -> ReplayBatch:
     states = args.unroll_steps + 1
-    frames = torch.zeros(
-        args.batch_size, 4 + args.unroll_steps, 3, 96, 96,
+    frame_count = 4 + args.unroll_steps
+    reanalysis_frames = torch.zeros(
+        args.batch_size,
+        frame_count + args.unroll_steps,
+        3,
+        96,
+        96,
         dtype=torch.uint8,
     )
+    frames = reanalysis_frames[:, :frame_count]
+    bootstrap_frames = reanalysis_frames[:, args.unroll_steps :]
     return ReplayBatch(
         frames=frames,
         actions=torch.zeros(args.batch_size, args.unroll_steps, 1, dtype=torch.long),
@@ -52,7 +59,8 @@ def make_batch(args: argparse.Namespace) -> ReplayBatch:
         value_mask=torch.ones(args.batch_size, states, dtype=torch.bool),
         indices=torch.arange(args.batch_size),
         importance_weights=torch.ones(args.batch_size),
-        value_bootstrap_frames=frames.clone(),
+        value_bootstrap_frames=bootstrap_frames,
+        reanalysis_frames=reanalysis_frames,
         value_bootstrap_values=torch.zeros(args.batch_size, states),
         value_bootstrap_discounts=torch.ones(args.batch_size, states),
         value_bootstrap_mask=torch.ones(args.batch_size, states, dtype=torch.bool),

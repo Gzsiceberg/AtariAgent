@@ -56,6 +56,14 @@ public:
         const torch::Tensor& value_targets,
         std::int64_t stack_size
     );
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+    policy_reanalysis_outputs(
+        const torch::Tensor& frames,
+        const torch::Tensor& policy_mask,
+        std::int64_t stack_size,
+        bool add_exploration_noise = true,
+        bool deterministic_ties = false
+    );
     std::tuple<torch::Tensor, torch::Tensor> reanalyze_policies(
         const torch::Tensor& frames,
         const torch::Tensor& policy_mask,

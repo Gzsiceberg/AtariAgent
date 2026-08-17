@@ -15,10 +15,10 @@ from atariagent.models.native import (
     PredictionNetwork,
     RepresentationNetwork,
     make_value_target,
+    set_mcts_num_threads,
 )
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTSConfig
-from atariagent.search._mcts_native import set_num_threads
 
 from .target import Precision
 
@@ -41,13 +41,16 @@ class ReadyReanalysis:
 
 
 def replay_batch_nbytes(batch: ReplayBatch) -> int:
-    """Return the tensor storage retained by one queued replay batch."""
-    return sum(
-        value.numel() * value.element_size()
-        for field in fields(batch)
-        for value in (getattr(batch, field.name),)
-        if isinstance(value, Tensor)
-    )
+    """Return unique tensor storage retained by one queued replay batch."""
+    storages: dict[tuple[str, int | None, int], int] = {}
+    for field in fields(batch):
+        value = getattr(batch, field.name)
+        if not isinstance(value, Tensor):
+            continue
+        storage = value.untyped_storage()
+        key = (value.device.type, value.device.index, storage.data_ptr())
+        storages[key] = storage.nbytes()
+    return sum(storages.values())
 
 
 def make_target_state(
@@ -118,7 +121,7 @@ class ReanalysisPipeline:
             raise TypeError("target_update_interval must be an integer")
         if target_update_interval <= 0:
             raise ValueError("target_update_interval must be positive")
-        set_num_threads(mcts_threads)
+        set_mcts_num_threads(mcts_threads)
 
         self.device = torch.device(
             device

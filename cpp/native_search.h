@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <random>
+#include <span>
 #include <tuple>
 #include <vector>
 
@@ -31,7 +32,7 @@ struct SearchNode {
     bool reset_value_prefix = false;
     int visit_count = 0;
     float value_sum = 0.0F;
-    std::vector<int> children;
+    int first_child = -1;
 
     bool expanded() const;
     float value() const;
@@ -56,21 +57,33 @@ public:
         int state_slot,
         float value_prefix,
         float value,
-        const std::vector<float>& policy_logits
+        std::span<const float> policy_logits
     );
-    std::vector<int> visit_counts() const;
+    void write_visit_counts(std::int32_t* output) const;
     float root_value() const;
 
 private:
-    static std::vector<float> softmax(const std::vector<float>& logits);
-    void expand(
+    void expand_probabilities(
         int node_index,
         int state_slot,
         float value_prefix,
-        const std::vector<float>& priors,
-        bool reset,
-        bool priors_are_probabilities
+        std::span<const float> priors,
+        bool reset
     );
+    void expand_logits(
+        int node_index,
+        int state_slot,
+        float value_prefix,
+        std::span<const float> logits,
+        bool reset
+    );
+    void initialize_children(
+        int node_index,
+        int state_slot,
+        float value_prefix,
+        bool reset
+    );
+    void append_child(int node_index, int action, float prior, int depth);
     float reward(int node_index) const;
     float q_value(int node_index) const;
     float node_mean_q(
@@ -95,6 +108,7 @@ private:
     bool deterministic_ties_;
     std::vector<SearchNode> nodes_;
     std::vector<int> path_;
+    std::vector<int> min_max_stack_;
 };
 
 }  // namespace atariagent::native

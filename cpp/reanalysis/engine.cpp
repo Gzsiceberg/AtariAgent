@@ -122,6 +122,9 @@ public:
         job->value_bootstrap_frames = optional_tensor_attribute(
             job->original_batch, "value_bootstrap_frames"
         );
+        job->reanalysis_frames = optional_tensor_attribute(
+            job->original_batch, "reanalysis_frames"
+        );
         job->value_bootstrap_values = optional_tensor_attribute(
             job->original_batch, "value_bootstrap_values"
         );
@@ -277,6 +280,7 @@ private:
         torch::Tensor search_value_targets;
         torch::Tensor indices;
         std::optional<torch::Tensor> value_bootstrap_frames;
+        std::optional<torch::Tensor> reanalysis_frames;
         std::optional<torch::Tensor> value_bootstrap_values;
         std::optional<torch::Tensor> value_bootstrap_discounts;
         std::optional<torch::Tensor> value_bootstrap_mask;
@@ -334,15 +338,17 @@ private:
             throw std::invalid_argument("policy_mask must be a 2D bool tensor");
         }
         if (job.policy_targets.scalar_type() != torch::kFloat
-            || job.policy_targets.dim() != 3) {
+            || job.policy_targets.dim() != 3
+            || !job.policy_targets.is_contiguous()) {
             throw std::invalid_argument(
-                "policy_targets must be a 3D float32 tensor"
+                "policy_targets must be a contiguous 3D float32 tensor"
             );
         }
         if (job.value_targets.scalar_type() != torch::kFloat
-            || job.value_targets.dim() != 2) {
+            || job.value_targets.dim() != 2
+            || !job.value_targets.is_contiguous()) {
             throw std::invalid_argument(
-                "value_targets must be a 2D float32 tensor"
+                "value_targets must be a contiguous 2D float32 tensor"
             );
         }
         if (job.indices.scalar_type() != torch::kLong
@@ -359,6 +365,16 @@ private:
             throw std::invalid_argument(
                 "reanalysis batch tensors have incompatible shapes"
             );
+        }
+        if (job.reanalysis_frames) {
+            require_cpu(*job.reanalysis_frames, "reanalysis_frames");
+            if (job.reanalysis_frames->dim() != 5
+                || job.reanalysis_frames->size(0) != job.frames.size(0)
+                || job.reanalysis_frames->size(1) < job.frames.size(1)) {
+                throw std::invalid_argument(
+                    "reanalysis_frames has an invalid shape"
+                );
+            }
         }
         if (job.value_bootstrap_mask) {
             require_cpu(*job.value_bootstrap_mask, "value_bootstrap_mask");
@@ -487,7 +503,6 @@ private:
     }
 
     void process_request(const std::shared_ptr<Job>& job) {
-        c10::InferenceMode inference_guard;
         if (job->version != active_version_) {
             throw std::runtime_error(
                 "request target version does not match active target version"
@@ -546,12 +561,6 @@ private:
                 cache_size_ = cache_.size();
             }
         }
-        {
-            c10::InferenceMode normal_tensor_guard(false);
-            job->value_targets = job->value_targets.clone();
-            job->search_value_targets = job->search_value_targets.clone();
-            job->policy_targets = job->policy_targets.clone();
-        }
         job->worker_duration_ms = std::chrono::duration<double, std::milli>(
             Clock::now() - started
         ).count();
@@ -569,39 +578,73 @@ private:
         const torch::Tensor& policy_mask,
         const std::optional<torch::Tensor>& bootstrap_mask
     ) {
-        torch::Tensor device_frames = job->frames.to(device_);
-        torch::Tensor device_policy_targets = job->policy_targets.to(device_);
-        torch::Tensor device_value_targets = job->value_targets.to(device_);
-        torch::Tensor device_search_values =
-            job->search_value_targets.to(device_);
+        torch::Tensor device_frames;
+        std::optional<torch::Tensor> device_bootstrap_frames;
+        if (job->reanalysis_frames) {
+            torch::Tensor combined = job->reanalysis_frames->to(device_);
+            device_frames = combined.narrow(1, 0, job->frames.size(1));
+            if (job->value_bootstrap_frames) {
+                const auto offset = combined.size(1)
+                    - job->value_bootstrap_frames->size(1);
+                device_bootstrap_frames = combined.narrow(
+                    1, offset, job->value_bootstrap_frames->size(1)
+                );
+            }
+        } else {
+            device_frames = job->frames.to(device_);
+            if (job->value_bootstrap_frames) {
+                device_bootstrap_frames =
+                    job->value_bootstrap_frames->to(device_);
+            }
+        }
         if (bootstrap_mask) {
-            device_value_targets = target_->reanalyze_values(
-                job->value_bootstrap_frames->to(device_),
+            torch::Tensor reanalyzed_values = target_->reanalyze_values(
+                *device_bootstrap_frames,
                 bootstrap_mask->to(device_),
                 job->value_bootstrap_values->to(device_),
                 job->value_bootstrap_discounts->to(device_),
-                device_value_targets,
+                job->value_targets.to(device_),
                 job->stack_size
             );
+            job->value_targets.copy_(
+                reanalyzed_values.cpu().contiguous()
+            );
         }
-        torch::Tensor device_policy_mask = policy_mask.to(device_);
-        auto [reanalyzed_policies, searched_values] =
-            target_->reanalyze_policies(
+        auto [positions, policies, search_values] =
+            target_->policy_reanalysis_outputs(
                 device_frames,
-                device_policy_mask,
-                device_policy_targets,
+                policy_mask.to(device_),
                 job->stack_size,
                 true,
                 false
             );
-        device_policy_targets = std::move(reanalyzed_policies);
-        device_search_values = torch::where(
-            device_policy_mask, searched_values, device_search_values
-        );
-        job->value_targets = device_value_targets.cpu().contiguous();
-        job->search_value_targets =
-            device_search_values.cpu().contiguous();
-        job->policy_targets = device_policy_targets.cpu().contiguous();
+        const auto root_count = positions.size(0);
+        const auto state_count = job->policy_targets.size(1);
+        const auto action_count = job->policy_targets.size(2);
+        if (policies.sizes() != torch::IntArrayRef({
+                root_count, action_count
+            })
+            || search_values.sizes() != torch::IntArrayRef({root_count})) {
+            throw std::runtime_error(
+                "policy reanalysis returned incompatible outputs"
+            );
+        }
+        const auto* position_data = positions.data_ptr<std::int64_t>();
+        const auto* policy_data = policies.data_ptr<float>();
+        const auto* search_value_data = search_values.data_ptr<float>();
+        auto* target_policy_data = job->policy_targets.data_ptr<float>();
+        auto* target_search_value_data =
+            job->search_value_targets.data_ptr<float>();
+        for (std::int64_t root = 0; root < root_count; ++root) {
+            const auto flat = position_data[root * 2] * state_count
+                + position_data[root * 2 + 1];
+            std::copy_n(
+                policy_data + root * action_count,
+                action_count,
+                target_policy_data + flat * action_count
+            );
+            target_search_value_data[flat] = search_value_data[root];
+        }
     }
 
     static void release_request_inputs(Job* job) {
@@ -609,6 +652,7 @@ private:
         job->policy_mask = torch::Tensor();
         job->indices = torch::Tensor();
         job->value_bootstrap_frames.reset();
+        job->reanalysis_frames.reset();
         job->value_bootstrap_values.reset();
         job->value_bootstrap_discounts.reset();
         job->value_bootstrap_mask.reset();

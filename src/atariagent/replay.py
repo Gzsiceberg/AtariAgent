@@ -534,15 +534,16 @@ class FIFOReplayBuffer:
         assert self._stack_size is not None
         assert self._frame_shape is not None
         states = self.unroll_steps + 1
-        specs = {
-            "frames": (
-                (
-                    batch_size,
-                    self._stack_size + self.unroll_steps,
-                    *self._frame_shape,
-                ),
-                np.dtype(np.uint8),
+        frame_spec = (
+            (
+                batch_size,
+                self._stack_size + self.unroll_steps,
+                *self._frame_shape,
             ),
+            np.dtype(np.uint8),
+        )
+        specs = {
+            "frames": frame_spec,
             "actions": (
                 (batch_size, self.unroll_steps, 1),
                 np.dtype(np.int64),
@@ -562,10 +563,10 @@ class FIFOReplayBuffer:
             ),
             "policy_mask": ((batch_size, states), np.dtype(np.bool_)),
             "value_mask": ((batch_size, states), np.dtype(np.bool_)),
-            "value_bootstrap_frames": (
+            "reanalysis_frames": (
                 (
                     batch_size,
-                    self._stack_size + self.unroll_steps,
+                    self._stack_size + self.unroll_steps + self.td_steps,
                     *self._frame_shape,
                 ),
                 np.dtype(np.uint8),
@@ -586,9 +587,11 @@ class FIFOReplayBuffer:
             "importance_weights": ((batch_size,), np.dtype(np.float32)),
             "transition_ages": ((batch_size,), np.dtype(np.int64)),
         }
-        if not include_value_bootstraps:
+        if include_value_bootstraps:
+            del specs["frames"]
+        else:
             for name in (
-                "value_bootstrap_frames",
+                "reanalysis_frames",
                 "value_bootstrap_values",
                 "value_bootstrap_discounts",
                 "value_bootstrap_mask",
@@ -608,18 +611,27 @@ class FIFOReplayBuffer:
             include_value_bootstraps=include_value_bootstraps,
         )
         if not pin_memory:
-            return {
+            arrays = {
                 name: np.empty(shape, dtype=dtype)
                 for name, (shape, dtype) in specs.items()
             }
-        return {
-            name: torch.empty(
-                shape,
-                dtype=torch.from_numpy(np.empty(0, dtype=dtype)).dtype,
-                pin_memory=True,
-            ).numpy()
-            for name, (shape, dtype) in specs.items()
-        }
+        else:
+            arrays = {
+                name: torch.empty(
+                    shape,
+                    dtype=torch.from_numpy(np.empty(0, dtype=dtype)).dtype,
+                    pin_memory=True,
+                ).numpy()
+                for name, (shape, dtype) in specs.items()
+            }
+        shared_frames = arrays.get("reanalysis_frames")
+        if shared_frames is not None:
+            frame_count = self._stack_size + self.unroll_steps
+            arrays["frames"] = shared_frames[:, :frame_count]
+            arrays["value_bootstrap_frames"] = shared_frames[
+                :, self.td_steps : self.td_steps + frame_count
+            ]
+        return arrays
 
     @staticmethod
     def _batch_from_arrays(arrays: Mapping[str, np.ndarray]) -> ReplayBatch:
@@ -627,8 +639,23 @@ class FIFOReplayBuffer:
             array = arrays.get(name)
             return None if array is None else torch.from_numpy(array)
 
+        shared_array = arrays.get("reanalysis_frames")
+        if shared_array is None:
+            shared_frames = None
+            frames = torch.from_numpy(arrays["frames"])
+            bootstrap_frames = optional_tensor("value_bootstrap_frames")
+        else:
+            shared_frames = torch.from_numpy(shared_array)
+            frame_count = arrays["frames"].shape[1]
+            bootstrap_count = arrays["value_bootstrap_frames"].shape[1]
+            bootstrap_offset = shared_array.shape[1] - bootstrap_count
+            frames = shared_frames[:, :frame_count]
+            bootstrap_frames = shared_frames[
+                :, bootstrap_offset : bootstrap_offset + bootstrap_count
+            ]
+
         return ReplayBatch(
-            frames=torch.from_numpy(arrays["frames"]),
+            frames=frames,
             actions=torch.from_numpy(arrays["actions"]),
             rewards=torch.from_numpy(arrays["rewards"]),
             policy_targets=torch.from_numpy(arrays["policy_targets"]),
@@ -638,12 +665,13 @@ class FIFOReplayBuffer:
             value_mask=torch.from_numpy(arrays["value_mask"]),
             indices=torch.from_numpy(arrays["indices"]),
             importance_weights=torch.from_numpy(arrays["importance_weights"]),
-            value_bootstrap_frames=optional_tensor("value_bootstrap_frames"),
+            value_bootstrap_frames=bootstrap_frames,
             value_bootstrap_values=optional_tensor("value_bootstrap_values"),
             value_bootstrap_discounts=optional_tensor(
                 "value_bootstrap_discounts"
             ),
             value_bootstrap_mask=optional_tensor("value_bootstrap_mask"),
+            reanalysis_frames=shared_frames,
             transition_ages=torch.from_numpy(arrays["transition_ages"]),
         )
 
@@ -691,6 +719,7 @@ class FIFOReplayBuffer:
         action_mask = arrays["action_mask"]
         policy_mask = arrays["policy_mask"]
         value_mask = arrays["value_mask"]
+        reanalysis_frames = arrays.get("reanalysis_frames")
         value_bootstrap_frames = arrays.get("value_bootstrap_frames")
         value_bootstrap_values = arrays.get("value_bootstrap_values")
         value_bootstrap_discounts = arrays.get("value_bootstrap_discounts")
@@ -700,13 +729,26 @@ class FIFOReplayBuffer:
             stored_count = trajectory.stored_transition_count
             action_count = min(unroll_steps, stored_count - start)
             frame_count = stack_size + action_count
-            frames[batch_index, :frame_count] = trajectory.frames[
-                start : start + frame_count
-            ]
-            if frame_count < full_frame_count:
-                frames[batch_index, frame_count:] = frames[
-                    batch_index, frame_count - 1
+            if reanalysis_frames is None:
+                frames[batch_index, :frame_count] = trajectory.frames[
+                    start : start + frame_count
                 ]
+                if frame_count < full_frame_count:
+                    frames[batch_index, frame_count:] = frames[
+                        batch_index, frame_count - 1
+                    ]
+            else:
+                available_frames = min(
+                    reanalysis_frames.shape[1],
+                    trajectory.frames.shape[0] - start,
+                )
+                reanalysis_frames[batch_index, :available_frames] = (
+                    trajectory.frames[start : start + available_frames]
+                )
+                if available_frames < reanalysis_frames.shape[1]:
+                    reanalysis_frames[batch_index, available_frames:] = (
+                        reanalysis_frames[batch_index, available_frames - 1]
+                    )
 
             if action_count < unroll_steps:
                 actions[batch_index].fill(0)
@@ -760,7 +802,10 @@ class FIFOReplayBuffer:
                     if bootstrap_count
                     else 0
                 )
-                if bootstrap_frame_count < full_frame_count:
+                if (
+                    reanalysis_frames is None
+                    and bootstrap_frame_count < full_frame_count
+                ):
                     value_bootstrap_frames[batch_index].fill(0)
                 if bootstrap_count < state_count:
                     value_bootstrap_values[batch_index].fill(0)
@@ -772,12 +817,13 @@ class FIFOReplayBuffer:
                     )
                     value_bootstrap_mask[batch_index].fill(True)
                 if bootstrap_count:
-                    value_bootstrap_frames[
-                        batch_index, :bootstrap_frame_count
-                    ] = trajectory.frames[
-                        bootstrap_start
-                        : bootstrap_start + bootstrap_frame_count
-                    ]
+                    if reanalysis_frames is None:
+                        value_bootstrap_frames[
+                            batch_index, :bootstrap_frame_count
+                        ] = trajectory.frames[
+                            bootstrap_start
+                            : bootstrap_start + bootstrap_frame_count
+                        ]
                     value_bootstrap_values[
                         batch_index, :bootstrap_count
                     ] = trajectory.root_values[

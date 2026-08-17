@@ -44,6 +44,9 @@ class ReplayBatch:
     value_bootstrap_values: Float[Tensor, "batch states"] | None = None
     value_bootstrap_discounts: Float[Tensor, "batch states"] | None = None
     value_bootstrap_mask: Bool[Tensor, "batch states"] | None = None
+    reanalysis_frames: (
+        UInt8[Tensor, "batch reanalysis_frames channels height width"] | None
+    ) = None
     search_value_targets: Float[Tensor, "batch states"] | None = None
     transition_ages: Int[Tensor, "batch"] | None = None
 
@@ -377,11 +380,37 @@ class ReplayBatch:
         device: torch.device | str,
     ) -> ReplayBatch:
         """Move only tensors required by target reanalysis to ``device``."""
+        shared = self.reanalysis_frames
+        device_shared = None if shared is None else shared.to(device)
+        if device_shared is None:
+            device_frames = self.frames.to(device)
+            device_bootstrap_frames = (
+                None
+                if self.value_bootstrap_frames is None
+                else self.value_bootstrap_frames.to(device)
+            )
+        else:
+            device_frames = device_shared[:, : self.frames.shape[1]]
+            bootstrap_count = (
+                0
+                if self.value_bootstrap_frames is None
+                else self.value_bootstrap_frames.shape[1]
+            )
+            bootstrap_offset = shared.shape[1] - bootstrap_count
+            device_bootstrap_frames = (
+                None
+                if bootstrap_count == 0
+                else device_shared[
+                    :, bootstrap_offset : bootstrap_offset + bootstrap_count
+                ]
+            )
         updates: dict[str, Tensor | None] = {
-            "frames": self.frames.to(device),
+            "frames": device_frames,
             "policy_targets": self.policy_targets.to(device),
             "policy_mask": self.policy_mask.to(device),
             "value_targets": self.value_targets.to(device),
+            "value_bootstrap_frames": device_bootstrap_frames,
+            "reanalysis_frames": device_shared,
             "search_value_targets": (
                 None
                 if self.search_value_targets is None
@@ -389,7 +418,6 @@ class ReplayBatch:
             ),
         }
         for name in (
-            "value_bootstrap_frames",
             "value_bootstrap_values",
             "value_bootstrap_discounts",
             "value_bootstrap_mask",
@@ -412,21 +440,42 @@ class ReplayBatch:
         """Drop all temporary target metadata before learner transfer."""
         return replace(
             self.without_value_bootstraps(),
+            reanalysis_frames=None,
             search_value_targets=None,
             transition_ages=None,
         )
 
     def pin_memory(self) -> ReplayBatch:
         """Copy CPU tensors into page-locked memory for asynchronous transfer."""
-        return ReplayBatch(
-            **{
-                field.name: (
+        shared = self.reanalysis_frames
+        pinned_shared = None if shared is None else shared.pin_memory()
+        bootstrap_offset = (
+            0
+            if shared is None or self.value_bootstrap_frames is None
+            else shared.shape[1] - self.value_bootstrap_frames.shape[1]
+        )
+        values: dict[str, Tensor | None] = {}
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if pinned_shared is not None and field.name == "reanalysis_frames":
+                values[field.name] = pinned_shared
+            elif pinned_shared is not None and field.name == "frames":
+                values[field.name] = pinned_shared[:, : self.frames.shape[1]]
+            elif (
+                pinned_shared is not None
+                and field.name == "value_bootstrap_frames"
+                and self.value_bootstrap_frames is not None
+            ):
+                values[field.name] = pinned_shared[
+                    :,
+                    bootstrap_offset : bootstrap_offset
+                    + self.value_bootstrap_frames.shape[1],
+                ]
+            else:
+                values[field.name] = (
                     value.pin_memory() if isinstance(value, Tensor) else value
                 )
-                for field in fields(self)
-                for value in (getattr(self, field.name),)
-            }
-        )
+        return ReplayBatch(**values)
 
     def record_stream(self, stream: torch.cuda.Stream) -> None:
         """Keep CUDA tensor storage alive on a consuming stream."""
