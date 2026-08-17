@@ -336,23 +336,6 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("bootstrap_discounts"),
             py::arg("value_targets"),
             py::arg("stack_size")
-        )
-        .def(
-            "reanalyze_policies",
-            &ValueTargetNetwork::reanalyze_policies,
-            py::arg("frames"),
-            py::arg("policy_mask"),
-            py::arg("policy_targets"),
-            py::arg("stack_size"),
-            py::arg("add_exploration_noise") = true,
-            py::arg("deterministic_ties") = false
-        )
-        .def(
-            "reanalyze_batch",
-            &ValueTargetNetwork::reanalyze_batch,
-            py::arg("batch"),
-            py::arg("add_exploration_noise") = true,
-            py::arg("deterministic_ties") = false
         );
 
     py::class_<NativeReanalysisEngine>(module, "NativeReanalysisEngine")

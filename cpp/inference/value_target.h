@@ -64,19 +64,6 @@ public:
         bool add_exploration_noise = true,
         bool deterministic_ties = false
     );
-    std::tuple<torch::Tensor, torch::Tensor> reanalyze_policies(
-        const torch::Tensor& frames,
-        const torch::Tensor& policy_mask,
-        const torch::Tensor& policy_targets,
-        std::int64_t stack_size,
-        bool add_exploration_noise = true,
-        bool deterministic_ties = false
-    );
-    pybind11::object reanalyze_batch(
-        const pybind11::object& batch,
-        bool add_exploration_noise = true,
-        bool deterministic_ties = false
-    );
 
 private:
     static torch::Tensor stacked_observations(
