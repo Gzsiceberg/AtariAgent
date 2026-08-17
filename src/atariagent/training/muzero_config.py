@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from hydra.core.config_store import ConfigStore
 from omegaconf import OmegaConf
 
-
 FINAL_EVALUATION_RAW_FRAMES = 108_000
 
 
@@ -68,7 +67,9 @@ class TrainingConfig:
     batch_worker_timeout_seconds: float = 600.0
     reanalysis_timeout_seconds: float = 600.0
     reanalysis_worker_num_threads: int = 4
-    target_update_interval: int = 200
+    target_update_interval: int = 1_000
+    initial_target_update_interval: int = 200
+    initial_target_update_steps: int = 1_000
     discount: float = 0.997
     learning_rate: float = 0.2
     momentum: float = 0.9
@@ -158,6 +159,35 @@ def final_evaluation_max_episode_steps(frame_skip: int) -> int:
             "frame_skip must be positive and no greater than the raw-frame horizon"
         )
     return FINAL_EVALUATION_RAW_FRAMES // frame_skip
+
+
+def target_network_update_due(
+    update: int,
+    *,
+    interval: int,
+    initial_interval: int,
+    initial_steps: int,
+) -> bool:
+    """Return whether the delayed target network should be hard-copied."""
+    for value, name in (
+        (update, "update"),
+        (interval, "interval"),
+        (initial_interval, "initial_interval"),
+        (initial_steps, "initial_steps"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+    if update < 0:
+        raise ValueError("update must be non-negative")
+    if interval <= 0 or initial_interval <= 0:
+        raise ValueError("target update intervals must be positive")
+    if initial_steps < 0:
+        raise ValueError("initial_steps must be non-negative")
+    if update == 0:
+        return False
+    if update <= initial_steps:
+        return update % initial_interval == 0
+    return (update - initial_steps) % interval == 0
 
 
 def next_collection_vector_steps(
