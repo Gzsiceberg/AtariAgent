@@ -184,7 +184,7 @@ def main() -> None:
     )
 
     locations, transition_ids, importance_weights = replay._sample_context(
-        args.batch_size, 0.4
+        args.batch_size
     )
     full_arrays = replay._allocate_batch_arrays(
         args.batch_size, include_value_bootstraps=True
@@ -212,7 +212,7 @@ def main() -> None:
         repetitions=args.repetitions,
     )
     sample_context = distribution(
-        lambda: replay._sample_context(args.batch_size, 0.4),
+        lambda: replay._sample_context(args.batch_size),
         warmup=args.warmup,
         repetitions=args.repetitions,
     )

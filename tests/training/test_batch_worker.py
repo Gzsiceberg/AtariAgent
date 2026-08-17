@@ -42,19 +42,16 @@ class _FakeReplay:
         self._sample = sample
         self.priority_updates: list[tuple[torch.Tensor, torch.Tensor]] = []
 
-    def sample_batch(
+    def sample(
         self,
         batch_size: int,
         *,
-        trained_steps: int,
-        training_steps: int,
         include_value_bootstraps: bool,
         pin_memory: bool,
     ):
         assert batch_size == 2
-        assert training_steps == 100
         assert not pin_memory
-        return self._sample(trained_steps, include_value_bootstraps)
+        return self._sample(include_value_bootstraps)
 
     def update_priorities(
         self, indices: torch.Tensor, priorities: torch.Tensor
@@ -66,17 +63,17 @@ def test_worker_bounds_sampling_when_consumer_is_slow() -> None:
     sampled: list[int] = []
     lock = Lock()
 
-    def sample(step: int, include: bool):
+    def sample(include: bool):
         assert not include
         with lock:
+            step = len(sampled) + 10
             sampled.append(step)
-        return _batch(step).without_value_bootstraps(), 0.4
+        return _batch(step).without_value_bootstraps()
 
     replay = _FakeReplay(sample)
     with BatchWorker(
         replay,  # type: ignore[arg-type]
         batch_size=2,
-        training_steps=100,
         device="cpu",
         max_in_flight=2,
         ready_prefetch=1,
@@ -105,17 +102,21 @@ def test_worker_bounds_sampling_when_consumer_is_slow() -> None:
 def test_worker_propagates_sampling_failure() -> None:
     first_sampled = Event()
 
-    def sample(step: int, include: bool):
+    sampled = 0
+
+    def sample(include: bool):
+        nonlocal sampled
         del include
+        step = sampled
+        sampled += 1
         if step == 1:
             raise ValueError("sample failed")
         first_sampled.set()
-        return _batch(step).without_value_bootstraps(), 0.4
+        return _batch(step).without_value_bootstraps()
 
     worker = BatchWorker(
         _FakeReplay(sample),  # type: ignore[arg-type]
         batch_size=2,
-        training_steps=100,
         device="cpu",
         max_in_flight=2,
         ready_prefetch=1,
@@ -173,9 +174,9 @@ class _FakeReanalysisPipeline:
 def test_worker_applies_mixed_values_before_learner_transfer() -> None:
     pipeline = _FakeReanalysisPipeline()
 
-    def sample(step: int, include: bool):
+    def sample(include: bool):
         assert include
-        batch = _batch(step)
+        batch = _batch(30)
         batch = replace(
             batch,
             search_value_targets=torch.tensor(
@@ -183,12 +184,11 @@ def test_worker_applies_mixed_values_before_learner_transfer() -> None:
             ),
             transition_ages=torch.tensor([5_000, 4_999]),
         )
-        return batch, 0.5
+        return batch
 
     with BatchWorker(
         _FakeReplay(sample),  # type: ignore[arg-type]
         batch_size=2,
-        training_steps=100,
         device="cpu",
         reanalysis_pipeline=pipeline,  # type: ignore[arg-type]
         reanalysis_start_step=0,
@@ -215,15 +215,15 @@ def test_worker_handles_direct_then_reanalysis_batches_in_order() -> None:
     includes: list[bool] = []
     pipeline = _FakeReanalysisPipeline()
 
-    def sample(step: int, include: bool):
+    def sample(include: bool):
+        step = len(includes)
         includes.append(include)
         batch = _batch(step)
-        return (batch if include else batch.without_value_bootstraps()), 0.5
+        return batch if include else batch.without_value_bootstraps()
 
     with BatchWorker(
         _FakeReplay(sample),  # type: ignore[arg-type]
         batch_size=2,
-        training_steps=100,
         device="cpu",
         reanalysis_pipeline=pipeline,  # type: ignore[arg-type]
         reanalysis_start_step=2,

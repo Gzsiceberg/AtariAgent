@@ -69,9 +69,6 @@ class FIFOReplayBuffer:
         td_steps: int = 5,
         discount: float = 0.997,
         seed: int = 0,
-        priority_alpha: float = 0.6,
-        priority_beta_initial: float = 0.4,
-        priority_beta_final: float = 1.0,
     ) -> None:
         if isinstance(max_transitions, bool) or not isinstance(
             max_transitions, int
@@ -89,24 +86,11 @@ class FIFOReplayBuffer:
                 raise ValueError(f"{name} must be positive")
         if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be finite and in [0, 1]")
-        if not np.isfinite(priority_alpha) or priority_alpha < 0.0:
-            raise ValueError("priority_alpha must be finite and non-negative")
-        if not (
-            np.isfinite(priority_beta_initial)
-            and np.isfinite(priority_beta_final)
-            and 0.0 <= priority_beta_initial <= priority_beta_final <= 1.0
-        ):
-            raise ValueError(
-                "priority betas must be finite and satisfy 0 <= initial <= final <= 1"
-            )
 
         self.max_transitions = max_transitions
         self._unroll_steps = unroll_steps
         self._td_steps = td_steps
         self._discount = float(discount)
-        self.priority_alpha = float(priority_alpha)
-        self.priority_beta_initial = float(priority_beta_initial)
-        self.priority_beta_final = float(priority_beta_final)
         self._reward_discounts = self.discount ** np.arange(
             self.td_steps, dtype=np.float64
         )
@@ -245,56 +229,15 @@ class FIFOReplayBuffer:
             evicted_transitions=evicted_transitions,
         )
 
-    def priority_beta(
-        self,
-        trained_steps: int,
-        training_steps: int,
-    ) -> float:
-        """Return the linearly annealed importance-sampling exponent."""
-        if isinstance(trained_steps, bool) or not isinstance(trained_steps, int):
-            raise TypeError("trained_steps must be an integer")
-        if isinstance(training_steps, bool) or not isinstance(training_steps, int):
-            raise TypeError("training_steps must be an integer")
-        if trained_steps < 0:
-            raise ValueError("trained_steps must be non-negative")
-        if training_steps <= 0:
-            raise ValueError("training_steps must be positive")
-        fraction = min(trained_steps / training_steps, 1.0)
-        return self.priority_beta_initial + fraction * (
-            self.priority_beta_final - self.priority_beta_initial
-        )
-
-    def sample_batch(
-        self,
-        batch_size: int,
-        *,
-        trained_steps: int,
-        training_steps: int,
-        include_value_bootstraps: bool,
-        pin_memory: bool = True,
-    ) -> tuple[ReplayBatch, float]:
-        """Sample one learner batch with the configured beta schedule."""
-        priority_beta = self.priority_beta(trained_steps, training_steps)
-        return (
-            self.sample(
-                batch_size,
-                priority_beta=priority_beta,
-                include_value_bootstraps=include_value_bootstraps,
-                pin_memory=pin_memory,
-            ),
-            priority_beta,
-        )
-
     def sample(
         self,
         batch_size: int,
         *,
-        priority_beta: float = 0.4,
         include_value_bootstraps: bool = True,
         pin_memory: bool = False,
     ) -> ReplayBatch:
         """Prioritize unique starts and copy their prepared local context."""
-        self._validate_sample_request(batch_size, priority_beta)
+        self._validate_sample_request(batch_size)
         if not isinstance(include_value_bootstraps, bool):
             raise TypeError("include_value_bootstraps must be a boolean")
         if not isinstance(pin_memory, bool):
@@ -302,7 +245,7 @@ class FIFOReplayBuffer:
         assert self._action_space_size is not None
 
         locations, transition_ids, importance_weights = self._sample_context(
-            batch_size, priority_beta
+            batch_size
         )
         arrays = self._allocate_batch_arrays(
             batch_size,
@@ -481,31 +424,23 @@ class FIFOReplayBuffer:
             )
         return values64.astype(np.float32), valid_mask
 
-    def _validate_sample_request(
-        self,
-        batch_size: int,
-        priority_beta: float,
-    ) -> None:
+    def _validate_sample_request(self, batch_size: int) -> None:
         if isinstance(batch_size, bool) or not isinstance(batch_size, int):
             raise TypeError("batch_size must be an integer")
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        if not np.isfinite(priority_beta) or not 0.0 <= priority_beta <= 1.0:
-            raise ValueError("priority_beta must be finite and in [0, 1]")
         if batch_size > self._transition_count:
             raise ValueError(
                 f"cannot sample {batch_size} unique transitions from "
                 f"a replay buffer containing {self._transition_count}"
             )
 
-    def _sample_context(
-        self, batch_size: int, priority_beta: float
-    ) -> tuple[
+    def _sample_context(self, batch_size: int) -> tuple[
         list[tuple[_StoredTrajectory, int]],
         np.ndarray,
         np.ndarray,
     ]:
-        probabilities = self._priorities**self.priority_alpha
+        probabilities = self._priorities.copy()
         probabilities /= probabilities.sum()
         flat_indices = self._rng.choice(
             self._transition_count,
@@ -514,10 +449,13 @@ class FIFOReplayBuffer:
             p=probabilities,
         )
         sampled_probabilities = probabilities[flat_indices]
-        importance_weights = (
+        importance_weights = 1.0 / (
             self._transition_count * sampled_probabilities
-        ) ** (-priority_beta)
+        )
         importance_weights /= importance_weights.max()
+        # EfficientZero V2 Atari floors normalized importance weights so
+        # highly probable samples still contribute meaningfully to the loss.
+        np.clip(importance_weights, 0.1, 1.0, out=importance_weights)
         return (
             self._locations_for_indices(flat_indices),
             self._transition_ids[flat_indices],

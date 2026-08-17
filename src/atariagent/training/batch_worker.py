@@ -8,7 +8,6 @@ import math
 from queue import Empty, Full, Queue, SimpleQueue
 from threading import Event, Lock, Semaphore, Thread
 from time import perf_counter
-from typing import Any
 
 import torch
 from torch import Tensor
@@ -26,7 +25,6 @@ class ReadyBatch:
     sample_step: int
     cpu_batch: ReplayBatch = field(repr=False)
     gpu_batch: ReplayBatch
-    priority_beta: float
     ready_event: torch.cuda.Event | None = field(repr=False)
     sample_duration_ms: float
     transfer_enqueue_ms: float
@@ -77,7 +75,6 @@ class BatchWorker:
         replay: FIFOReplayBuffer,
         *,
         batch_size: int,
-        training_steps: int,
         device: torch.device | str,
         reanalysis_pipeline: ReanalysisPipeline | None = None,
         reanalysis_start_step: int = 0,
@@ -90,7 +87,6 @@ class BatchWorker:
     ) -> None:
         for value, name in (
             (batch_size, "batch_size"),
-            (training_steps, "training_steps"),
             (reanalysis_start_step, "reanalysis_start_step"),
             (mixed_value_start_step, "mixed_value_start_step"),
             (mixed_value_threshold, "mixed_value_threshold"),
@@ -101,8 +97,6 @@ class BatchWorker:
                 raise TypeError(f"{name} must be an integer")
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        if training_steps <= 0:
-            raise ValueError("training_steps must be positive")
         if reanalysis_start_step < 0:
             raise ValueError("reanalysis_start_step must be non-negative")
         if value_target not in {"td", "search", "mixed"}:
@@ -120,7 +114,6 @@ class BatchWorker:
 
         self.replay = replay
         self.batch_size = batch_size
-        self.training_steps = training_steps
         self.device = torch.device(device)
         self.reanalysis_pipeline = reanalysis_pipeline
         self.reanalysis_start_step = reanalysis_start_step
@@ -295,13 +288,12 @@ class BatchWorker:
         )
         while step < direct_end:
             self._drain_controls()
-            token, batch, beta, sample_ms = self._sample(step, False)
+            token, batch, sample_ms = self._sample(False)
             try:
                 ready = self._transfer(
                     token,
                     step,
                     batch,
-                    beta,
                     sample_duration_ms=sample_ms,
                 )
                 self._put_ready(ready)
@@ -319,7 +311,7 @@ class BatchWorker:
             raise RuntimeError("reanalysis pipeline is unavailable")
         submitted_step = start_step
         output_step = start_step
-        pending: dict[int, tuple[int, int, float, float]] = {}
+        pending: dict[int, tuple[int, int, float]] = {}
         completed: dict[int, ReadyBatch] = {}
 
         while output_step < end_step:
@@ -330,9 +322,7 @@ class BatchWorker:
                 and self.outstanding_count < self.max_in_flight
             ):
                 self._drain_controls()
-                token, batch, beta, sample_ms = self._sample(
-                    submitted_step, True
-                )
+                token, batch, sample_ms = self._sample(True)
                 try:
                     request_id = pipeline.submit(batch)
                 except BaseException:
@@ -341,7 +331,6 @@ class BatchWorker:
                 pending[request_id] = (
                     token,
                     submitted_step,
-                    beta,
                     sample_ms,
                 )
                 submitted_step += 1
@@ -351,13 +340,12 @@ class BatchWorker:
                 continue
 
             result = pipeline.wait_next()
-            token, sample_step, beta, sample_ms = pending.pop(result.request_id)
+            token, sample_step, sample_ms = pending.pop(result.request_id)
             try:
                 completed[sample_step] = self._transfer(
                     token,
                     sample_step,
                     result.batch,
-                    beta,
                     sample_duration_ms=sample_ms,
                     queue_wait_ms=result.queue_wait_ms,
                     worker_duration_ms=result.worker_duration_ms,
@@ -374,17 +362,14 @@ class BatchWorker:
 
     def _sample(
         self,
-        sample_step: int,
         include_value_bootstraps: bool,
-    ) -> tuple[int, ReplayBatch, float, float]:
+    ) -> tuple[int, ReplayBatch, float]:
         self._acquire_slot()
         started = perf_counter()
         try:
             with self._replay_lock:
-                batch, beta = self.replay.sample_batch(
+                batch = self.replay.sample(
                     self.batch_size,
-                    trained_steps=sample_step,
-                    training_steps=self.training_steps,
                     include_value_bootstraps=include_value_bootstraps,
                     pin_memory=self.device.type == "cuda",
                 )
@@ -398,7 +383,7 @@ class BatchWorker:
                     self.max_observed_outstanding,
                     len(self._outstanding),
                 )
-            return token, batch, beta, (perf_counter() - started) * 1_000.0
+            return token, batch, (perf_counter() - started) * 1_000.0
         except BaseException:
             self._slots.release()
             raise
@@ -408,7 +393,6 @@ class BatchWorker:
         token: int,
         sample_step: int,
         cpu_batch: ReplayBatch,
-        beta: float,
         *,
         sample_duration_ms: float,
         queue_wait_ms: float | None = None,
@@ -443,7 +427,6 @@ class BatchWorker:
             sample_step=sample_step,
             cpu_batch=cpu_batch,
             gpu_batch=gpu_batch,
-            priority_beta=beta,
             ready_event=ready_event,
             sample_duration_ms=sample_duration_ms,
             transfer_enqueue_ms=(perf_counter() - started) * 1_000.0,

@@ -81,11 +81,9 @@ def make_trainer(args: argparse.Namespace, device: torch.device) -> MuZeroTraine
     )
 
 
-def sample(replay: FIFOReplayBuffer, args: argparse.Namespace, step: int):
-    return replay.sample_batch(
+def sample(replay: FIFOReplayBuffer, args: argparse.Namespace):
+    return replay.sample(
         args.batch_size,
-        trained_steps=step,
-        training_steps=args.updates,
         include_value_bootstraps=False,
         pin_memory=True,
     )
@@ -101,9 +99,9 @@ def run_synchronous(
     transfer_stream = torch.cuda.Stream(device=device)
     sample_times: list[float] = []
 
-    def enqueue(step: int):
+    def enqueue():
         started = perf_counter()
-        cpu_batch, beta = sample(replay, args, step)
+        cpu_batch = sample(replay, args)
         sample_times.append((perf_counter() - started) * 1_000.0)
         with torch.cuda.stream(transfer_stream):
             gpu_batch = cpu_batch.to(
@@ -111,13 +109,13 @@ def run_synchronous(
             )
             event = torch.cuda.Event()
             event.record(transfer_stream)
-        return cpu_batch, gpu_batch, beta, event
+        return cpu_batch, gpu_batch, event
 
     started = perf_counter()
-    current = enqueue(0)
+    current = enqueue()
     for step in range(updates):
-        following = enqueue(step + 1) if step + 1 < updates else None
-        cpu_batch, gpu_batch, _, event = current
+        following = enqueue() if step + 1 < updates else None
+        cpu_batch, gpu_batch, event = current
         stream = torch.cuda.current_stream(device)
         stream.wait_event(event)
         gpu_batch.record_stream(stream)
@@ -147,7 +145,6 @@ def run_threaded(
     with BatchWorker(
         replay,
         batch_size=args.batch_size,
-        training_steps=args.updates,
         device=device,
         max_in_flight=args.max_in_flight,
         ready_prefetch=args.ready_prefetch,

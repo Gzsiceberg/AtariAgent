@@ -386,57 +386,33 @@ def test_precomputed_values_match_reference_for_boundary_types(
         )
 
 
-def test_prioritized_replay_samples_and_updates_efficientzero_priorities() -> None:
+def test_prioritized_replay_matches_efficientzero_v2_atari() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
         td_steps=1,
         seed=4,
-        priority_alpha=0.6,
     )
     replay.add(make_trajectory(3, terminated=True))
     replay.update_priorities(np.array([0, 1, 2]), np.array([1.0, 4.0, 16.0]))
 
-    batch = replay.sample(batch_size=3, priority_beta=0.4)
+    batch = replay.sample(batch_size=3)
 
-    probabilities = np.array([1.0, 4.0, 16.0]) ** 0.6
+    probabilities = np.array([1.0, 4.0, 16.0])
     probabilities /= probabilities.sum()
-    expected_weights = (3 * probabilities[batch.indices.numpy()]) ** -0.4
+    expected_weights = (3 * probabilities[batch.indices.numpy()]) ** -1.0
     expected_weights /= expected_weights.max()
+    expected_weights = expected_weights.clip(0.1, 1.0)
     np.testing.assert_allclose(
         batch.importance_weights.numpy(), expected_weights, rtol=1e-6
     )
+    assert batch.importance_weights.min() == pytest.approx(0.1)
 
     counts = np.zeros(3, dtype=np.int64)
     for _ in range(300):
-        sampled = replay.sample(1, priority_beta=0.4)
+        sampled = replay.sample(1)
         counts[int(sampled.indices.item())] += 1
     assert counts[2] > counts[1] > counts[0]
-
-
-def test_replay_sample_batch_applies_configured_priority_beta_schedule() -> None:
-    replay = FIFOReplayBuffer(
-        max_transitions=10,
-        unroll_steps=1,
-        td_steps=1,
-        priority_beta_initial=0.4,
-        priority_beta_final=1.0,
-    )
-    replay.add(make_trajectory(3, terminated=True))
-
-    batch, beta = replay.sample_batch(
-        2,
-        trained_steps=60_000,
-        training_steps=120_000,
-        include_value_bootstraps=False,
-        pin_memory=False,
-    )
-
-    assert beta == pytest.approx(0.7)
-    assert batch.value_bootstrap_frames is None
-    assert replay.priority_beta(0, 120_000) == pytest.approx(0.4)
-    assert replay.priority_beta(120_000, 120_000) == pytest.approx(1.0)
-    assert replay.priority_beta(130_000, 120_000) == pytest.approx(1.0)
 
 
 def test_new_replay_transitions_receive_current_max_priority() -> None:
@@ -479,10 +455,6 @@ def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
         ("discount", -0.1, ValueError),
         ("discount", 1.1, ValueError),
         ("discount", float("nan"), ValueError),
-        ("priority_beta_initial", -0.1, ValueError),
-        ("priority_beta_initial", 1.1, ValueError),
-        ("priority_beta_final", 1.1, ValueError),
-        ("priority_beta_final", float("nan"), ValueError),
     ],
 )
 def test_replay_validates_fixed_target_configuration(

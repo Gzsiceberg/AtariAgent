@@ -321,9 +321,6 @@ def main(config: TrainMuZeroConfig) -> None:
             td_steps=config.training.td_steps,
             discount=discount,
             seed=config.seed,
-            priority_alpha=config.replay.priority_alpha,
-            priority_beta_initial=config.replay.priority_beta_initial,
-            priority_beta_final=config.replay.priority_beta_final,
         )
         target_state = make_target_state(
             agent.representation_network,
@@ -462,7 +459,6 @@ def main(config: TrainMuZeroConfig) -> None:
         batch_worker = BatchWorker(
             replay,
             batch_size=config.training.batch_size,
-            training_steps=total_updates,
             device=device,
             reanalysis_pipeline=reanalysis_pipeline,
             reanalysis_start_step=config.training.reanalysis_start_step,
@@ -506,7 +502,6 @@ def main(config: TrainMuZeroConfig) -> None:
                     # "consistency": f"{metrics.consistency_loss:.3f}",
                     # "grad": f"{metrics.gradient_norm:.2f}",
                     "lr": f"{metrics.learning_rate:.5f}",
-                    "beta": f"{ready.priority_beta:.3f}",
                 }
                 if (
                     ready.queue_wait_ms is not None
