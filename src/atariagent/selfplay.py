@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-import random
 from typing import Protocol
 
 import gymnasium as gym
@@ -434,7 +433,6 @@ class SelfPlayWorker:
         self.clip_rewards = clip_rewards
         self.add_exploration_noise = add_exploration_noise
         self.temperature = float(temperature)
-        self._rng = random.Random(base_seed)
 
         self.total_vector_steps = 0
         self.total_transitions = 0
@@ -450,20 +448,12 @@ class SelfPlayWorker:
         steps: int,
         *,
         temperature: float | None = None,
-        random_actions: bool = False,
     ) -> tuple[tuple[GameTrajectory, ...], ...]:
-        """Advance each game and return blocks grouped by game.
-
-        ``random_actions`` is an explicit experimental override that uses a
-        seeded uniform behavior policy while retaining MCTS root values and
-        storing a uniform policy target. Production training leaves it disabled.
-        """
+        """Advance each game and return blocks grouped by game."""
         if isinstance(steps, bool) or not isinstance(steps, int):
             raise TypeError("steps must be an integer")
         if steps <= 0:
             raise ValueError("steps must be positive")
-        if not isinstance(random_actions, bool):
-            raise TypeError("random_actions must be a boolean")
         active_temperature = self.temperature if temperature is None else temperature
         if not np.isfinite(active_temperature) or active_temperature < 0.0:
             raise ValueError("temperature must be finite and non-negative")
@@ -480,8 +470,6 @@ class SelfPlayWorker:
                 add_exploration_noise=self.add_exploration_noise,
                 temperature=float(active_temperature),
             )
-            if random_actions:
-                agent_output = self._uniform_behavior_output(agent_output)
             self._validate_agent_output(agent_output)
 
             for index, environment in enumerate(self.environments):
@@ -636,29 +624,6 @@ class SelfPlayWorker:
             block_id=self._next_block_ids[index],
             stack_size=self.frame_stack,
             initial_observation=self._observations[index],
-        )
-
-    def _uniform_behavior_output(self, output: AgentOutput) -> AgentOutput:
-        """Replace actions and visit targets with a seeded uniform policy."""
-        actions: list[int] = []
-        results: list[SearchResult] = []
-        for result, environment in zip(
-            output.search_results, self.environments, strict=True
-        ):
-            action_count = int(environment.action_space.n)
-            action = self._rng.randrange(action_count)
-            actions.append(action)
-            results.append(
-                SearchResult(
-                    action=action,
-                    visit_counts=tuple(1 for _ in range(action_count)),
-                    root_value=result.root_value,
-                )
-            )
-        return AgentOutput(
-            actions=tuple(actions),
-            search_results=tuple(results),
-            predicted_values=output.predicted_values,
         )
 
     def _validate_agent_output(self, output: AgentOutput) -> None:

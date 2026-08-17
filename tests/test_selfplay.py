@@ -312,39 +312,6 @@ def test_episode_reward_tracker_accumulates_across_life_losses() -> None:
     worker.close()
 
 
-def test_worker_random_override_is_seeded_and_stores_uniform_policy() -> None:
-    first_agent = FakeAgent()
-    second_agent = FakeAgent()
-    first_worker = SelfPlayWorker(
-        first_agent,
-        environments=[FakeEnvironment(episode_length=100)],
-        trajectory_length=4,
-        lookahead_steps=0,
-        base_seed=7,
-    )
-    second_worker = SelfPlayWorker(
-        second_agent,
-        environments=[FakeEnvironment(episode_length=100)],
-        trajectory_length=4,
-        lookahead_steps=0,
-        base_seed=7,
-    )
-
-    first = first_worker.run(4, temperature=0.5, random_actions=True)[0][0]
-    second = second_worker.run(4, temperature=0.5, random_actions=True)[0][0]
-
-    assert first.actions == second.actions
-    assert first.target_policy == ((0.5, 0.5),) * 4
-    assert first.predicted_values == (10.0, 20.0, 30.0, 40.0)
-    assert all(
-        np.array_equal(result.visit_counts, (1, 1)) for result in first.search_results
-    )
-    assert all(kwargs["temperature"] == 0.5 for kwargs in first_agent.kwargs)
-
-    first_worker.close()
-    second_worker.close()
-
-
 def test_worker_closes_all_environments_and_rejects_further_runs() -> None:
     environments = [FakeEnvironment(10), FakeEnvironment(10)]
     worker = SelfPlayWorker(FakeAgent(), environments=environments)
