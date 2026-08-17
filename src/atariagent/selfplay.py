@@ -84,6 +84,7 @@ class GameTrajectory:
     truncated: bool
     full_episode_done: bool
     lookahead_steps: int = 0
+    predicted_values: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         transition_count = len(self.actions)
@@ -104,8 +105,7 @@ class GameTrajectory:
             raise ValueError("stack_size must be positive")
         if len(self.frames) != transition_count + self.stack_size:
             raise ValueError(
-                "a trajectory needs stack_size initial frames plus one frame "
-                "per action"
+                "a trajectory needs stack_size initial frames plus one frame per action"
             )
         if not self.frames:
             raise ValueError("frames must not be empty")
@@ -119,6 +119,11 @@ class GameTrajectory:
         ):
             if len(values) != transition_count:
                 raise ValueError("all transition fields must have equal lengths")
+        if (
+            self.predicted_values is not None
+            and len(self.predicted_values) != transition_count
+        ):
+            raise ValueError("all transition fields must have equal lengths")
         if transition_count == 0:
             raise ValueError("a finalized trajectory must contain a transition")
 
@@ -181,13 +186,12 @@ class _TrajectoryBuilder:
         self.episode_id = episode_id
         self.block_id = block_id
         self.stack_size = stack_size
-        self.frames = list(
-            _stacked_observation_frames(initial_observation, stack_size)
-        )
+        self.frames = list(_stacked_observation_frames(initial_observation, stack_size))
         self.actions: list[int] = []
         self.rewards: list[float] = []
         self.raw_rewards: list[float] = []
         self.search_results: list[SearchResult] = []
+        self.predicted_values: list[float] | None = []
         self._sampleable_transitions: int | None = None
 
     @property
@@ -212,6 +216,7 @@ class _TrajectoryBuilder:
         reward: float,
         raw_reward: float,
         search_result: SearchResult,
+        predicted_value: float | None,
     ) -> None:
         self.actions.append(int(action))
         next_frames = _stacked_observation_frames(observation, self.stack_size)
@@ -219,6 +224,10 @@ class _TrajectoryBuilder:
         self.rewards.append(float(reward))
         self.raw_rewards.append(float(raw_reward))
         self.search_results.append(search_result)
+        if predicted_value is None:
+            self.predicted_values = None
+        elif self.predicted_values is not None:
+            self.predicted_values.append(float(predicted_value))
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -240,6 +249,9 @@ class _TrajectoryBuilder:
             rewards=tuple(self.rewards),
             raw_rewards=tuple(self.raw_rewards),
             search_results=tuple(self.search_results),
+            predicted_values=(
+                None if self.predicted_values is None else tuple(self.predicted_values)
+            ),
             terminated=terminated,
             truncated=truncated,
             full_episode_done=full_episode_done,
@@ -392,9 +404,7 @@ class SelfPlayWorker:
             raise TypeError("trajectory_length must be an integer")
         if trajectory_length <= 0:
             raise ValueError("trajectory_length must be positive")
-        if isinstance(lookahead_steps, bool) or not isinstance(
-            lookahead_steps, int
-        ):
+        if isinstance(lookahead_steps, bool) or not isinstance(lookahead_steps, int):
             raise TypeError("lookahead_steps must be an integer")
         if lookahead_steps < 0:
             raise ValueError("lookahead_steps must be non-negative")
@@ -452,9 +462,9 @@ class SelfPlayWorker:
     ) -> tuple[tuple[GameTrajectory, ...], ...]:
         """Advance each game and return blocks grouped by game.
 
-        ``random_actions`` uses a seeded uniform behavior policy while retaining
-        MCTS root values and storing a uniform policy target. This matches the
-        EfficientZero replay warmup behavior.
+        ``random_actions`` is an explicit experimental override that uses a
+        seeded uniform behavior policy while retaining MCTS root values and
+        storing a uniform policy target. Production training leaves it disabled.
         """
         if isinstance(steps, bool) or not isinstance(steps, int):
             raise TypeError("steps must be an integer")
@@ -462,18 +472,14 @@ class SelfPlayWorker:
             raise ValueError("steps must be positive")
         if not isinstance(random_actions, bool):
             raise TypeError("random_actions must be a boolean")
-        active_temperature = (
-            self.temperature if temperature is None else temperature
-        )
+        active_temperature = self.temperature if temperature is None else temperature
         if not np.isfinite(active_temperature) or active_temperature < 0.0:
             raise ValueError("temperature must be finite and non-negative")
         if self._closed:
             raise RuntimeError("cannot run a closed self-play worker")
 
         self._ensure_initialized()
-        completed: list[list[GameTrajectory]] = [
-            [] for _ in range(self.num_envs)
-        ]
+        completed: list[list[GameTrajectory]] = [[] for _ in range(self.num_envs)]
         builders = self._builders
 
         for _ in range(steps):
@@ -485,6 +491,7 @@ class SelfPlayWorker:
             if random_actions:
                 agent_output = self._uniform_behavior_output(agent_output)
             self._validate_agent_output(agent_output)
+            predicted_values = agent_output.predicted_values
 
             for index, environment in enumerate(self.environments):
                 action = agent_output.actions[index]
@@ -492,11 +499,7 @@ class SelfPlayWorker:
                     environment.step(action)
                 )
                 raw_reward = float(raw_reward)
-                reward = (
-                    float(np.sign(raw_reward))
-                    if self.clip_rewards
-                    else raw_reward
-                )
+                reward = float(np.sign(raw_reward)) if self.clip_rewards else raw_reward
                 # Frozen builders receive the transition as lookahead context,
                 # while the active builder owns it as a future replay start.
                 for builder in builders[index]:
@@ -506,14 +509,17 @@ class SelfPlayWorker:
                         reward=reward,
                         raw_reward=raw_reward,
                         search_result=agent_output.search_results[index],
+                        predicted_value=(
+                            None
+                            if predicted_values is None
+                            else predicted_values[index]
+                        ),
                     )
                 self._observations[index] = _copy_observation(next_observation)
                 self.total_transitions += 1
 
                 episode_done = bool(terminated or truncated)
-                full_episode_done = bool(
-                    info.get(FULL_EPISODE_DONE_KEY, episode_done)
-                )
+                full_episode_done = bool(info.get(FULL_EPISODE_DONE_KEY, episode_done))
                 if full_episode_done and not episode_done:
                     raise ValueError(
                         f"{FULL_EPISODE_DONE_KEY} requires a terminal or "
@@ -585,9 +591,7 @@ class SelfPlayWorker:
         if self._closed:
             raise RuntimeError("cannot flush a closed self-play worker")
         self._ensure_initialized()
-        completed: list[list[GameTrajectory]] = [
-            [] for _ in range(self.num_envs)
-        ]
+        completed: list[list[GameTrajectory]] = [[] for _ in range(self.num_envs)]
         for index, builders in enumerate(self._builders):
             active_builder = builders[-1]
             completed[index].extend(
@@ -631,14 +635,10 @@ class SelfPlayWorker:
             )
             for index in range(self.num_envs)
         ]
-        self._builders = [
-            [self._new_builder(index)] for index in range(self.num_envs)
-        ]
+        self._builders = [[self._new_builder(index)] for index in range(self.num_envs)]
         self._initialized = True
 
-    def _reset_environment(
-        self, index: int, *, seed: int | None
-    ) -> AtariObservation:
+    def _reset_environment(self, index: int, *, seed: int | None) -> AtariObservation:
         observation, _ = self.environments[index].reset(seed=seed)
         return _copy_observation(observation)
 
@@ -668,7 +668,11 @@ class SelfPlayWorker:
                     root_value=result.root_value,
                 )
             )
-        return AgentOutput(actions=tuple(actions), search_results=tuple(results))
+        return AgentOutput(
+            actions=tuple(actions),
+            search_results=tuple(results),
+            predicted_values=output.predicted_values,
+        )
 
     def _validate_agent_output(self, output: AgentOutput) -> None:
         if len(output.actions) != self.num_envs:
@@ -704,9 +708,7 @@ def _stacked_observation_frames(
     if stacked.ndim == 4:
         if stacked.shape[0] != stack_size:
             raise ValueError("observation stack axis does not match stack_size")
-        return tuple(
-            np.moveaxis(frame, -1, 0).copy() for frame in stacked
-        )
+        return tuple(np.moveaxis(frame, -1, 0).copy() for frame in stacked)
     if stacked.ndim == 3 and stacked.shape[0] == stack_size:
         return tuple(frame[np.newaxis, ...].copy() for frame in stacked)
     if stacked.ndim == 3 and stacked.shape[0] % stack_size == 0:

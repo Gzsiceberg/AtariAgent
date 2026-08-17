@@ -77,7 +77,6 @@ class BatchWorker:
         batch_size: int,
         device: torch.device | str,
         reanalysis_pipeline: ReanalysisPipeline | None = None,
-        reanalysis_start_step: int = 0,
         value_target: str = "td",
         mixed_value_start_step: int = 30_000,
         mixed_value_threshold: int = 5_000,
@@ -87,7 +86,6 @@ class BatchWorker:
     ) -> None:
         for value, name in (
             (batch_size, "batch_size"),
-            (reanalysis_start_step, "reanalysis_start_step"),
             (mixed_value_start_step, "mixed_value_start_step"),
             (mixed_value_threshold, "mixed_value_threshold"),
             (max_in_flight, "max_in_flight"),
@@ -97,8 +95,6 @@ class BatchWorker:
                 raise TypeError(f"{name} must be an integer")
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        if reanalysis_start_step < 0:
-            raise ValueError("reanalysis_start_step must be non-negative")
         if value_target not in {"td", "search", "mixed"}:
             raise ValueError("value_target must be td, search, or mixed")
         if mixed_value_start_step < 0 or mixed_value_threshold < 0:
@@ -116,7 +112,6 @@ class BatchWorker:
         self.batch_size = batch_size
         self.device = torch.device(device)
         self.reanalysis_pipeline = reanalysis_pipeline
-        self.reanalysis_start_step = reanalysis_start_step
         self.value_target = value_target
         self.mixed_value_start_step = mixed_value_start_step
         self.mixed_value_threshold = mixed_value_threshold
@@ -280,13 +275,11 @@ class BatchWorker:
 
     def _execute_run(self, run: _Run) -> None:
         end_step = run.start_step + run.count
-        step = run.start_step
-        direct_end = (
-            min(end_step, self.reanalysis_start_step)
-            if self.reanalysis_pipeline is not None
-            else end_step
-        )
-        while step < direct_end:
+        if self.reanalysis_pipeline is not None:
+            self._execute_reanalysis(run.start_step, end_step)
+            return
+
+        for step in range(run.start_step, end_step):
             self._drain_controls()
             token, batch, sample_ms = self._sample(False)
             try:
@@ -300,10 +293,6 @@ class BatchWorker:
             except BaseException:
                 self._discard_token(token)
                 raise
-            step += 1
-
-        if step < end_step:
-            self._execute_reanalysis(step, end_step)
 
     def _execute_reanalysis(self, start_step: int, end_step: int) -> None:
         pipeline = self.reanalysis_pipeline

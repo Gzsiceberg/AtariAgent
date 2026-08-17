@@ -28,9 +28,7 @@ class RecordingRepresentation(nn.Module):
         self.input_dtypes.append(observations.dtype)
         self.grad_modes.append(torch.is_grad_enabled())
         self.training_modes.append(self.training)
-        return torch.zeros(
-            observations.shape[0], 64, 6, 6, device=observations.device
-        )
+        return torch.zeros(observations.shape[0], 64, 6, 6, device=observations.device)
 
 
 class RecordingDynamics(nn.Module):
@@ -92,9 +90,9 @@ def test_agent_batches_root_and_recurrent_network_inference() -> None:
     assert len(output.actions) == 3
     assert all(action in range(4) for action in output.actions)
     assert len(output.search_results) == 3
+    assert output.predicted_values == (0.0, 0.0, 0.0)
     assert all(
-        sum(result.visit_counts) == simulations
-        for result in output.search_results
+        sum(result.visit_counts) == simulations for result in output.search_results
     )
     assert representation.batch_sizes == [3]
     assert dynamics.batch_sizes == [3] * simulations

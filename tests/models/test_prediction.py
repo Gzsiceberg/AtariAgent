@@ -32,6 +32,7 @@ def test_prediction_head_architecture(model: nn.Module, output_size: int) -> Non
         16 * 6 * 6,
         32,
     )
+    assert isinstance(model.projection[2], nn.ELU)
     assert isinstance(output_linear, nn.Linear)
     assert (output_linear.in_features, output_linear.out_features) == (
         32,

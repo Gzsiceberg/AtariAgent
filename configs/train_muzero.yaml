@@ -52,8 +52,6 @@ training:
   policy_reanalysis_chunk_size: 768
   # Cache corrected TD values, MCTS root values, and policies by target version.
   cache_reanalyzed_targets: true
-  # Keep replay-stored value and policy targets for the first learner updates.
-  reanalysis_start_step: 1000
   # Hard limit for queued native reanalysis requests.
   reanalysis_prefetch_batches: 2
   # Bound threaded sampling, reanalysis, H2D transfer, and ready GPU batches.

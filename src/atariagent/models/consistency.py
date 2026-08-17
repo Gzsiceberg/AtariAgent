@@ -34,7 +34,9 @@ class Projector(nn.Module):
     def forward(
         self, state: Float[Tensor, "batch 64 6 6"]
     ) -> Float[Tensor, "batch embedding"]:
-        flattened = rearrange(state, "batch channels height width -> batch (channels height width)")
+        flattened = rearrange(
+            state, "batch channels height width -> batch (channels height width)"
+        )
         return self.network(flattened)
 
 
@@ -70,7 +72,7 @@ class ConsistencyNetwork(nn.Module):
         *,
         projection_dim: int = 1024,
         projection_hidden_dim: int = 1024,
-        prediction_hidden_dim: int = 512,
+        prediction_hidden_dim: int = 256,
     ) -> None:
         super().__init__()
         self.projector = Projector(

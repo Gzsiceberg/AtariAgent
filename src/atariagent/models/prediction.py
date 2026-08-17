@@ -31,7 +31,7 @@ class _PredictionHead(nn.Module):
         self.projection = nn.Sequential(
             nn.Linear(16 * 6 * 6, 32),
             nn.BatchNorm1d(32, momentum=batch_norm_momentum),
-            nn.ReLU(inplace=True),
+            nn.ELU(inplace=True),
             nn.Linear(32, output_size),
         )
 
@@ -99,9 +99,7 @@ class PredictionNetwork(nn.Module):
         batch_norm_momentum: float = 0.1,
     ) -> None:
         super().__init__()
-        self.residual = ResidualBlock(
-            64, batch_norm_momentum=batch_norm_momentum
-        )
+        self.residual = ResidualBlock(64, batch_norm_momentum=batch_norm_momentum)
         self.policy = PolicyNetwork(
             action_space_size,
             batch_norm_momentum=batch_norm_momentum,

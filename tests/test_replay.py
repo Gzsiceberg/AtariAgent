@@ -19,6 +19,7 @@ def make_trajectory(
     terminated: bool = False,
     truncated: bool = False,
     lookahead_steps: int = 0,
+    predicted_values: tuple[float, ...] | None = None,
 ) -> GameTrajectory:
     frames = tuple(
         np.full((1, 2, 2), initial_value + step, dtype=np.uint8)
@@ -42,6 +43,7 @@ def make_trajectory(
         rewards=tuple(float(step + 1) for step in range(length)),
         raw_rewards=tuple(float(step + 1) for step in range(length)),
         search_results=results,
+        predicted_values=predicted_values,
         terminated=terminated,
         truncated=truncated,
         full_episode_done=terminated or truncated,
@@ -415,8 +417,8 @@ def test_prioritized_replay_matches_efficientzero_v2_atari() -> None:
     assert counts[2] > counts[1] > counts[0]
 
 
-def test_new_replay_transitions_receive_current_max_priority() -> None:
-    replay = FIFOReplayBuffer(max_transitions=10)
+def test_new_replay_transitions_use_prediction_target_error() -> None:
+    replay = FIFOReplayBuffer(max_transitions=10, priority_epsilon=1e-6)
     replay.add(make_trajectory(2, terminated=True))
     replay.update_priorities([0, 1], [2.0, 5.0])
 
@@ -426,10 +428,34 @@ def test_new_replay_transitions_receive_current_max_priority() -> None:
             episode_id=1,
             initial_value=10,
             terminated=True,
+            predicted_values=(10.0,),
         )
     )
 
-    np.testing.assert_allclose(replay.priorities, np.array([2.0, 5.0, 5.0]))
+    np.testing.assert_allclose(
+        replay.priorities,
+        np.array([2.0, 5.0, 9.000001]),
+    )
+
+
+def test_initial_priority_uses_predicted_value_bootstraps() -> None:
+    replay = FIFOReplayBuffer(
+        max_transitions=2,
+        unroll_steps=1,
+        td_steps=1,
+        discount=0.5,
+        priority_epsilon=1e-6,
+    )
+    replay.add(
+        make_trajectory(
+            3,
+            lookahead_steps=1,
+            predicted_values=(10.0, 20.0, 30.0),
+        )
+    )
+
+    # Prediction-bootstrapped targets are [11, 17], giving errors [1, 3].
+    np.testing.assert_allclose(replay.priorities, np.full(2, 3.000001))
 
 
 def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
@@ -455,6 +481,8 @@ def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
         ("discount", -0.1, ValueError),
         ("discount", 1.1, ValueError),
         ("discount", float("nan"), ValueError),
+        ("priority_epsilon", 0.0, ValueError),
+        ("priority_epsilon", float("nan"), ValueError),
     ],
 )
 def test_replay_validates_fixed_target_configuration(

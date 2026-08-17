@@ -51,8 +51,7 @@ def batch_atari_observations(
     if frames.ndim == 5:
         return rearrange(
             frames,
-            "batch stack height width channels -> "
-            "batch (stack channels) height width",
+            "batch stack height width channels -> batch (stack channels) height width",
         )
     if frames.ndim == 4:
         return frames
@@ -99,9 +98,7 @@ def categorical_to_scalar(
     support_size = support_max - support_min + 1
     if logits.ndim == 0 or logits.shape[-1] != support_size:
         actual = logits.shape[-1] if logits.ndim else 0
-        raise ValueError(
-            f"expected {support_size} support logits, got {actual}"
-        )
+        raise ValueError(f"expected {support_size} support logits, got {actual}")
 
     probabilities = torch.softmax(logits, dim=-1)
     support = _categorical_support(
@@ -113,15 +110,7 @@ def categorical_to_scalar(
     transformed = (probabilities * support).sum(dim=-1)
 
     magnitude = (
-        (
-            torch.sqrt(
-                1
-                + 4
-                * epsilon
-                * (transformed.abs() + 1 + epsilon)
-            )
-            - 1
-        )
+        (torch.sqrt(1 + 4 * epsilon * (transformed.abs() + 1 + epsilon)) - 1)
         / (2 * epsilon)
     ).square() - 1
     scalar = transformed.sign() * magnitude
@@ -131,14 +120,19 @@ def categorical_to_scalar(
 
 @dataclass(frozen=True, slots=True)
 class AgentOutput:
-    """Actions and complete tree-search statistics for an observation batch."""
+    """Actions, root predictions, and search statistics for a batch."""
 
     actions: tuple[int, ...]
     search_results: tuple[SearchResult, ...]
+    predicted_values: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         if len(self.actions) != len(self.search_results):
             raise ValueError("actions and search_results must have equal lengths")
+        if self.predicted_values is not None and len(self.predicted_values) != len(
+            self.actions
+        ):
+            raise ValueError("predicted_values and actions must have equal lengths")
 
 
 class BatchedNetworkEvaluator:
@@ -162,8 +156,7 @@ class BatchedNetworkEvaluator:
         hidden_size = getattr(reward_prediction, "hidden_size", None)
         if isinstance(hidden_size, bool) or not isinstance(hidden_size, int):
             raise TypeError(
-                "dynamics_network.reward_prediction.hidden_size "
-                "must be an integer"
+                "dynamics_network.reward_prediction.hidden_size must be an integer"
             )
         if hidden_size <= 0:
             raise ValueError("recurrent hidden size must be positive")
@@ -320,9 +313,7 @@ class AtariAgent(nn.Module):
         try:
             states = self.representation_network(observations)
             policy_logits, value_logits = self.prediction_network(states)
-            self.recurrent_evaluator.validate_policy(
-                policy_logits, states.shape[0]
-            )
+            self.recurrent_evaluator.validate_policy(policy_logits, states.shape[0])
             values = self.recurrent_evaluator.decode(
                 self.recurrent_evaluator.value_decoder,
                 value_logits,
@@ -342,6 +333,9 @@ class AtariAgent(nn.Module):
             return AgentOutput(
                 actions=tuple(result.action for result in search_results),
                 search_results=search_results,
+                predicted_values=tuple(
+                    float(value) for value in values.detach().cpu().tolist()
+                ),
             )
         finally:
             if was_training:
@@ -369,6 +363,7 @@ class AtariAgent(nn.Module):
         parameter = next(self.parameters(), None)
         device = parameter.device if parameter is not None else batch.device
         return batch.to(device=device, dtype=torch.float32)
+
 
 Agent = AtariAgent
 

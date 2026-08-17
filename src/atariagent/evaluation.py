@@ -118,9 +118,7 @@ def evaluate_agent(
         observations = []
         episode_indices = list(range(active_count))
         episode_rewards = [0.0] * active_count
-        for environment, episode in zip(
-            environments, episode_indices, strict=True
-        ):
+        for environment, episode in zip(environments, episode_indices, strict=True):
             observation, _ = environment.reset(seed=seed + episode)
             observations.append(observation)
 
@@ -215,7 +213,9 @@ def load_agent_checkpoint(
         )
         lstm_horizon = int(training_config["lstm_horizon"])
     except (KeyError, TypeError, ValueError) as error:
-        raise ValueError(f"checkpoint {checkpoint_path} has an invalid config") from error
+        raise ValueError(
+            f"checkpoint {checkpoint_path} has an invalid config"
+        ) from error
 
     image_channels = 1 if grayscale else 3
     agent = AtariAgent(

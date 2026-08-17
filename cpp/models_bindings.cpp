@@ -119,10 +119,11 @@ PYBIND11_MODULE(_models_native, module) {
     );
     dynamics
         .def(
-            py::init<std::int64_t, double, bool>(),
+            py::init<std::int64_t, double, bool, std::int64_t>(),
             py::arg("action_space_size"),
             py::arg("batch_norm_momentum") = 0.1,
-            py::arg("scale_state_gradient") = true
+            py::arg("scale_state_gradient") = true,
+            py::arg("action_embedding_dim") = 16
         )
         .def(
             "forward",

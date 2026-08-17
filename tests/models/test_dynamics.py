@@ -18,12 +18,18 @@ def test_dynamics_output_shapes() -> None:
     assert value_prefix.shape == (2, 601)
 
 
-def test_dynamics_uses_one_action_plane_and_preserves_resolution() -> None:
+def test_dynamics_embeds_action_plane_and_preserves_resolution() -> None:
     model = DynamicsNetwork(action_space_size=18)
     convolution = model.transition[0]
 
+    assert model.action_embedding_dim == 16
+    assert isinstance(model.action_projection, nn.Conv2d)
+    assert model.action_projection.in_channels == 1
+    assert model.action_projection.out_channels == 16
+    assert isinstance(model.action_normalization, nn.LayerNorm)
+    assert model.action_normalization.normalized_shape == (16, 6, 6)
     assert isinstance(convolution, nn.Conv2d)
-    assert convolution.in_channels == 65
+    assert convolution.in_channels == 80
     assert convolution.out_channels == 64
     assert convolution.kernel_size == (3, 3)
     assert convolution.stride == (1, 1)
@@ -44,6 +50,7 @@ def test_reward_prediction_architecture() -> None:
     assert model.lstm.hidden_size == 512
     assert isinstance(first_linear, nn.Linear)
     assert (first_linear.in_features, first_linear.out_features) == (512, 32)
+    assert isinstance(model.projection[2], nn.ELU)
     assert isinstance(output_linear, nn.Linear)
     assert (output_linear.in_features, output_linear.out_features) == (32, 601)
 
@@ -56,9 +63,7 @@ def test_reward_output_layer_is_zero_initialized() -> None:
     assert torch.count_nonzero(output_layer.weight) == 0
     assert torch.count_nonzero(output_layer.bias) == 0
 
-    _, _, value_prefix = model(
-        torch.randn(2, 64, 6, 6), torch.tensor([[1], [2]])
-    )
+    _, _, value_prefix = model(torch.randn(2, 64, 6, 6), torch.tensor([[1], [2]]))
     assert torch.count_nonzero(value_prefix) == 0
 
 

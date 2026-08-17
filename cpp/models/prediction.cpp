@@ -37,7 +37,7 @@ PredictionHeadImpl::PredictionHeadImpl(
                 torch::nn::BatchNorm1dOptions(32)
                     .momentum(batch_norm_momentum)
             ),
-            torch::nn::ReLU(torch::nn::ReLUOptions(true)),
+            torch::nn::ELU(torch::nn::ELUOptions().inplace(true)),
             output
         )
     );

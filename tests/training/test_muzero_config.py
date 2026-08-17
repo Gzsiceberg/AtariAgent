@@ -37,7 +37,6 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.use_target_network_reanalysis
     assert config.policy_reanalysis_chunk_size == 768
     assert config.cache_reanalyzed_targets
-    assert config.reanalysis_start_step == 1_000
     assert config.reanalysis_prefetch_batches == 2
     assert config.batch_max_in_flight == 3
     assert config.batch_ready_prefetch == 2
@@ -67,19 +66,19 @@ def test_collection_steps_stop_at_exact_transition_budget() -> None:
     assert next_collection_vector_steps(100_000, 100_000, 4, 100) == 0
 
 
-def test_visit_temperature_uses_efficientzero_schedule() -> None:
-    training_steps = 100_000
+def test_visit_temperature_uses_complete_efficientzero_schedule() -> None:
+    total_steps = 120_000
 
-    assert visit_softmax_temperature(0, training_steps) == 1.0
-    assert visit_softmax_temperature(49_999, training_steps) == 1.0
-    assert visit_softmax_temperature(50_000, training_steps) == 0.5
-    assert visit_softmax_temperature(74_999, training_steps) == 0.5
-    assert visit_softmax_temperature(75_000, training_steps) == 0.25
-    assert visit_softmax_temperature(100_000, training_steps) == 0.25
+    assert visit_softmax_temperature(0, total_steps) == 1.0
+    assert visit_softmax_temperature(59_999, total_steps) == 1.0
+    assert visit_softmax_temperature(60_000, total_steps) == 0.5
+    assert visit_softmax_temperature(89_999, total_steps) == 0.5
+    assert visit_softmax_temperature(90_000, total_steps) == 0.25
+    assert visit_softmax_temperature(120_000, total_steps) == 0.25
 
 
 def test_visit_temperature_rejects_invalid_steps() -> None:
-    with pytest.raises(ValueError, match="training_steps"):
+    with pytest.raises(ValueError, match="total_steps"):
         visit_softmax_temperature(0, 0)
     with pytest.raises(ValueError, match="trained_steps"):
         visit_softmax_temperature(-1, 100)

@@ -191,7 +191,6 @@ def test_worker_applies_mixed_values_before_learner_transfer() -> None:
         batch_size=2,
         device="cpu",
         reanalysis_pipeline=pipeline,  # type: ignore[arg-type]
-        reanalysis_start_step=0,
         value_target="mixed",
         mixed_value_start_step=30,
         mixed_value_threshold=5_000,
@@ -211,22 +210,21 @@ def test_worker_applies_mixed_values_before_learner_transfer() -> None:
         worker.wait_idle()
 
 
-def test_worker_handles_direct_then_reanalysis_batches_in_order() -> None:
+def test_worker_reanalyzes_all_batches_in_order() -> None:
     includes: list[bool] = []
     pipeline = _FakeReanalysisPipeline()
 
     def sample(include: bool):
+        assert include
         step = len(includes)
         includes.append(include)
-        batch = _batch(step)
-        return batch if include else batch.without_value_bootstraps()
+        return _batch(step)
 
     with BatchWorker(
         _FakeReplay(sample),  # type: ignore[arg-type]
         batch_size=2,
         device="cpu",
         reanalysis_pipeline=pipeline,  # type: ignore[arg-type]
-        reanalysis_start_step=2,
         max_in_flight=3,
         ready_prefetch=1,
         timeout_seconds=2.0,
@@ -236,13 +234,12 @@ def test_worker_handles_direct_then_reanalysis_batches_in_order() -> None:
         for _ in range(5):
             ready = worker.next_ready()
             steps.append(ready.sample_step)
-            if ready.sample_step >= 2:
-                assert ready.worker_duration_ms == pytest.approx(2.0)
-                assert ready.gpu_batch.value_bootstrap_frames is None
+            assert ready.worker_duration_ms == pytest.approx(2.0)
+            assert ready.gpu_batch.value_bootstrap_frames is None
             worker.complete(ready, torch.ones(2))
         worker.wait_idle()
         worker.publish_weights(10, {})
 
     assert steps == [0, 1, 2, 3, 4]
-    assert includes == [False, False, True, True, True]
+    assert includes == [True, True, True, True, True]
     assert pipeline.published_versions == [10]

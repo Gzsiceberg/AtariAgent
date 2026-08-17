@@ -36,7 +36,8 @@ public:
     DynamicsNetworkImpl(
         std::int64_t action_space_size,
         double batch_norm_momentum = 0.1,
-        bool scale_state_gradient = true
+        bool scale_state_gradient = true,
+        std::int64_t action_embedding_dim = 16
     );
 
     std::tuple<torch::Tensor, LSTMHidden, torch::Tensor> forward(
@@ -48,6 +49,9 @@ public:
 private:
     std::int64_t action_space_size_;
     bool scale_state_gradient_;
+    std::int64_t action_embedding_dim_;
+    torch::nn::Conv2d action_projection{nullptr};
+    torch::nn::LayerNorm action_normalization{nullptr};
     torch::nn::Sequential transition{nullptr};
     torch::nn::ReLU relu{nullptr};
     ResidualBlock residual{nullptr};

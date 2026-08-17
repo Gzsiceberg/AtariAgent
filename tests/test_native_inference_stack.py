@@ -30,13 +30,18 @@ def checkpoint_networks():
     in_channels = int(representation_state["stem.0.weight"].shape[1])
     action_space_size = int(prediction_state["policy.projection.3.weight"].shape[0])
     value_support_size = int(prediction_state["value.projection.3.weight"].shape[0])
+    dynamics_state = checkpoint["dynamics"]
+    if "action_projection.weight" not in dynamics_state:
+        dynamics_state = python_models.DynamicsNetwork(
+            action_space_size
+        ).state_dict()
     native_models = native.InferenceModels(
         representation=native.RepresentationNetwork(in_channels),
         dynamics=native.DynamicsNetwork(action_space_size),
         prediction=native.PredictionNetwork(action_space_size, value_support_size),
     )
     native_models.representation.load_state_dict(representation_state)
-    native_models.dynamics.load_state_dict(checkpoint["dynamics"])
+    native_models.dynamics.load_state_dict(dynamics_state)
     native_models.prediction.load_state_dict(prediction_state)
     native_models.eval()
     dynamics = python_models.DynamicsNetwork(action_space_size).eval()
@@ -44,7 +49,7 @@ def checkpoint_networks():
         action_space_size,
         value_support_size=value_support_size,
     ).eval()
-    dynamics.load_state_dict(checkpoint["dynamics"])
+    dynamics.load_state_dict(dynamics_state)
     prediction.load_state_dict(prediction_state)
     return native_models, dynamics, prediction
 

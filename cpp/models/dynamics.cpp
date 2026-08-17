@@ -45,7 +45,7 @@ RewardPredictionNetworkImpl::RewardPredictionNetworkImpl(
                 torch::nn::BatchNorm1dOptions(32)
                     .momentum(batch_norm_momentum)
             ),
-            torch::nn::ReLU(torch::nn::ReLUOptions(true)),
+            torch::nn::ELU(torch::nn::ELUOptions().inplace(true)),
             output
         )
     );
@@ -79,17 +79,34 @@ std::tuple<torch::Tensor, LSTMHidden> RewardPredictionNetworkImpl::forward(
 DynamicsNetworkImpl::DynamicsNetworkImpl(
     std::int64_t action_space_size,
     double batch_norm_momentum,
-    bool scale_state_gradient
+    bool scale_state_gradient,
+    std::int64_t action_embedding_dim
 )
     : action_space_size_(action_space_size),
-      scale_state_gradient_(scale_state_gradient) {
+      scale_state_gradient_(scale_state_gradient),
+      action_embedding_dim_(action_embedding_dim) {
     if (action_space_size_ <= 0) {
         throw std::invalid_argument("action_space_size must be positive");
     }
+    if (action_embedding_dim_ <= 0) {
+        throw std::invalid_argument("action_embedding_dim must be positive");
+    }
+    action_projection = register_module(
+        "action_projection",
+        torch::nn::Conv2d(
+            torch::nn::Conv2dOptions(1, action_embedding_dim_, 1)
+        )
+    );
+    action_normalization = register_module(
+        "action_normalization",
+        torch::nn::LayerNorm(
+            torch::nn::LayerNormOptions({action_embedding_dim_, 6, 6})
+        )
+    );
     transition = register_module(
         "transition",
         torch::nn::Sequential(
-            conv3x3(65, 64),
+            conv3x3(64 + action_embedding_dim_, 64),
             torch::nn::BatchNorm2d(
                 torch::nn::BatchNorm2dOptions(64)
                     .momentum(batch_norm_momentum)
@@ -117,6 +134,11 @@ DynamicsNetworkImpl::forward(
     torch::Tensor action_plane = action.reshape({action.size(0), 1, 1, 1})
         .expand({-1, 1, 6, 6})
         .to(state.options()) / static_cast<double>(action_space_size_);
+    action_plane = relu->forward(
+        action_normalization->forward(
+            action_projection->forward(action_plane)
+        )
+    );
     torch::Tensor transition_state = transition->forward(
         torch::cat({state, action_plane}, 1)
     );

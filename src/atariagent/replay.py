@@ -41,6 +41,8 @@ class _StoredTrajectory:
     rewards: np.ndarray
     policy_targets: np.ndarray
     root_values: np.ndarray
+    predicted_values: np.ndarray | None
+    initial_priority: float | None
     value_targets: np.ndarray
     value_valid_mask: np.ndarray
 
@@ -68,11 +70,10 @@ class FIFOReplayBuffer:
         unroll_steps: int = 5,
         td_steps: int = 5,
         discount: float = 0.997,
+        priority_epsilon: float = 1e-6,
         seed: int = 0,
     ) -> None:
-        if isinstance(max_transitions, bool) or not isinstance(
-            max_transitions, int
-        ):
+        if isinstance(max_transitions, bool) or not isinstance(max_transitions, int):
             raise TypeError("max_transitions must be an integer")
         if max_transitions <= 0:
             raise ValueError("max_transitions must be positive")
@@ -86,11 +87,14 @@ class FIFOReplayBuffer:
                 raise ValueError(f"{name} must be positive")
         if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be finite and in [0, 1]")
+        if not np.isfinite(priority_epsilon) or priority_epsilon <= 0.0:
+            raise ValueError("priority_epsilon must be finite and positive")
 
         self.max_transitions = max_transitions
         self._unroll_steps = unroll_steps
         self._td_steps = td_steps
         self._discount = float(discount)
+        self._priority_epsilon = float(priority_epsilon)
         self._reward_discounts = self.discount ** np.arange(
             self.td_steps, dtype=np.float64
         )
@@ -143,9 +147,7 @@ class FIFOReplayBuffer:
         """Prepare one trajectory, then append it with FIFO eviction."""
         trajectory_length = len(trajectory)
         if trajectory_length > self.max_transitions:
-            raise ValueError(
-                "trajectory length exceeds replay transition capacity"
-            )
+            raise ValueError("trajectory length exceeds replay transition capacity")
 
         key = self._trajectory_key(trajectory)
         if key in self._trajectory_keys:
@@ -180,15 +182,15 @@ class FIFOReplayBuffer:
         maximum_priority = (
             float(self._priorities.max()) if self._priorities.size else 1.0
         )
+        if stored.initial_priority is not None:
+            maximum_priority = max(maximum_priority, stored.initial_priority)
         transition_ids = np.arange(
             self._next_transition_id,
             self._next_transition_id + trajectory_length,
             dtype=np.int64,
         )
         self._next_transition_id += trajectory_length
-        self._transition_ids = np.concatenate(
-            (self._transition_ids, transition_ids)
-        )
+        self._transition_ids = np.concatenate((self._transition_ids, transition_ids))
         self._priorities = np.concatenate(
             (
                 self._priorities,
@@ -244,9 +246,7 @@ class FIFOReplayBuffer:
             raise TypeError("pin_memory must be a boolean")
         assert self._action_space_size is not None
 
-        locations, transition_ids, importance_weights = self._sample_context(
-            batch_size
-        )
+        locations, transition_ids, importance_weights = self._sample_context(batch_size)
         arrays = self._allocate_batch_arrays(
             batch_size,
             include_value_bootstraps=include_value_bootstraps,
@@ -287,9 +287,7 @@ class FIFOReplayBuffer:
             raise ValueError("indices and priorities must have the same shape")
         if not np.issubdtype(index_array.dtype, np.integer):
             raise TypeError("indices must be integers")
-        if not np.all(np.isfinite(priority_array)) or np.any(
-            priority_array <= 0.0
-        ):
+        if not np.all(np.isfinite(priority_array)) or np.any(priority_array <= 0.0):
             raise ValueError("priorities must be finite and positive")
         if index_array.size == 0:
             return
@@ -318,12 +316,8 @@ class FIFOReplayBuffer:
         if action_space_size <= 0:
             raise ValueError("policy targets must not be empty")
 
-        frames = np.ascontiguousarray(
-            np.asarray(trajectory.frames, dtype=np.uint8)
-        )
-        actions = np.ascontiguousarray(
-            np.asarray(trajectory.actions, dtype=np.int64)
-        )
+        frames = np.ascontiguousarray(np.asarray(trajectory.frames, dtype=np.uint8))
+        actions = np.ascontiguousarray(np.asarray(trajectory.actions, dtype=np.int64))
         rewards64 = np.asarray(trajectory.rewards, dtype=np.float64)
         rewards = np.ascontiguousarray(rewards64, dtype=np.float32)
         visit_counts = np.asarray(
@@ -345,11 +339,37 @@ class FIFOReplayBuffer:
             count=trajectory.stored_transition_count,
         )
         root_values = np.ascontiguousarray(root_values64, dtype=np.float32)
+        predicted_values64 = (
+            None
+            if trajectory.predicted_values is None
+            else np.asarray(trajectory.predicted_values, dtype=np.float64)
+        )
+        predicted_values = (
+            None
+            if predicted_values64 is None
+            else np.ascontiguousarray(predicted_values64, dtype=np.float32)
+        )
         value_targets, value_valid_mask = self._build_value_target_table(
             rewards64,
             root_values64,
             terminated=trajectory.terminated,
         )
+        initial_priority = None
+        if predicted_values64 is not None:
+            priority_targets, priority_valid_mask = self._build_value_target_table(
+                rewards64,
+                predicted_values64,
+                terminated=trajectory.terminated,
+            )
+            valid = priority_valid_mask[: len(trajectory)]
+            if np.any(valid):
+                initial_errors = np.abs(
+                    predicted_values64[: len(trajectory)][valid]
+                    - priority_targets[: len(trajectory)][valid]
+                )
+                initial_priority = (
+                    float(initial_errors.max()) + self._priority_epsilon
+                )
 
         arrays = (
             frames,
@@ -357,6 +377,7 @@ class FIFOReplayBuffer:
             rewards,
             policy_targets,
             root_values,
+            *(() if predicted_values is None else (predicted_values,)),
             value_targets,
             value_valid_mask,
         )
@@ -377,6 +398,8 @@ class FIFOReplayBuffer:
             rewards=rewards,
             policy_targets=policy_targets,
             root_values=root_values,
+            predicted_values=predicted_values,
+            initial_priority=initial_priority,
             value_targets=value_targets,
             value_valid_mask=value_valid_mask,
         )
@@ -401,9 +424,7 @@ class FIFOReplayBuffer:
             reward_windows = np.lib.stride_tricks.sliding_window_view(
                 padded_rewards, self.td_steps
             )[:stored_count]
-            values64[:stored_count] = (
-                reward_windows @ self._reward_discounts
-            )
+            values64[:stored_count] = reward_windows @ self._reward_discounts
             valid_mask[:] = True
         elif bootstrap_count:
             # Lookahead makes every valid nonterminal reward window complete.
@@ -412,9 +433,7 @@ class FIFOReplayBuffer:
             reward_windows = np.lib.stride_tricks.sliding_window_view(
                 rewards, self.td_steps
             )[:bootstrap_count]
-            values64[:bootstrap_count] = (
-                reward_windows @ self._reward_discounts
-            )
+            values64[:bootstrap_count] = reward_windows @ self._reward_discounts
             valid_mask[:bootstrap_count] = True
 
         if bootstrap_count:
@@ -435,7 +454,9 @@ class FIFOReplayBuffer:
                 f"a replay buffer containing {self._transition_count}"
             )
 
-    def _sample_context(self, batch_size: int) -> tuple[
+    def _sample_context(
+        self, batch_size: int
+    ) -> tuple[
         list[tuple[_StoredTrajectory, int]],
         np.ndarray,
         np.ndarray,
@@ -449,9 +470,7 @@ class FIFOReplayBuffer:
             p=probabilities,
         )
         sampled_probabilities = probabilities[flat_indices]
-        importance_weights = 1.0 / (
-            self._transition_count * sampled_probabilities
-        )
+        importance_weights = 1.0 / (self._transition_count * sampled_probabilities)
         importance_weights /= importance_weights.max()
         # EfficientZero V2 Atari floors normalized importance weights so
         # highly probable samples still contribute meaningfully to the loss.
@@ -605,9 +624,7 @@ class FIFOReplayBuffer:
             importance_weights=torch.from_numpy(arrays["importance_weights"]),
             value_bootstrap_frames=bootstrap_frames,
             value_bootstrap_values=optional_tensor("value_bootstrap_values"),
-            value_bootstrap_discounts=optional_tensor(
-                "value_bootstrap_discounts"
-            ),
+            value_bootstrap_discounts=optional_tensor("value_bootstrap_discounts"),
             value_bootstrap_mask=optional_tensor("value_bootstrap_mask"),
             reanalysis_frames=shared_frames,
             transition_ages=torch.from_numpy(arrays["transition_ages"]),
@@ -680,9 +697,9 @@ class FIFOReplayBuffer:
                     reanalysis_frames.shape[1],
                     trajectory.frames.shape[0] - start,
                 )
-                reanalysis_frames[batch_index, :available_frames] = (
-                    trajectory.frames[start : start + available_frames]
-                )
+                reanalysis_frames[batch_index, :available_frames] = trajectory.frames[
+                    start : start + available_frames
+                ]
                 if available_frames < reanalysis_frames.shape[1]:
                     reanalysis_frames[batch_index, available_frames:] = (
                         reanalysis_frames[batch_index, available_frames - 1]
@@ -698,9 +715,7 @@ class FIFOReplayBuffer:
             actions[batch_index, :action_count, 0] = trajectory.actions[
                 start:action_end
             ]
-            rewards[batch_index, :action_count] = trajectory.rewards[
-                start:action_end
-            ]
+            rewards[batch_index, :action_count] = trajectory.rewards[start:action_end]
             if action_count < unroll_steps:
                 action_mask[batch_index, :action_count] = True
 
@@ -710,9 +725,9 @@ class FIFOReplayBuffer:
                 policy_mask[batch_index].fill(False)
             else:
                 policy_mask[batch_index].fill(True)
-            policy_targets[batch_index, :policy_count] = (
-                trajectory.policy_targets[start : start + policy_count]
-            )
+            policy_targets[batch_index, :policy_count] = trajectory.policy_targets[
+                start : start + policy_count
+            ]
             if policy_count < state_count:
                 policy_mask[batch_index, :policy_count] = True
 
@@ -723,9 +738,9 @@ class FIFOReplayBuffer:
             value_targets[batch_index, :value_count] = trajectory.value_targets[
                 start : start + value_count
             ]
-            value_mask[batch_index, :value_count] = (
-                trajectory.value_valid_mask[start : start + value_count]
-            )
+            value_mask[batch_index, :value_count] = trajectory.value_valid_mask[
+                start : start + value_count
+            ]
 
             if value_bootstrap_frames is not None:
                 assert value_bootstrap_values is not None
@@ -736,9 +751,7 @@ class FIFOReplayBuffer:
                     state_count, max(0, stored_count - bootstrap_start)
                 )
                 bootstrap_frame_count = (
-                    bootstrap_count + stack_size - 1
-                    if bootstrap_count
-                    else 0
+                    bootstrap_count + stack_size - 1 if bootstrap_count else 0
                 )
                 if (
                     reanalysis_frames is None
@@ -756,33 +769,29 @@ class FIFOReplayBuffer:
                     value_bootstrap_mask[batch_index].fill(True)
                 if bootstrap_count:
                     if reanalysis_frames is None:
-                        value_bootstrap_frames[
-                            batch_index, :bootstrap_frame_count
-                        ] = trajectory.frames[
-                            bootstrap_start
-                            : bootstrap_start + bootstrap_frame_count
+                        value_bootstrap_frames[batch_index, :bootstrap_frame_count] = (
+                            trajectory.frames[
+                                bootstrap_start : bootstrap_start
+                                + bootstrap_frame_count
+                            ]
+                        )
+                    value_bootstrap_values[batch_index, :bootstrap_count] = (
+                        trajectory.root_values[
+                            bootstrap_start : bootstrap_start + bootstrap_count
                         ]
-                    value_bootstrap_values[
-                        batch_index, :bootstrap_count
-                    ] = trajectory.root_values[
-                        bootstrap_start : bootstrap_start + bootstrap_count
-                    ]
+                    )
                     if bootstrap_count < state_count:
-                        value_bootstrap_discounts[
-                            batch_index, :bootstrap_count
-                        ] = self._bootstrap_discount
-                        value_bootstrap_mask[
-                            batch_index, :bootstrap_count
-                        ] = True
+                        value_bootstrap_discounts[batch_index, :bootstrap_count] = (
+                            self._bootstrap_discount
+                        )
+                        value_bootstrap_mask[batch_index, :bootstrap_count] = True
 
         arrays["indices"][:] = transition_ids
         arrays["importance_weights"][:] = importance_weights
         # Age is the number of newer transitions, so the newest transition
         # has age zero and exactly ``freshness_threshold`` transitions satisfy
         # ``age < freshness_threshold``.
-        arrays["transition_ages"][:] = (
-            self._next_transition_id - 1 - transition_ids
-        )
+        arrays["transition_ages"][:] = self._next_transition_id - 1 - transition_ids
 
     @staticmethod
     def _trajectory_key(

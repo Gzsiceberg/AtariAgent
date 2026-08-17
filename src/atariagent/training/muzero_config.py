@@ -62,7 +62,6 @@ class TrainingConfig:
     use_target_network_reanalysis: bool = True
     policy_reanalysis_chunk_size: int = 768
     cache_reanalyzed_targets: bool = True
-    reanalysis_start_step: int = 1_000
     reanalysis_prefetch_batches: int = 2
     batch_max_in_flight: int = 3
     batch_ready_prefetch: int = 2
@@ -101,9 +100,7 @@ class LossConfig:
 class CheckpointConfig:
     """Checkpoint destination and representative snapshot count."""
 
-    path: str = (
-        "checkpoints/${environment_slug:${environment.id}}/muzero_latest.pt"
-    )
+    path: str = "checkpoints/${environment_slug:${environment.id}}/muzero_latest.pt"
     keep_representative: int = 10
 
 
@@ -115,12 +112,10 @@ class EvaluationConfig:
     episodes: int = 10
     num_envs: int = 4
     data_path: str = (
-        "evaluations/${environment_slug:${environment.id}}/"
-        "muzero_evaluations.json"
+        "evaluations/${environment_slug:${environment.id}}/muzero_evaluations.json"
     )
     plot_path: str = (
-        "evaluations/${environment_slug:${environment.id}}/"
-        "muzero_evaluation.png"
+        "evaluations/${environment_slug:${environment.id}}/muzero_evaluation.png"
     )
 
 
@@ -184,15 +179,15 @@ def next_collection_vector_steps(
     return min(max_vector_steps, remaining // num_envs)
 
 
-def visit_softmax_temperature(trained_steps: int, training_steps: int) -> float:
-    """Return EfficientZero's three-stage self-play temperature."""
-    if training_steps <= 0:
-        raise ValueError("training_steps must be positive")
+def visit_softmax_temperature(trained_steps: int, total_steps: int) -> float:
+    """Return EfficientZero's schedule over online and offline updates."""
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
     if trained_steps < 0:
         raise ValueError("trained_steps must be non-negative")
-    if trained_steps < 0.5 * training_steps:
+    if trained_steps < 0.5 * total_steps:
         return 1.0
-    if trained_steps < 0.75 * training_steps:
+    if trained_steps < 0.75 * total_steps:
         return 0.5
     return 0.25
 

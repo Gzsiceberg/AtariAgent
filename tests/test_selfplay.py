@@ -25,9 +25,7 @@ class DiscreteActionSpace:
 
 
 class LifeLossEnvironment(gym.Env):
-    observation_space = gym.spaces.Box(
-        0, 255, shape=(2, 2, 3), dtype=np.uint8
-    )
+    observation_space = gym.spaces.Box(0, 255, shape=(2, 2, 3), dtype=np.uint8)
     action_space = gym.spaces.Discrete(2)
 
     def __init__(self) -> None:
@@ -124,6 +122,9 @@ class FakeAgent:
         return AgentOutput(
             actions=tuple(1 for _ in results),
             search_results=results,
+            predicted_values=tuple(
+                float(10 * self.calls + index) for index in range(len(results))
+            ),
         )
 
 
@@ -186,6 +187,7 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     assert first_run[0][0].search_results[0] is agent.search_result_batches[0][0]
     assert first_run[0][0].target_policy == ((0.25, 0.75), (0.25, 0.75))
     assert first_run[0][0].root_values == (1.0, 2.0)
+    assert first_run[0][0].predicted_values == (10.0, 20.0)
     assert first_environment.reset_seeds == [10, None]
     assert second_environment.reset_seeds == [11]
 
@@ -290,9 +292,7 @@ def test_episode_reward_tracker_accumulates_raw_rewards_across_blocks() -> None:
 def test_episode_reward_tracker_accumulates_across_life_losses() -> None:
     base = LifeLossEnvironment()
     episodic_life = EpisodicLifeEnvironment(base)
-    environment = gym.wrappers.FrameStackObservation(
-        episodic_life, stack_size=4
-    )
+    environment = gym.wrappers.FrameStackObservation(episodic_life, stack_size=4)
     worker = SelfPlayWorker(
         FakeAgent(),
         environments=[environment],
@@ -312,7 +312,7 @@ def test_episode_reward_tracker_accumulates_across_life_losses() -> None:
     worker.close()
 
 
-def test_worker_random_warmup_is_seeded_and_stores_uniform_policy() -> None:
+def test_worker_random_override_is_seeded_and_stores_uniform_policy() -> None:
     first_agent = FakeAgent()
     second_agent = FakeAgent()
     first_worker = SelfPlayWorker(
@@ -335,9 +335,9 @@ def test_worker_random_warmup_is_seeded_and_stores_uniform_policy() -> None:
 
     assert first.actions == second.actions
     assert first.target_policy == ((0.5, 0.5),) * 4
+    assert first.predicted_values == (10.0, 20.0, 30.0, 40.0)
     assert all(
-        np.array_equal(result.visit_counts, (1, 1))
-        for result in first.search_results
+        np.array_equal(result.visit_counts, (1, 1)) for result in first.search_results
     )
     assert all(kwargs["temperature"] == 0.5 for kwargs in first_agent.kwargs)
 

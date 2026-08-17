@@ -171,8 +171,6 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("updates_per_iteration must be positive")
     if config.training.log_every <= 0:
         raise ValueError("log_every must be positive")
-    if config.training.reanalysis_start_step < 0:
-        raise ValueError("reanalysis_start_step must be non-negative")
     if config.training.value_target not in {"td", "search", "mixed"}:
         raise ValueError("training.value_target must be td, search, or mixed")
     for value, name in (
@@ -194,19 +192,6 @@ def main(config: TrainMuZeroConfig) -> None:
         and not config.training.use_target_network_reanalysis
     ):
         raise ValueError("search value targets require target reanalysis")
-    if (
-        config.training.value_target == "mixed"
-        and config.training.reanalysis_start_step
-        > config.training.mixed_value_start_step
-    ):
-        raise ValueError(
-            "reanalysis must start before the mixed-value switch"
-        )
-    if (
-        config.training.value_target == "search"
-        and config.training.reanalysis_start_step != 0
-    ):
-        raise ValueError("search value targets require reanalysis from step 0")
     if config.training.target_update_interval <= 0:
         raise ValueError("target_update_interval must be positive")
     if config.training.policy_reanalysis_chunk_size <= 0:
@@ -320,6 +305,7 @@ def main(config: TrainMuZeroConfig) -> None:
             unroll_steps=config.training.unroll_steps,
             td_steps=config.training.td_steps,
             discount=discount,
+            priority_epsilon=config.replay.priority_epsilon,
             seed=config.seed,
         )
         target_state = make_target_state(
@@ -461,7 +447,6 @@ def main(config: TrainMuZeroConfig) -> None:
             batch_size=config.training.batch_size,
             device=device,
             reanalysis_pipeline=reanalysis_pipeline,
-            reanalysis_start_step=config.training.reanalysis_start_step,
             value_target=config.training.value_target,
             mixed_value_start_step=(
                 config.training.mixed_value_start_step
@@ -569,13 +554,12 @@ def main(config: TrainMuZeroConfig) -> None:
                 # Temperature affects only rollout behavior/action selection;
                 # training targets always normalize the raw MCTS visit counts.
                 temperature = visit_softmax_temperature(
-                    update, config.training.steps
+                    update, total_updates
                 )
                 previous_transitions = worker.total_transitions
                 grouped = worker.run(
                     vector_steps,
                     temperature=temperature,
-                    random_actions=warming_up,
                 )
                 self_play_progress.update(
                     worker.total_transitions - previous_transitions
@@ -589,7 +573,7 @@ def main(config: TrainMuZeroConfig) -> None:
                     "added": insertion.added_transitions,
                     "replay": f"{len(replay)}/{replay.max_transitions}",
                     "temperature": f"{temperature:.2f}",
-                    "mode": "random" if warming_up else "MCTS",
+                    "mode": "MCTS",
                 }
                 if self_play_episode_rewards:
                     recent_stats = EvaluationStats.from_rewards(
@@ -623,7 +607,7 @@ def main(config: TrainMuZeroConfig) -> None:
                         f"min={min(recent_rewards):.2f} "
                         f"max={max(recent_rewards):.2f} "
                         f"latest={completed_rewards[-1]:.2f} "
-                        f"mode={'random' if warming_up else 'MCTS'}[/dim]"
+                        "mode=MCTS[/dim]"
                     )
                 if warming_up and len(replay) >= minimum_replay_size:
                     log(
