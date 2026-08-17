@@ -41,8 +41,8 @@ class _StoredTrajectory:
     rewards: np.ndarray
     policy_targets: np.ndarray
     root_values: np.ndarray
-    predicted_values: np.ndarray | None
-    initial_priority: float | None
+    predicted_values: np.ndarray
+    initial_priority: float
     value_targets: np.ndarray
     value_valid_mask: np.ndarray
 
@@ -182,8 +182,7 @@ class FIFOReplayBuffer:
         maximum_priority = (
             float(self._priorities.max()) if self._priorities.size else 1.0
         )
-        if stored.initial_priority is not None:
-            maximum_priority = max(maximum_priority, stored.initial_priority)
+        maximum_priority = max(maximum_priority, stored.initial_priority)
         transition_ids = np.arange(
             self._next_transition_id,
             self._next_transition_id + trajectory_length,
@@ -339,37 +338,30 @@ class FIFOReplayBuffer:
             count=trajectory.stored_transition_count,
         )
         root_values = np.ascontiguousarray(root_values64, dtype=np.float32)
-        predicted_values64 = (
-            None
-            if trajectory.predicted_values is None
-            else np.asarray(trajectory.predicted_values, dtype=np.float64)
+        predicted_values64 = np.asarray(
+            trajectory.predicted_values, dtype=np.float64
         )
-        predicted_values = (
-            None
-            if predicted_values64 is None
-            else np.ascontiguousarray(predicted_values64, dtype=np.float32)
+        predicted_values = np.ascontiguousarray(
+            predicted_values64, dtype=np.float32
         )
         value_targets, value_valid_mask = self._build_value_target_table(
             rewards64,
             root_values64,
             terminated=trajectory.terminated,
         )
-        initial_priority = None
-        if predicted_values64 is not None:
-            priority_targets, priority_valid_mask = self._build_value_target_table(
-                rewards64,
-                predicted_values64,
-                terminated=trajectory.terminated,
+        priority_targets, priority_valid_mask = self._build_value_target_table(
+            rewards64,
+            predicted_values64,
+            terminated=trajectory.terminated,
+        )
+        valid = priority_valid_mask[: len(trajectory)]
+        initial_priority = self._priority_epsilon
+        if np.any(valid):
+            initial_errors = np.abs(
+                predicted_values64[: len(trajectory)][valid]
+                - priority_targets[: len(trajectory)][valid]
             )
-            valid = priority_valid_mask[: len(trajectory)]
-            if np.any(valid):
-                initial_errors = np.abs(
-                    predicted_values64[: len(trajectory)][valid]
-                    - priority_targets[: len(trajectory)][valid]
-                )
-                initial_priority = (
-                    float(initial_errors.max()) + self._priority_epsilon
-                )
+            initial_priority += float(initial_errors.max())
 
         arrays = (
             frames,
@@ -377,7 +369,7 @@ class FIFOReplayBuffer:
             rewards,
             policy_targets,
             root_values,
-            *(() if predicted_values is None else (predicted_values,)),
+            predicted_values,
             value_targets,
             value_valid_mask,
         )

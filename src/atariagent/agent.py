@@ -124,14 +124,12 @@ class AgentOutput:
 
     actions: tuple[int, ...]
     search_results: tuple[SearchResult, ...]
-    predicted_values: tuple[float, ...] | None = None
+    predicted_values: tuple[float, ...]
 
     def __post_init__(self) -> None:
         if len(self.actions) != len(self.search_results):
             raise ValueError("actions and search_results must have equal lengths")
-        if self.predicted_values is not None and len(self.predicted_values) != len(
-            self.actions
-        ):
+        if len(self.predicted_values) != len(self.actions):
             raise ValueError("predicted_values and actions must have equal lengths")
 
 

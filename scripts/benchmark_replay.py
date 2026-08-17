@@ -97,6 +97,7 @@ def make_trajectory(
         rewards=tuple(float(offset % 3 - 1) for offset in range(stored_steps)),
         raw_rewards=tuple(0.0 for _ in range(stored_steps)),
         search_results=tuple(result for _ in range(stored_steps)),
+        predicted_values=tuple(0.25 for _ in range(stored_steps)),
         terminated=False,
         truncated=False,
         full_episode_done=False,
@@ -111,6 +112,7 @@ def replay_storage_bytes(replay: FIFOReplayBuffer) -> int:
         "rewards",
         "policy_targets",
         "root_values",
+        "predicted_values",
         "value_targets",
         "value_valid_mask",
     )

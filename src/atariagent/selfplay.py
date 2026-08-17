@@ -80,11 +80,11 @@ class GameTrajectory:
     rewards: tuple[float, ...]
     raw_rewards: tuple[float, ...]
     search_results: tuple[SearchResult, ...]
+    predicted_values: tuple[float, ...]
     terminated: bool
     truncated: bool
     full_episode_done: bool
     lookahead_steps: int = 0
-    predicted_values: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         transition_count = len(self.actions)
@@ -119,10 +119,7 @@ class GameTrajectory:
         ):
             if len(values) != transition_count:
                 raise ValueError("all transition fields must have equal lengths")
-        if (
-            self.predicted_values is not None
-            and len(self.predicted_values) != transition_count
-        ):
+        if len(self.predicted_values) != transition_count:
             raise ValueError("all transition fields must have equal lengths")
         if transition_count == 0:
             raise ValueError("a finalized trajectory must contain a transition")
@@ -191,7 +188,7 @@ class _TrajectoryBuilder:
         self.rewards: list[float] = []
         self.raw_rewards: list[float] = []
         self.search_results: list[SearchResult] = []
-        self.predicted_values: list[float] | None = []
+        self.predicted_values: list[float] = []
         self._sampleable_transitions: int | None = None
 
     @property
@@ -216,7 +213,7 @@ class _TrajectoryBuilder:
         reward: float,
         raw_reward: float,
         search_result: SearchResult,
-        predicted_value: float | None,
+        predicted_value: float,
     ) -> None:
         self.actions.append(int(action))
         next_frames = _stacked_observation_frames(observation, self.stack_size)
@@ -224,10 +221,7 @@ class _TrajectoryBuilder:
         self.rewards.append(float(reward))
         self.raw_rewards.append(float(raw_reward))
         self.search_results.append(search_result)
-        if predicted_value is None:
-            self.predicted_values = None
-        elif self.predicted_values is not None:
-            self.predicted_values.append(float(predicted_value))
+        self.predicted_values.append(float(predicted_value))
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -249,9 +243,7 @@ class _TrajectoryBuilder:
             rewards=tuple(self.rewards),
             raw_rewards=tuple(self.raw_rewards),
             search_results=tuple(self.search_results),
-            predicted_values=(
-                None if self.predicted_values is None else tuple(self.predicted_values)
-            ),
+            predicted_values=tuple(self.predicted_values),
             terminated=terminated,
             truncated=truncated,
             full_episode_done=full_episode_done,
@@ -491,7 +483,6 @@ class SelfPlayWorker:
             if random_actions:
                 agent_output = self._uniform_behavior_output(agent_output)
             self._validate_agent_output(agent_output)
-            predicted_values = agent_output.predicted_values
 
             for index, environment in enumerate(self.environments):
                 action = agent_output.actions[index]
@@ -509,11 +500,7 @@ class SelfPlayWorker:
                         reward=reward,
                         raw_reward=raw_reward,
                         search_result=agent_output.search_results[index],
-                        predicted_value=(
-                            None
-                            if predicted_values is None
-                            else predicted_values[index]
-                        ),
+                        predicted_value=agent_output.predicted_values[index],
                     )
                 self._observations[index] = _copy_observation(next_observation)
                 self.total_transitions += 1

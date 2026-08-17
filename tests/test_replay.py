@@ -19,7 +19,7 @@ def make_trajectory(
     terminated: bool = False,
     truncated: bool = False,
     lookahead_steps: int = 0,
-    predicted_values: tuple[float, ...] | None = None,
+    predicted_values: tuple[float, ...] = (),
 ) -> GameTrajectory:
     frames = tuple(
         np.full((1, 2, 2), initial_value + step, dtype=np.uint8)
@@ -33,6 +33,10 @@ def make_trajectory(
         )
         for step in range(length)
     )
+    if not predicted_values:
+        predicted_values = tuple(
+            float(initial_value + step) for step in range(length)
+        )
     return GameTrajectory(
         environment_index=0,
         episode_id=episode_id,
