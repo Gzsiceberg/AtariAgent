@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
+from typing import Literal
 
 import torch
 from torch import Tensor, nn
@@ -20,8 +21,7 @@ from atariagent.models.native import (
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTSConfig
 
-from .target import Precision
-
+Precision = Literal["fp32", "bf16"]
 TargetState = dict[str, Tensor]
 
 

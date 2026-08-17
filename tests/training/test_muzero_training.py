@@ -17,36 +17,21 @@ from atariagent.training import MuZeroTrainer
 def test_scalar_categorical_loss_interpolates_transformed_target() -> None:
     logits = torch.randn(2, 601)
     targets = torch.tensor([0.0, 1.0])
-    batch = ReplayBatch(
-        frames=torch.zeros(2, 2, 1, 1, 1, dtype=torch.uint8),
-        actions=torch.zeros(2, 1, 1, dtype=torch.long),
-        rewards=torch.zeros(2, 1),
-        policy_targets=torch.zeros(2, 2, 1),
-        value_targets=torch.stack((targets, torch.zeros_like(targets)), dim=1),
-        action_mask=torch.ones(2, 1, dtype=torch.bool),
-        policy_mask=torch.zeros(2, 2, dtype=torch.bool),
-        value_mask=torch.tensor([[True, False], [True, False]]),
-        indices=torch.arange(2),
-        importance_weights=torch.ones(2),
-    )
-
-    _, loss = batch.prediction_losses(
-        torch.zeros(2, 1), logits, offset=0
+    loss = ReplayBatch._scalar_loss(
+        logits,
+        targets,
+        support_min=-300,
+        support_max=300,
     )
     transformed = (
-        targets.sign() * (torch.sqrt(targets.abs() + 1.0) - 1.0)
-        + 0.001 * targets
-        + 300
+        targets.sign() * (torch.sqrt(targets.abs() + 1.0) - 1.0) + 0.001 * targets + 300
     )
     lower = transformed.floor().long()
     upper = transformed.ceil().long()
     upper_weight = transformed - lower
-    expected = (
-        (1.0 - upper_weight)
-        * functional.cross_entropy(logits, lower, reduction="none")
-        + upper_weight
-        * functional.cross_entropy(logits, upper, reduction="none")
-    )
+    expected = (1.0 - upper_weight) * functional.cross_entropy(
+        logits, lower, reduction="none"
+    ) + upper_weight * functional.cross_entropy(logits, upper, reduction="none")
 
     torch.testing.assert_close(loss, expected)
 
@@ -63,17 +48,15 @@ def test_optimized_scalar_loss_matches_double_cross_entropy_and_gradients() -> N
         support_max=300,
     )
     transformed = (
-        targets.sign() * (torch.sqrt(targets.abs() + 1.0) - 1.0)
-        + 0.001 * targets
+        targets.sign() * (torch.sqrt(targets.abs() + 1.0) - 1.0) + 0.001 * targets
     ).clamp(-300, 300) + 300
     lower = transformed.floor().long()
     upper = transformed.ceil().long()
     upper_weight = transformed - lower
-    expected = (
-        (1.0 - upper_weight)
-        * functional.cross_entropy(reference_logits, lower, reduction="none")
-        + upper_weight
-        * functional.cross_entropy(reference_logits, upper, reduction="none")
+    expected = (1.0 - upper_weight) * functional.cross_entropy(
+        reference_logits, lower, reduction="none"
+    ) + upper_weight * functional.cross_entropy(
+        reference_logits, upper, reduction="none"
     )
 
     actual_gradient = torch.autograd.grad(actual.sum(), logits)[0]
@@ -99,31 +82,6 @@ def test_optimized_scalar_loss_is_safe_under_bfloat16_autocast() -> None:
     assert torch.all(torch.isfinite(loss))
     assert logits.grad is not None
     assert torch.all(torch.isfinite(logits.grad))
-
-
-def test_value_prefix_targets_reset_at_lstm_horizon_and_respect_mask() -> None:
-    rewards = torch.tensor([[1.0, 2.0, 4.0, 8.0], [1.0, 2.0, 4.0, 8.0]])
-    mask = torch.tensor(
-        [[True, True, True, True], [True, False, False, False]]
-    )
-
-    batch = ReplayBatch(
-        frames=torch.zeros(2, 5, 1, 1, 1, dtype=torch.uint8),
-        actions=torch.zeros(2, 4, 1, dtype=torch.long),
-        rewards=rewards,
-        policy_targets=torch.zeros(2, 5, 1),
-        value_targets=torch.zeros(2, 5),
-        action_mask=mask,
-        policy_mask=torch.zeros(2, 5, dtype=torch.bool),
-        value_mask=torch.zeros(2, 5, dtype=torch.bool),
-        indices=torch.arange(2),
-        importance_weights=torch.ones(2),
-    )
-
-    torch.testing.assert_close(
-        batch.value_prefix_targets(lstm_horizon=2),
-        torch.tensor([[1.0, 3.0, 4.0, 12.0], [1.0, 1.0, 0.0, 0.0]]),
-    )
 
 
 def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
@@ -395,9 +353,7 @@ def test_muzero_scales_root_and_recurrent_losses_together() -> None:
     assert metrics.value_loss == pytest.approx(
         1.5 * torch.log(torch.tensor(601.0)).item()
     )
-    assert metrics.reward_loss == pytest.approx(
-        torch.log(torch.tensor(601.0)).item()
-    )
+    assert metrics.reward_loss == pytest.approx(torch.log(torch.tensor(601.0)).item())
     assert metrics.consistency_loss == 0.0
 
 

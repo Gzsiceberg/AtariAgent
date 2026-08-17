@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from atariagent.replay import FIFOReplayBuffer, ReplayBatch
+from atariagent.replay import FIFOReplayBuffer
 from atariagent.search import SearchResult
 from atariagent.selfplay import GameTrajectory
 
@@ -50,9 +50,7 @@ def make_trajectory(
 
 
 def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:
-    replay = FIFOReplayBuffer(
-        max_transitions=5, unroll_steps=2, td_steps=2
-    )
+    replay = FIFOReplayBuffer(max_transitions=5, unroll_steps=2, td_steps=2)
 
     replay.add(make_trajectory(3, block_id=0))
     result = replay.add(make_trajectory(3, block_id=1, initial_value=10))
@@ -68,9 +66,7 @@ def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:
     assert batch.transition_ages is not None
     age_by_id = dict(zip(batch.indices.tolist(), batch.transition_ages.tolist()))
     assert age_by_id == {3: 3, 4: 2, 5: 1}
-    final_sample = int(
-        (batch.frames[:, 0, 0, 0, 0] == 12).nonzero().item()
-    )
+    final_sample = int((batch.frames[:, 0, 0, 0, 0] == 12).nonzero().item())
     torch.testing.assert_close(
         batch.policy_mask[final_sample],
         torch.tensor([True, False, False]),
@@ -99,10 +95,7 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.reanalysis_frames.shape == (3, 11, 1, 2, 2)
     shared_storage = batch.reanalysis_frames.untyped_storage().data_ptr()
     assert batch.frames.untyped_storage().data_ptr() == shared_storage
-    assert (
-        batch.value_bootstrap_frames.untyped_storage().data_ptr()
-        == shared_storage
-    )
+    assert batch.value_bootstrap_frames.untyped_storage().data_ptr() == shared_storage
     assert batch.value_bootstrap_values is not None
     assert batch.value_bootstrap_values.shape == (3, 6)
     assert batch.value_bootstrap_discounts is not None
@@ -140,13 +133,6 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
         batch.policy_targets[final_sample, 0], torch.tensor([0.25, 0.75])
     )
     assert torch.all(batch.policy_targets[final_sample, 1:] == 0)
-
-    normalized = batch.normalized_observations()
-    assert normalized.dtype == torch.float32
-    torch.testing.assert_close(
-        normalized[final_sample, 0],
-        torch.full((1, 2, 2), 2.0 / 255.0),
-    )
 
 
 def test_replay_can_skip_target_network_bootstrap_metadata() -> None:
@@ -200,20 +186,8 @@ def test_replay_builds_fixed_n_step_values_from_stored_root_values() -> None:
     )
     assert batch.value_bootstrap_values[start_zero, 0] == 2.0
     assert batch.value_bootstrap_discounts[start_zero, 0] == 0.25
-    bootstrap = batch.normalized_value_bootstrap_observation(0)
-    torch.testing.assert_close(
-        bootstrap[start_zero],
-        torch.full((1, 2, 2), 2.0 / 255.0),
-    )
-
-    fresh_bootstraps = torch.zeros_like(batch.value_targets)
-    fresh_bootstraps[start_zero, 0] = 10.0
-    reanalyzed = batch.with_reanalyzed_value_targets(fresh_bootstraps)
-    assert reanalyzed.value_targets[start_zero, 0] == 4.5
-    torch.testing.assert_close(
-        reanalyzed.value_targets[start_zero, 1:],
-        batch.value_targets[start_zero, 1:],
-    )
+    assert batch.value_bootstrap_frames is not None
+    assert batch.value_bootstrap_frames[start_zero, 0, 0, 0, 0] == 2
 
 
 def test_replay_builds_value_targets_from_local_lookahead() -> None:
@@ -247,91 +221,36 @@ def test_replay_requires_lookahead_to_cover_unroll_and_td_steps() -> None:
     trajectory = make_trajectory(5, lookahead_steps=2)
 
     with pytest.raises(ValueError, match="lookahead_steps"):
-        FIFOReplayBuffer(
-            max_transitions=3, unroll_steps=3, td_steps=2
-        ).add(trajectory)
+        FIFOReplayBuffer(max_transitions=3, unroll_steps=3, td_steps=2).add(trajectory)
     with pytest.raises(ValueError, match="lookahead_steps"):
-        FIFOReplayBuffer(
-            max_transitions=3, unroll_steps=2, td_steps=3
-        ).add(trajectory)
+        FIFOReplayBuffer(max_transitions=3, unroll_steps=2, td_steps=3).add(trajectory)
 
-    replay = FIFOReplayBuffer(
-        max_transitions=3, unroll_steps=2, td_steps=2
-    )
+    replay = FIFOReplayBuffer(max_transitions=3, unroll_steps=2, td_steps=2)
     replay.add(trajectory)
     assert replay.sample(batch_size=1).action_mask.all()
 
 
-def test_replay_reconstructs_overlapping_stacks_from_compact_frames() -> None:
-    replay = FIFOReplayBuffer(
-        max_transitions=10, unroll_steps=1, td_steps=1, seed=1
-    )
+def test_replay_stores_compact_overlapping_frame_context() -> None:
+    replay = FIFOReplayBuffer(max_transitions=10, unroll_steps=1, td_steps=1, seed=1)
     replay.add(make_trajectory(2, stack_size=4))
 
     batch = replay.sample(batch_size=2)
 
     assert batch.frames.shape == (2, 5, 1, 2, 2)
-    observations = batch.stacked_observations()
-    assert observations.shape == (2, 2, 4, 2, 2)
     first_sample = int((batch.frames[:, 0, 0, 0, 0] == 0).nonzero().item())
     torch.testing.assert_close(
-        observations[first_sample, 0, :, 0, 0],
-        torch.tensor([0, 1, 2, 3], dtype=torch.uint8),
+        batch.frames[first_sample, :, 0, 0, 0],
+        torch.tensor([0, 1, 2, 3, 4], dtype=torch.uint8),
     )
-    torch.testing.assert_close(
-        observations[first_sample, 1, :, 0, 0],
-        torch.tensor([1, 2, 3, 4], dtype=torch.uint8),
-    )
-
-
-@pytest.mark.parametrize(
-    ("channels", "stack_size", "unroll_steps"),
-    [(1, 1, 1), (1, 4, 3), (3, 4, 5)],
-)
-def test_root_normalization_exactly_matches_full_root_slice(
-    channels: int, stack_size: int, unroll_steps: int
-) -> None:
-    batch_size = 2
-    states = unroll_steps + 1
-    frames = torch.randint(
-        0,
-        256,
-        (batch_size, stack_size + unroll_steps, channels, 3, 2),
-        dtype=torch.uint8,
-    )
-    batch = ReplayBatch(
-        frames=frames,
-        actions=torch.zeros(batch_size, unroll_steps, 1, dtype=torch.long),
-        rewards=torch.zeros(batch_size, unroll_steps),
-        policy_targets=torch.zeros(batch_size, states, 2),
-        value_targets=torch.zeros(batch_size, states),
-        action_mask=torch.ones(batch_size, unroll_steps, dtype=torch.bool),
-        policy_mask=torch.zeros(batch_size, states, dtype=torch.bool),
-        value_mask=torch.ones(batch_size, states, dtype=torch.bool),
-        indices=torch.arange(batch_size),
-        importance_weights=torch.ones(batch_size),
-    )
-
-    root = batch.normalized_root_observation()
-
-    assert root.shape == (batch_size, stack_size * channels, 3, 2)
-    assert root.dtype == torch.float32
-    assert root.device == frames.device
-    assert 0.0 <= root.min() <= root.max() <= 1.0
-    torch.testing.assert_close(root, batch.normalized_observations()[:, 0])
 
 
 def test_replay_unroll_uses_local_lookahead_transitions() -> None:
     trajectory = make_trajectory(7, lookahead_steps=5)
-    replay = FIFOReplayBuffer(
-        max_transitions=10, unroll_steps=3, td_steps=3, seed=2
-    )
+    replay = FIFOReplayBuffer(max_transitions=10, unroll_steps=3, td_steps=3, seed=2)
     replay.add(trajectory)
 
     batch = replay.sample(batch_size=2)
-    crossing_sample = int(
-        (batch.frames[:, 0, 0, 0, 0] == 1).nonzero().item()
-    )
+    crossing_sample = int((batch.frames[:, 0, 0, 0, 0] == 1).nonzero().item())
 
     torch.testing.assert_close(
         batch.frames[crossing_sample, :, 0, 0, 0],
@@ -377,12 +296,11 @@ def test_replay_unroll_uses_local_lookahead_transitions() -> None:
         torch.full((4,), 0.25),
     )
     assert value_batch.value_bootstrap_mask[crossing_value_sample].all()
-    for offset in range(4):
-        bootstrap = value_batch.normalized_value_bootstrap_observation(offset)
-        torch.testing.assert_close(
-            bootstrap[crossing_value_sample],
-            torch.full((1, 2, 2), (3.0 + offset) / 255.0),
-        )
+    assert value_batch.value_bootstrap_frames is not None
+    torch.testing.assert_close(
+        value_batch.value_bootstrap_frames[crossing_value_sample, :, 0, 0, 0],
+        torch.tensor([3, 4, 5, 6], dtype=torch.uint8),
+    )
 
 
 def reference_value_targets(
@@ -449,14 +367,12 @@ def test_precomputed_values_match_reference_for_boundary_types(
 
     for batch_index in range(batch.batch_size):
         position = int(batch.frames[batch_index, 0, 0, 0, 0])
-        expected_values, expected_valid, expected_bootstrap = (
-            reference_value_targets(
-                trajectory,
-                position,
-                target_count=3,
-                td_steps=3,
-                discount=0.5,
-            )
+        expected_values, expected_valid, expected_bootstrap = reference_value_targets(
+            trajectory,
+            position,
+            target_count=3,
+            td_steps=3,
+            discount=0.5,
         )
         np.testing.assert_allclose(
             batch.value_targets[batch_index].numpy(), expected_values
@@ -479,9 +395,7 @@ def test_prioritized_replay_samples_and_updates_efficientzero_priorities() -> No
         priority_alpha=0.6,
     )
     replay.add(make_trajectory(3, terminated=True))
-    replay.update_priorities(
-        np.array([0, 1, 2]), np.array([1.0, 4.0, 16.0])
-    )
+    replay.update_priorities(np.array([0, 1, 2]), np.array([1.0, 4.0, 16.0]))
 
     batch = replay.sample(batch_size=3, priority_beta=0.4)
 

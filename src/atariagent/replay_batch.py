@@ -17,8 +17,7 @@ class ReplayBatch:
     """A padded EfficientZero-style unroll batch.
 
     ``frames`` contains the initial stack context followed by one new frame
-    per unroll action. Call :meth:`normalized_observations` to reconstruct the
-    overlapping state stacks for training. ``action_mask`` identifies real
+    per unroll action. ``action_mask`` identifies real
     action/reward steps. ``policy_mask`` identifies states with stored search
     policy targets. ``value_mask`` identifies states whose fixed-horizon return can
     be computed; a true terminal state has a valid zero-value target without
@@ -61,104 +60,6 @@ class ReplayBatch:
     @property
     def stack_size(self) -> int:
         return self.frames.shape[1] - self.unroll_steps
-
-    @runtime_typed
-    def normalized_root_observation(
-        self,
-        device: torch.device | str | None = None,
-        *,
-        non_blocking: bool = False,
-    ) -> Float[Tensor, "batch stacked_channels height width"]:
-        """Reconstruct and normalize only the initial frame stack."""
-        batch_size, _, channels, height, width = self.frames.shape
-        root = self.frames[:, : self.stack_size].reshape(
-            batch_size,
-            self.stack_size * channels,
-            height,
-            width,
-        )
-        return root.to(
-            device=device,
-            dtype=torch.float32,
-            non_blocking=non_blocking,
-        ).div_(255.0)
-
-    @runtime_typed
-    def stacked_observations(
-        self,
-    ) -> UInt8[Tensor, "batch states stacked_channels height width"]:
-        """Reconstruct all overlapping channel-first state stacks."""
-        batch_size, _, channels, height, width = self.frames.shape
-        return torch.stack(
-            tuple(
-                self.frames[:, offset : offset + self.stack_size].reshape(
-                    batch_size,
-                    self.stack_size * channels,
-                    height,
-                    width,
-                )
-                for offset in range(self.unroll_steps + 1)
-            ),
-            dim=1,
-        )
-
-    @runtime_typed
-    def normalized_observations(
-        self, device: torch.device | str | None = None
-    ) -> Float[Tensor, "batch states stacked_channels height width"]:
-        """Return reconstructed state stacks as floats in ``[0, 1]``."""
-        return self.stacked_observations().to(
-            device=device, dtype=torch.float32
-        ).div_(255.0)
-
-    def normalized_value_bootstrap_observation(
-        self,
-        offset: int,
-    ) -> Float[Tensor, "batch stacked_channels height width"]:
-        """Return actual observations used for target-network bootstrapping."""
-        if self.value_bootstrap_frames is None:
-            raise ValueError("batch has no value-bootstrap observations")
-        if not 0 <= offset <= self.unroll_steps:
-            raise ValueError("bootstrap offset is outside the unroll")
-        batch_size, _, channels, height, width = (
-            self.value_bootstrap_frames.shape
-        )
-        observation = self.value_bootstrap_frames[
-            :, offset : offset + self.stack_size
-        ].reshape(
-            batch_size,
-            self.stack_size * channels,
-            height,
-            width,
-        )
-        return observation.to(dtype=torch.float32).div_(255.0)
-
-    def with_reanalyzed_value_targets(
-        self,
-        fresh_bootstrap_values: Float[Tensor, "batch states"],
-    ) -> ReplayBatch:
-        """Replace stored MCTS bootstraps with fresh target-network values."""
-        metadata = (
-            self.value_bootstrap_values,
-            self.value_bootstrap_discounts,
-            self.value_bootstrap_mask,
-        )
-        if any(value is None for value in metadata):
-            raise ValueError("batch has no value-bootstrap metadata")
-        if fresh_bootstrap_values.shape != self.value_targets.shape:
-            raise ValueError("fresh bootstrap values have an invalid shape")
-        assert self.value_bootstrap_values is not None
-        assert self.value_bootstrap_discounts is not None
-        assert self.value_bootstrap_mask is not None
-        bootstrap_delta = (
-            fresh_bootstrap_values - self.value_bootstrap_values
-        ) * self.value_bootstrap_discounts
-        targets = torch.where(
-            self.value_bootstrap_mask,
-            self.value_targets + bootstrap_delta,
-            self.value_targets,
-        )
-        return replace(self, value_targets=targets)
 
     def with_reanalysis_targets(
         self,
@@ -208,9 +109,7 @@ class ReplayBatch:
                 raise TypeError(f"{name} must be an integer")
             if value < 0:
                 raise ValueError(f"{name} must be non-negative")
-        if mode == "td" or (
-            mode == "mixed" and learner_step < mixed_start_step
-        ):
+        if mode == "td" or (mode == "mixed" and learner_step < mixed_start_step):
             return self
         if self.search_value_targets is None:
             raise ValueError("batch has no MCTS search value targets")
@@ -229,65 +128,6 @@ class ReplayBatch:
             self.value_targets,
         )
         return replace(self, value_targets=selected)
-
-    def with_reanalyzed_policy_targets(
-        self,
-        fresh_policy_targets: Float[Tensor, "batch states actions"],
-    ) -> ReplayBatch:
-        """Use fresh policies for states with valid policy targets."""
-        if fresh_policy_targets.shape != self.policy_targets.shape:
-            raise ValueError("fresh policy targets have an invalid shape")
-        policy_targets = torch.where(
-            self.policy_mask[:, :, None],
-            fresh_policy_targets,
-            self.policy_targets,
-        )
-        return replace(self, policy_targets=policy_targets)
-
-    @runtime_typed
-    def prediction_losses(
-        self,
-        policy_logits: Float[Tensor, "batch actions"],
-        value_logits: Float[Tensor, "batch support"],
-        *,
-        offset: int,
-        support_min: int = -300,
-        support_max: int = 300,
-    ) -> tuple[
-        Float[Tensor, "batch"],
-        Float[Tensor, "batch"],
-    ]:
-        """Return masked policy and n-step value losses for one state."""
-        policy_target = self.policy_targets[:, offset]
-        policy_loss = self._policy_cross_entropy(
-            policy_logits, policy_target
-        ) * self.policy_mask[:, offset].to(policy_logits.dtype)
-
-        value_loss = self._scalar_loss(
-            value_logits,
-            self.value_targets[:, offset],
-            support_min=support_min,
-            support_max=support_max,
-        ) * self.value_mask[:, offset].to(value_logits.dtype)
-        return policy_loss, value_loss
-
-    @runtime_typed
-    def value_prefix_loss(
-        self,
-        logits: Float[Tensor, "batch support"],
-        target: Float[Tensor, "batch"],
-        *,
-        step: int,
-        support_min: int = -300,
-        support_max: int = 300,
-    ) -> Float[Tensor, "batch"]:
-        """Return masked categorical value-prefix loss for one action step."""
-        return self._scalar_loss(
-            logits,
-            target,
-            support_min=support_min,
-            support_max=support_max,
-        ) * self.action_mask[:, step].to(logits.dtype)
 
     @staticmethod
     @runtime_typed
@@ -315,17 +155,14 @@ class ReplayBatch:
             raise ValueError("epsilon must be positive")
         expected_size = support_max - support_min + 1
         if logits.ndim != target.ndim + 1 or logits.shape[:-1] != target.shape:
-            raise ValueError(
-                "logits must have target.shape followed by a support axis"
-            )
+            raise ValueError("logits must have target.shape followed by a support axis")
         if logits.shape[-1] != expected_size:
             raise ValueError(
                 f"expected {expected_size} support logits, got {logits.shape[-1]}"
             )
 
         transformed = (
-            target.sign() * (torch.sqrt(target.abs() + 1.0) - 1.0)
-            + epsilon * target
+            target.sign() * (torch.sqrt(target.abs() + 1.0) - 1.0) + epsilon * target
         )
         transformed = transformed.clamp(support_min, support_max) - support_min
         lower = transformed.floor().long()
@@ -344,87 +181,9 @@ class ReplayBatch:
         log_probabilities = functional.log_softmax(
             logits, dim=-1, dtype=reduction_dtype
         )
-        lower_loss = -log_probabilities.gather(
-            -1, lower.unsqueeze(-1)
-        ).squeeze(-1)
-        upper_loss = -log_probabilities.gather(
-            -1, upper.unsqueeze(-1)
-        ).squeeze(-1)
+        lower_loss = -log_probabilities.gather(-1, lower.unsqueeze(-1)).squeeze(-1)
+        upper_loss = -log_probabilities.gather(-1, upper.unsqueeze(-1)).squeeze(-1)
         return lower_weight * lower_loss + upper_weight * upper_loss
-
-    @runtime_typed
-    def value_prefix_targets(
-        self, *, lstm_horizon: int
-    ) -> Float[Tensor, "batch unroll"]:
-        """Build cumulative reward targets, resetting at each LSTM horizon."""
-        if self.rewards.shape != self.action_mask.shape:
-            raise ValueError("rewards and action_mask must have the same shape")
-        if self.rewards.ndim != 2:
-            raise ValueError("rewards must have shape (batch, unroll_steps)")
-        if lstm_horizon <= 0:
-            raise ValueError("lstm_horizon must be positive")
-
-        prefix = torch.zeros_like(self.rewards[:, 0])
-        targets: list[Tensor] = []
-        for step in range(self.rewards.shape[1]):
-            prefix = prefix + self.rewards[:, step] * self.action_mask[
-                :, step
-            ].to(self.rewards.dtype)
-            targets.append(prefix)
-            if (step + 1) % lstm_horizon == 0:
-                prefix = torch.zeros_like(prefix)
-        return torch.stack(targets, dim=1)
-
-    def to_reanalysis_device(
-        self,
-        device: torch.device | str,
-    ) -> ReplayBatch:
-        """Move only tensors required by target reanalysis to ``device``."""
-        shared = self.reanalysis_frames
-        device_shared = None if shared is None else shared.to(device)
-        if device_shared is None:
-            device_frames = self.frames.to(device)
-            device_bootstrap_frames = (
-                None
-                if self.value_bootstrap_frames is None
-                else self.value_bootstrap_frames.to(device)
-            )
-        else:
-            device_frames = device_shared[:, : self.frames.shape[1]]
-            bootstrap_count = (
-                0
-                if self.value_bootstrap_frames is None
-                else self.value_bootstrap_frames.shape[1]
-            )
-            bootstrap_offset = shared.shape[1] - bootstrap_count
-            device_bootstrap_frames = (
-                None
-                if bootstrap_count == 0
-                else device_shared[
-                    :, bootstrap_offset : bootstrap_offset + bootstrap_count
-                ]
-            )
-        updates: dict[str, Tensor | None] = {
-            "frames": device_frames,
-            "policy_targets": self.policy_targets.to(device),
-            "policy_mask": self.policy_mask.to(device),
-            "value_targets": self.value_targets.to(device),
-            "value_bootstrap_frames": device_bootstrap_frames,
-            "reanalysis_frames": device_shared,
-            "search_value_targets": (
-                None
-                if self.search_value_targets is None
-                else self.search_value_targets.to(device)
-            ),
-        }
-        for name in (
-            "value_bootstrap_values",
-            "value_bootstrap_discounts",
-            "value_bootstrap_mask",
-        ):
-            value = getattr(self, name)
-            updates[name] = None if value is None else value.to(device)
-        return replace(self, **updates)
 
     def without_value_bootstraps(self) -> ReplayBatch:
         """Drop direct-value reanalysis metadata."""
@@ -504,7 +263,6 @@ class ReplayBatch:
                 for value in (getattr(self, field.name),)
             }
         )
-
 
 
 __all__ = ["ReplayBatch"]

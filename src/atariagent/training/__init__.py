@@ -12,16 +12,14 @@ from .reanalysis import (
     make_target_state,
     replay_batch_nbytes,
 )
-from .target import ValueTargetNetwork
 
 __all__ = [
     "BatchWorker",
-    "MuZeroTrainer",
     "MuZeroTrainMetrics",
+    "MuZeroTrainer",
     "ReadyBatch",
     "ReadyReanalysis",
     "ReanalysisPipeline",
-    "ValueTargetNetwork",
     "make_target_state",
     "replay_batch_nbytes",
     "representative_checkpoint_path",

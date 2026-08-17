@@ -11,10 +11,8 @@ from atariagent.agent import (
 )
 from atariagent.agent import categorical_to_scalar as python_categorical_to_scalar
 from atariagent.models import native
-from atariagent.replay_batch import ReplayBatch
 from atariagent.search import MCTS as PythonMCTS
 from atariagent.search import MCTSConfig
-from atariagent.training import ValueTargetNetwork as PythonValueTargetNetwork
 
 CHECKPOINT = (
     Path(__file__).resolve().parents[1]
@@ -26,11 +24,28 @@ CHECKPOINT = (
 
 @pytest.fixture(scope="module")
 def checkpoint_networks():
-    native_models, checkpoint = native.load_inference_checkpoint(CHECKPOINT)
-    dynamics = python_models.DynamicsNetwork(18).eval()
-    prediction = python_models.PredictionNetwork(18).eval()
+    checkpoint = torch.load(CHECKPOINT, map_location="cpu", weights_only=True)
+    representation_state = checkpoint["representation"]
+    prediction_state = checkpoint["prediction"]
+    in_channels = int(representation_state["stem.0.weight"].shape[1])
+    action_space_size = int(prediction_state["policy.projection.3.weight"].shape[0])
+    value_support_size = int(prediction_state["value.projection.3.weight"].shape[0])
+    native_models = native.InferenceModels(
+        representation=native.RepresentationNetwork(in_channels),
+        dynamics=native.DynamicsNetwork(action_space_size),
+        prediction=native.PredictionNetwork(action_space_size, value_support_size),
+    )
+    native_models.representation.load_state_dict(representation_state)
+    native_models.dynamics.load_state_dict(checkpoint["dynamics"])
+    native_models.prediction.load_state_dict(prediction_state)
+    native_models.eval()
+    dynamics = python_models.DynamicsNetwork(action_space_size).eval()
+    prediction = python_models.PredictionNetwork(
+        action_space_size,
+        value_support_size=value_support_size,
+    ).eval()
     dynamics.load_state_dict(checkpoint["dynamics"])
-    prediction.load_state_dict(checkpoint["prediction"])
+    prediction.load_state_dict(prediction_state)
     return native_models, dynamics, prediction
 
 
@@ -88,7 +103,23 @@ def test_native_complete_mcts_matches_python(checkpoint_networks) -> None:
         evaluator=python_evaluator,
         rng=random.Random(0),
     )
-    native_mcts = native.make_mcts(native_models, 18, config, seed=0)
+    native_evaluator = native.BatchedNetworkEvaluator(
+        native_models.dynamics,
+        native_models.prediction,
+        18,
+    )
+    native_mcts = native.MCTS(
+        native_evaluator,
+        config.num_simulations,
+        config.discount,
+        config.pb_c_init,
+        config.pb_c_base,
+        config.value_delta_max,
+        config.dirichlet_alpha,
+        config.root_exploration_fraction,
+        config.value_prefix_horizon,
+        0,
+    )
     states = torch.randn(2, 64, 6, 6)
     with torch.inference_mode():
         policy_logits, value_logits = prediction(states)
@@ -110,70 +141,4 @@ def test_native_complete_mcts_matches_python(checkpoint_networks) -> None:
     np.testing.assert_array_equal(visit_counts.numpy(), expected.visit_counts)
     np.testing.assert_allclose(
         root_values.numpy(), expected.root_values, rtol=1e-6, atol=1e-6
-    )
-
-
-def test_native_value_target_matches_python_reanalysis() -> None:
-    python_representation = python_models.RepresentationNetwork(12).eval()
-    python_prediction = python_models.PredictionNetwork(1).eval()
-    python_dynamics = python_models.DynamicsNetwork(1).eval()
-    native_models = native.InferenceModels(
-        representation=native.RepresentationNetwork(12),
-        dynamics=native.DynamicsNetwork(1),
-        prediction=native.PredictionNetwork(1),
-    )
-    native_models.representation.load_state_dict(python_representation.state_dict())
-    native_models.dynamics.load_state_dict(python_dynamics.state_dict())
-    native_models.prediction.load_state_dict(python_prediction.state_dict())
-    native_models.eval()
-    config = MCTSConfig(
-        num_simulations=2,
-        root_exploration_fraction=0.0,
-    )
-    python_target = PythonValueTargetNetwork(
-        python_representation,
-        python_prediction,
-        dynamics=python_dynamics,
-        action_space_size=1,
-        mcts_config=config,
-        rng_seed=0,
-        chunk_size=4,
-    )
-    native_target = native.make_value_target(
-        native_models,
-        1,
-        config,
-        seed=0,
-        chunk_size=4,
-    )
-    batch = ReplayBatch(
-        frames=torch.randint(0, 256, (2, 5, 3, 96, 96), dtype=torch.uint8),
-        actions=torch.zeros(2, 1, 1, dtype=torch.long),
-        rewards=torch.zeros(2, 1),
-        policy_targets=torch.zeros(2, 2, 1),
-        value_targets=torch.randn(2, 2),
-        action_mask=torch.ones(2, 1, dtype=torch.bool),
-        policy_mask=torch.ones(2, 2, dtype=torch.bool),
-        value_mask=torch.ones(2, 2, dtype=torch.bool),
-        indices=torch.arange(2),
-        importance_weights=torch.ones(2),
-        value_bootstrap_frames=torch.randint(
-            0, 256, (2, 5, 3, 96, 96), dtype=torch.uint8
-        ),
-        value_bootstrap_values=torch.randn(2, 2),
-        value_bootstrap_discounts=torch.rand(2, 2),
-        value_bootstrap_mask=torch.ones(2, 2, dtype=torch.bool),
-    )
-
-    with torch.inference_mode():
-        expected = python_target.reanalyze_batch(batch)
-        actual = native_target.reanalyze_batch(batch, False, True)
-
-    torch.testing.assert_close(actual.value_targets, expected.value_targets)
-    torch.testing.assert_close(actual.policy_targets, expected.policy_targets)
-    assert actual.search_value_targets is not None
-    assert expected.search_value_targets is not None
-    torch.testing.assert_close(
-        actual.search_value_targets,
-        expected.search_value_targets,
     )
