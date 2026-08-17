@@ -94,7 +94,7 @@ loss:
   value_weight: 0.25
   reward_weight: 1.0
   consistency_enabled: true
-  consistency_weight: 2.0
+  consistency_weight: 5.0
 
 checkpoint:
   path: checkpoints/${environment_slug:${environment.id}}/muzero_latest.pt

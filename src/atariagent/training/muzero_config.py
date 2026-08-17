@@ -94,7 +94,7 @@ class LossConfig:
     value_weight: float = 0.25
     reward_weight: float = 1.0
     consistency_enabled: bool = True
-    consistency_weight: float = 2.0
+    consistency_weight: float = 5.0
 
 
 @dataclass

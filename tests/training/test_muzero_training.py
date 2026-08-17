@@ -142,7 +142,7 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
         metrics.policy_loss
         + 0.25 * metrics.value_loss
         + metrics.reward_loss
-        + 2.0 * metrics.consistency_loss
+        + 5.0 * metrics.consistency_loss
     )
     assert metrics.policy_loss > 0.0
     assert metrics.value_loss > 0.0

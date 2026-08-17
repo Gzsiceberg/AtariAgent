@@ -266,7 +266,7 @@ class MuZeroTrainer:
     targets. When a consistency network is supplied, recurrent dynamics states
     are aligned with stop-gradient representation states from the corresponding
     observations. The default Atari loss coefficients are policy 1, value 0.25,
-    value-prefix reward 1, and consistency 2.
+    value-prefix reward 1, and consistency 5.
     """
 
     def __init__(
@@ -287,7 +287,7 @@ class MuZeroTrainer:
         policy_weight: float = 1.0,
         value_weight: float = 0.25,
         reward_weight: float = 1.0,
-        consistency_weight: float = 2.0,
+        consistency_weight: float = 5.0,
         max_gradient_norm: float = 5.0,
         support_min: int = -300,
         support_max: int = 300,

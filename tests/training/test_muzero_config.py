@@ -27,7 +27,7 @@ def test_consistency_loss_uses_efficientzero_defaults() -> None:
     config = LossConfig()
 
     assert config.consistency_enabled
-    assert config.consistency_weight == pytest.approx(2.0)
+    assert config.consistency_weight == pytest.approx(5.0)
 
 
 def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
