@@ -148,6 +148,7 @@ def main() -> int:
     print(f"Mean:     {stats.mean:.3f}")
     print(f"Median:   {stats.median:.3f}")
     print(f"Std:      {stats.std:.3f}")
+    print(f"Max:      {max(stats.rewards):.3f}")
     return 0
 
 

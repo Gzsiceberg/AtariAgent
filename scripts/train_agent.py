@@ -527,7 +527,7 @@ def main(config: TrainAgentConfig) -> None:
                 "[bold blue]Evaluation complete[/bold blue] "
                 f"[dim]update={update:,} episodes={config.evaluation.episodes} "
                 f"mean={stats.mean:.2f} median={stats.median:.2f} "
-                f"std={stats.std:.2f}[/dim]"
+                f"std={stats.std:.2f} max={max(stats.rewards):.2f}[/dim]"
             )
 
         batch_worker = BatchWorker(
