@@ -223,7 +223,7 @@ def next_collection_vector_steps(
 
 
 def visit_softmax_temperature(trained_steps: int, total_steps: int) -> float:
-    """Return EfficientZero's schedule over online and offline updates."""
+    """Return EfficientZero V1's schedule over collection-phase updates."""
     if total_steps <= 0:
         raise ValueError("total_steps must be positive")
     if trained_steps < 0:

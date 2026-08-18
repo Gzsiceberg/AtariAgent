@@ -1,5 +1,6 @@
 import pytest
 import torch
+from torch.nn import functional
 
 from atariagent.data import Intensity, RandomShiftsAug, Transforms
 
@@ -20,13 +21,31 @@ def test_shift_preserves_shape_and_alignment_between_stacked_channels() -> None:
 
 
 def test_shift_uses_replication_padding() -> None:
+    images = torch.arange(2 * 3 * 5 * 7, dtype=torch.float32).reshape(
+        2, 3, 5, 7
+    )
+    pad = 4
     torch.manual_seed(0)
-    images = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])
 
-    shifted = RandomShiftsAug(pad=4)(images)
+    shifted = RandomShiftsAug(pad)(images)
 
-    assert shifted.shape == images.shape
-    assert set(shifted.flatten().tolist()) <= {1.0, 2.0, 3.0, 4.0}
+    torch.manual_seed(0)
+    padded = functional.pad(
+        images, (pad, pad, pad, pad), mode="replicate"
+    )
+    offsets = torch.randint(0, 2 * pad + 1, (images.shape[0], 2))
+    expected = torch.stack(
+        tuple(
+            padded[
+                index,
+                :,
+                row : row + images.shape[2],
+                column : column + images.shape[3],
+            ]
+            for index, (row, column) in enumerate(offsets.tolist())
+        )
+    )
+    torch.testing.assert_close(shifted, expected)
 
 
 def test_intensity_uses_one_clipped_multiplier_per_batch_item() -> None:

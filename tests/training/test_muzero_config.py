@@ -94,15 +94,15 @@ def test_collection_steps_stop_at_exact_transition_budget() -> None:
     assert next_collection_vector_steps(100_000, 100_000, 4, 100) == 0
 
 
-def test_visit_temperature_uses_complete_efficientzero_schedule() -> None:
-    total_steps = 120_000
+def test_visit_temperature_uses_efficientzero_v1_collection_schedule() -> None:
+    collection_steps = 100_000
 
-    assert visit_softmax_temperature(0, total_steps) == 1.0
-    assert visit_softmax_temperature(59_999, total_steps) == 1.0
-    assert visit_softmax_temperature(60_000, total_steps) == 0.5
-    assert visit_softmax_temperature(89_999, total_steps) == 0.5
-    assert visit_softmax_temperature(90_000, total_steps) == 0.25
-    assert visit_softmax_temperature(120_000, total_steps) == 0.25
+    assert visit_softmax_temperature(0, collection_steps) == 1.0
+    assert visit_softmax_temperature(49_999, collection_steps) == 1.0
+    assert visit_softmax_temperature(50_000, collection_steps) == 0.5
+    assert visit_softmax_temperature(74_999, collection_steps) == 0.5
+    assert visit_softmax_temperature(75_000, collection_steps) == 0.25
+    assert visit_softmax_temperature(100_000, collection_steps) == 0.25
 
 
 def test_visit_temperature_rejects_invalid_steps() -> None:

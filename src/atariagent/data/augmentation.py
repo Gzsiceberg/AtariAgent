@@ -10,7 +10,6 @@ from collections.abc import Sequence
 
 import torch
 from torch import Tensor, nn
-from torch.nn import functional
 
 
 class RandomShiftsAug(nn.Module):
@@ -31,24 +30,21 @@ class RandomShiftsAug(nn.Module):
             return inputs
 
         batch_size, _, height, width = inputs.shape
-        padded = functional.pad(
-            inputs,
-            (self.pad, self.pad, self.pad, self.pad),
-            mode="replicate",
-        )
         offsets = torch.randint(
-            0,
-            2 * self.pad + 1,
+            -self.pad,
+            self.pad + 1,
             (batch_size, 2),
             device=inputs.device,
         )
         rows = offsets[:, :1] + torch.arange(height, device=inputs.device)
         columns = offsets[:, 1:] + torch.arange(width, device=inputs.device)
+        rows = rows.clamp(0, height - 1)
+        columns = columns.clamp(0, width - 1)
         batch_indices = torch.arange(batch_size, device=inputs.device)[:, None, None]
 
-        # Index the channels-last view to select a different integer crop for
-        # each batch item without a Python loop or grid-sampling interpolation.
-        shifted = padded.permute(0, 2, 3, 1)[
+        # Clamping source coordinates is equivalent to cropping a
+        # replication-padded tensor, without materializing that padded image.
+        shifted = inputs.permute(0, 2, 3, 1)[
             batch_indices,
             rows[:, :, None],
             columns[:, None, :],

@@ -52,6 +52,7 @@ class _MuZeroUnroll(nn.Module):
         consistency_network: nn.Module | None,
         augmentation: Transforms | None,
         *,
+        observation_dtype: torch.dtype,
         unroll_steps: int,
         lstm_horizon: int,
         policy_weight: float,
@@ -68,6 +69,7 @@ class _MuZeroUnroll(nn.Module):
         self.prediction = prediction
         self.consistency_network = consistency_network
         self.augmentation = augmentation
+        self.observation_dtype = observation_dtype
         self.unroll_steps = unroll_steps
         self.lstm_horizon = lstm_horizon
         self.policy_weight = policy_weight
@@ -137,7 +139,7 @@ class _MuZeroUnroll(nn.Module):
             stack_size * channels,
             height,
             width,
-        ).float().div(255.0)
+        ).to(dtype=self.observation_dtype).div(255.0)
         if self.augmentation is not None:
             observations = self.augmentation(observations)
 
@@ -151,7 +153,7 @@ class _MuZeroUnroll(nn.Module):
             (frame_count - 1) * channels,
             height,
             width,
-        ).float().div(255.0)
+        ).to(dtype=self.observation_dtype).div(255.0)
         if self.augmentation is not None:
             target_sequence = self.augmentation(target_sequence)
         target_frames = target_sequence.reshape(
@@ -456,6 +458,9 @@ class MuZeroTrainer:
             prediction,
             consistency_network,
             self.transforms,
+            observation_dtype=(
+                torch.bfloat16 if precision == "bf16" else torch.float32
+            ),
             unroll_steps=unroll_steps,
             lstm_horizon=lstm_horizon,
             policy_weight=policy_weight,

@@ -592,7 +592,7 @@ def main(config: TrainMuZeroConfig) -> None:
                 # Temperature affects only rollout behavior/action selection;
                 # training targets always normalize the raw MCTS visit counts.
                 temperature = visit_softmax_temperature(
-                    update, total_updates
+                    update, config.training.steps
                 )
                 previous_transitions = worker.total_transitions
                 grouped = worker.run(
