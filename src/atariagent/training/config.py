@@ -135,6 +135,16 @@ class EvaluationConfig:
 
 
 @dataclass
+class WandbConfig:
+    """Optional Weights & Biases run settings."""
+
+    enabled: bool = True
+    project: str = "AtariAgent"
+    entity: str | None = None
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass
 class TrainAgentConfig:
     """Complete typed configuration for AtariAgent training."""
 
@@ -147,6 +157,7 @@ class TrainAgentConfig:
     loss: LossConfig = field(default_factory=LossConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    wandb: WandbConfig = field(default_factory=WandbConfig)
 
 
 def environment_slug(environment_id: str) -> str:
@@ -260,6 +271,7 @@ __all__ = [
     "SelfPlayConfig",
     "TrainAgentConfig",
     "TrainingConfig",
+    "WandbConfig",
     "checkpoint_path_for_environment",
     "environment_slug",
     "final_evaluation_max_episode_steps",

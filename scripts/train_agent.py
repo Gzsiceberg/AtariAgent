@@ -43,9 +43,11 @@ from atariagent.training import (
     ReadyBatch,
     ReanalysisPipeline,
     Trainer,
+    WandbLogger,
     make_target_state,
     representative_checkpoint_path,
     representative_checkpoint_updates,
+    wandb_run_name,
 )
 from atariagent.training.config import (
     TrainAgentConfig,
@@ -180,9 +182,10 @@ def save_checkpoint(
 def main(config: TrainAgentConfig) -> None:
     """Alternate self-play collection with updates sampled from replay."""
     start_time = datetime.now().astimezone().isoformat(timespec="seconds")
+    commit = repository_commit()
     log(
         "[bold cyan]AtariAgent launch[/bold cyan] "
-        f"[dim]commit={repository_commit()} start_time={start_time}[/dim]"
+        f"[dim]commit={commit} start_time={start_time}[/dim]"
     )
     if config.training.batch_size < 2:
         raise ValueError("batch_size must be at least 2 for batch normalization")
@@ -267,6 +270,10 @@ def main(config: TrainAgentConfig) -> None:
         raise ValueError("evaluation.episodes must be positive")
     if config.evaluation.enabled and config.evaluation.num_envs <= 0:
         raise ValueError("evaluation.num_envs must be positive")
+    if not isinstance(config.wandb.enabled, bool):
+        raise TypeError("wandb.enabled must be a boolean")
+    if config.wandb.enabled and not config.wandb.project.strip():
+        raise ValueError("wandb.project must not be empty when enabled")
     if config.self_play.num_envs <= 0:
         raise ValueError("self_play.num_envs must be positive")
     if config.self_play.search_algorithm not in {"puct", "mcts", "gumbel"}:
@@ -289,6 +296,8 @@ def main(config: TrainAgentConfig) -> None:
     environments: list[Environment] = []
     reanalysis_pipeline: ReanalysisPipeline | None = None
     batch_worker: BatchWorker | None = None
+    wandb_logger = WandbLogger()
+    wandb_exit_code = 1
 
     try:
         target_reanalysis_enabled = (
@@ -310,6 +319,15 @@ def main(config: TrainAgentConfig) -> None:
                 action_space_size,
                 config.self_play.num_simulations,
             )
+
+        resolved_config = OmegaConf.to_container(config, resolve=True)
+        if not isinstance(resolved_config, Mapping):
+            raise TypeError("resolved training config must be a mapping")
+        wandb_logger = WandbLogger.initialize(
+            config.wandb,
+            run_name=wandb_run_name(config.environment.id, commit),
+            run_config=resolved_config,
+        )
 
         image_channels = 1 if config.environment.grayscale else 3
         discount = config.training.discount ** config.environment.frame_skip
@@ -504,6 +522,7 @@ def main(config: TrainAgentConfig) -> None:
                 evaluation_records,
                 environment_id=config.environment.id,
             )
+            wandb_logger.log_evaluation(stats, update=update)
             log(
                 "[bold blue]Evaluation complete[/bold blue] "
                 f"[dim]update={update:,} episodes={config.evaluation.episodes} "
@@ -555,6 +574,7 @@ def main(config: TrainAgentConfig) -> None:
                 batch_worker.publish_weights(update, target_state)
 
             if update == 1 or update % config.training.log_every == 0:
+                wandb_logger.log_training(metrics, update=update)
                 progress_stats: dict[str, str] = {
                     # "loss": f"{metrics.loss:.3f}",
                     # "policy": f"{metrics.policy_loss:.3f}",
@@ -674,6 +694,15 @@ def main(config: TrainAgentConfig) -> None:
                     recent_stats = EvaluationStats.from_rewards(
                         tuple(recent_rewards)
                     )
+                    wandb_logger.log_self_play(
+                        recent_stats,
+                        recent_rewards=recent_rewards,
+                        latest_reward=completed_rewards[-1],
+                        transitions=worker.total_transitions,
+                        iteration=collection_iteration,
+                        new_episodes=len(completed_rewards),
+                        total_episodes=len(self_play_episode_rewards),
+                    )
                     log(
                         "[bold cyan]Self-play reward statistics"
                         "[/bold cyan] "
@@ -754,6 +783,7 @@ def main(config: TrainAgentConfig) -> None:
             "[bold green]Training complete[/bold green] "
             f"[dim]updates={update:,} checkpoint={config.checkpoint.path}[/dim]"
         )
+        wandb_exit_code = 0
     except Exception:
         for progress_name in ("self_play_progress", "training_progress"):
             progress = locals().get(progress_name)
@@ -774,6 +804,7 @@ def main(config: TrainAgentConfig) -> None:
                 reanalysis_pipeline.close()
             except Exception:
                 pass
+        wandb_logger.finish(exit_code=wandb_exit_code)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from .reanalysis import (
     make_target_state,
     replay_batch_nbytes,
 )
+from .wandb_logger import WandbLogger, wandb_run_name
 
 __all__ = [
     "BatchWorker",
@@ -20,8 +21,10 @@ __all__ = [
     "ReanalysisPipeline",
     "TrainMetrics",
     "Trainer",
+    "WandbLogger",
     "make_target_state",
     "replay_batch_nbytes",
     "representative_checkpoint_path",
     "representative_checkpoint_updates",
+    "wandb_run_name",
 ]

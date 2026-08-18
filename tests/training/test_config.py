@@ -4,6 +4,7 @@ from atariagent.training.config import (
     AugmentationConfig,
     LossConfig,
     TrainingConfig,
+    WandbConfig,
     checkpoint_path_for_environment,
     environment_slug,
     final_evaluation_max_episode_steps,
@@ -31,6 +32,15 @@ def test_augmentation_uses_efficientzero_atari_defaults() -> None:
     assert config.transforms == ["shift", "intensity"]
     assert config.shift_delta == 4
     assert config.intensity_scale == pytest.approx(0.05)
+
+
+def test_wandb_is_enabled_by_default() -> None:
+    config = WandbConfig()
+
+    assert config.enabled
+    assert config.project == "AtariAgent"
+    assert config.entity is None
+    assert config.tags == []
 
 
 def test_consistency_loss_uses_efficientzero_defaults() -> None:
