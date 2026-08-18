@@ -10,7 +10,7 @@ from atariagent.models import (
     RepresentationNetwork,
 )
 from atariagent.replay_batch import ReplayBatch
-from atariagent.search import MCTSConfig
+from atariagent.search import SearchConfig
 from atariagent.training.reanalysis import (
     ReanalysisPipeline,
     make_target_state,
@@ -48,14 +48,14 @@ def _pipeline(
     pipeline = ReanalysisPipeline(
         in_channels=4,
         action_space_size=2,
-        mcts_config=MCTSConfig(num_simulations=1),
+        search_config=SearchConfig(num_simulations=1),
         policy_chunk_size=4,
         cache_targets=True,
         rng_seed=3,
         support_min=-300,
         support_max=300,
         precision="fp32",
-        mcts_threads=1,
+        search_threads=1,
         prefetch_batches=prefetch_batches,
         timeout_seconds=timeout_seconds,
         target_update_interval=target_update_interval,
@@ -191,14 +191,14 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
         ReanalysisPipeline(
             in_channels=4,
             action_space_size=2,
-            mcts_config=MCTSConfig(num_simulations=1),
+            search_config=SearchConfig(num_simulations=1),
             policy_chunk_size=4,
             cache_targets=True,
             rng_seed=0,
             support_min=-300,
             support_max=300,
             precision="fp32",
-            mcts_threads=1,
+            search_threads=1,
             prefetch_batches=0,
             timeout_seconds=1.0,
             target_update_interval=200,

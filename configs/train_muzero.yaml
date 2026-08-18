@@ -3,7 +3,7 @@ defaults:
   - override hydra/job_logging: disabled
   - _self_
 
-seed: 0
+seed: 2
 
 environment:
   id: ALE/Asterix-v5
@@ -17,7 +17,12 @@ environment:
 self_play:
   num_envs: 4
   total_transitions: 100000
-  num_simulations: 50
+  # "gumbel" is EfficientZeroV2 top-m sequential halving; "puct" is conventional MCTS.
+  search_algorithm: gumbel
+  num_simulations: 16
+  num_top_actions: 4
+  c_visit: 50.0
+  c_scale: 0.1
   steps_per_iteration: 100
   trajectory_length: 400
   clip_rewards: true

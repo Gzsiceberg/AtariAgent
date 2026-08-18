@@ -13,7 +13,7 @@ import torch
 
 from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
 from atariagent.replay_batch import ReplayBatch
-from atariagent.search import MCTSConfig
+from atariagent.search import SearchConfig
 from atariagent.training import (
     MuZeroTrainer,
     ReanalysisPipeline,
@@ -71,7 +71,7 @@ def main() -> None:
     pipeline = ReanalysisPipeline(
         in_channels=4,
         action_space_size=3,
-        mcts_config=MCTSConfig(
+        search_config=SearchConfig(
             num_simulations=args.num_simulations,
             value_prefix_horizon=1,
         ),
@@ -81,7 +81,7 @@ def main() -> None:
         support_min=-300,
         support_max=300,
         precision="fp32",
-        mcts_threads=args.worker_threads,
+        search_threads=args.worker_threads,
         prefetch_batches=2,
         timeout_seconds=600.0,
         target_update_interval=200,

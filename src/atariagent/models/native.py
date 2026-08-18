@@ -9,10 +9,9 @@ from dataclasses import dataclass
 
 import torch
 
-from atariagent.search import MCTSConfig
+from atariagent.search import SearchConfig
 
 from ._models_native import (
-    MCTS,
     BatchedNetworkEvaluator,
     DynamicsNetwork,
     NativeReanalysisEngine,
@@ -21,11 +20,16 @@ from ._models_native import (
     RepresentationNetwork,
     ResidualBlock,
     RewardPredictionNetwork,
+    TreeSearch,
     ValueNetwork,
     ValueTargetNetwork,
     categorical_to_scalar,
-    set_mcts_num_threads,
+    set_tree_search_num_threads,
 )
+
+# Compatibility aliases for callers using the former native names.
+MCTS = TreeSearch
+set_mcts_num_threads = set_tree_search_num_threads
 
 
 @dataclass(frozen=True)
@@ -55,7 +59,7 @@ class InferenceModels:
 def make_value_target(
     models: InferenceModels,
     action_space_size: int,
-    config: MCTSConfig | None = None,
+    config: SearchConfig | None = None,
     *,
     seed: int = 0,
     support_min: int = -300,
@@ -64,7 +68,7 @@ def make_value_target(
     precision: str = "fp32",
 ) -> ValueTargetNetwork:
     """Compose native models into the fully C++ target-reanalysis stack."""
-    config = config or MCTSConfig()
+    config = config or SearchConfig()
     return ValueTargetNetwork(
         models.representation,
         models.prediction,
@@ -83,6 +87,10 @@ def make_value_target(
         config.root_exploration_fraction,
         config.value_prefix_horizon,
         seed,
+        config.search_algorithm,
+        config.num_top_actions,
+        config.c_visit,
+        config.c_scale,
     )
 
 
@@ -97,9 +105,11 @@ __all__ = [
     "RepresentationNetwork",
     "ResidualBlock",
     "RewardPredictionNetwork",
+    "TreeSearch",
     "ValueNetwork",
     "ValueTargetNetwork",
     "categorical_to_scalar",
     "make_value_target",
     "set_mcts_num_threads",
+    "set_tree_search_num_threads",
 ]

@@ -13,7 +13,7 @@ from time import perf_counter
 import torch
 
 from atariagent.agent import AtariAgent
-from atariagent.search import MCTSConfig
+from atariagent.search import SearchConfig
 from atariagent.search._mcts_native import set_num_threads
 from atariagent.typecheck import set_runtime_typechecking
 
@@ -53,11 +53,11 @@ def main() -> None:
     agent = AtariAgent(
         12,
         args.action_space_size,
-        mcts_config=MCTSConfig(
+        search_config=SearchConfig(
             num_simulations=args.num_simulations,
             value_prefix_horizon=5,
         ),
-        mcts_rng=random.Random(0),
+        search_rng=random.Random(0),
     ).to(device).eval()
     observations = torch.zeros(
         args.batch_size,

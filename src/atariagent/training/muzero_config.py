@@ -23,11 +23,15 @@ class EnvironmentConfig:
 
 @dataclass
 class SelfPlayConfig:
-    """Parallel self-play and MCTS settings."""
+    """Parallel self-play and tree-search settings."""
 
     num_envs: int = 4
     total_transitions: int = 100_000
-    num_simulations: int = 50
+    num_simulations: int = 16
+    search_algorithm: str = "gumbel"
+    num_top_actions: int = 4
+    c_visit: float = 50.0
+    c_scale: float = 0.1
     steps_per_iteration: int = 100
     trajectory_length: int = 400
     clip_rewards: bool = True
@@ -91,9 +95,7 @@ class AugmentationConfig:
     """EfficientZero image augmentation settings."""
 
     enabled: bool = True
-    transforms: list[str] = field(
-        default_factory=lambda: ["shift", "intensity"]
-    )
+    transforms: list[str] = field(default_factory=lambda: ["shift", "intensity"])
     shift_delta: int = 4
     intensity_scale: float = 0.05
 

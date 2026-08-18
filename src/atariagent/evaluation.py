@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-import json
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +13,7 @@ import torch
 from tqdm.auto import tqdm
 
 from .agent import AtariAgent
-from .search import MCTSConfig
+from .search import SearchConfig
 from .selfplay import Environment
 from .typecheck import runtime_typechecking_enabled, set_runtime_typechecking
 
@@ -102,13 +102,14 @@ def evaluate_agent(
     rewards = [0.0] * episodes
     environments: list[Environment] = []
     created_environments: list[Environment] = []
-    mcts_rng = getattr(getattr(agent, "mcts", None), "rng", None)
-    rng_state = mcts_rng.getstate() if mcts_rng is not None else None
+    search = getattr(agent, "search", getattr(agent, "mcts", None))
+    search_rng = getattr(search, "rng", None)
+    rng_state = search_rng.getstate() if search_rng is not None else None
     typechecking_was_enabled = runtime_typechecking_enabled()
-    if mcts_rng is not None:
-        mcts_rng.seed(seed)
+    if search_rng is not None:
+        search_rng.seed(seed)
     # Evaluation repeatedly executes the same validated model interfaces in a
-    # hot MCTS loop. Keep annotations, but avoid beartype/jaxtyping overhead.
+    # hot tree-search loop. Keep annotations, but avoid type-check overhead.
     set_runtime_typechecking(False)
     try:
         active_count = min(num_envs, episodes)
@@ -181,8 +182,8 @@ def evaluate_agent(
     finally:
         for environment in created_environments:
             environment.close()
-        if mcts_rng is not None:
-            mcts_rng.setstate(rng_state)
+        if search_rng is not None:
+            search_rng.setstate(rng_state)
         set_runtime_typechecking(typechecking_was_enabled)
 
     return EvaluationStats.from_rewards(tuple(rewards))
@@ -208,6 +209,10 @@ def load_agent_checkpoint(
         frame_stack = int(environment_config["frame_stack"])
         grayscale = bool(environment_config["grayscale"])
         num_simulations = int(self_play_config["num_simulations"])
+        search_algorithm = str(self_play_config.get("search_algorithm", "puct"))
+        num_top_actions = int(self_play_config.get("num_top_actions", 4))
+        c_visit = float(self_play_config.get("c_visit", 50.0))
+        c_scale = float(self_play_config.get("c_scale", 0.1))
         discount = float(training_config["discount"]) ** int(
             environment_config["frame_skip"]
         )
@@ -221,10 +226,14 @@ def load_agent_checkpoint(
     agent = AtariAgent(
         frame_stack * image_channels,
         action_space_size,
-        mcts_config=MCTSConfig(
+        search_config=SearchConfig(
             num_simulations=num_simulations,
             discount=discount,
             value_prefix_horizon=lstm_horizon,
+            search_algorithm=search_algorithm,
+            num_top_actions=num_top_actions,
+            c_visit=c_visit,
+            c_scale=c_scale,
         ),
     ).to(device)
     for key, network in (

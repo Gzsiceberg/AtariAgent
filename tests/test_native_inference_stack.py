@@ -11,8 +11,8 @@ from atariagent.agent import (
 )
 from atariagent.agent import categorical_to_scalar as python_categorical_to_scalar
 from atariagent.models import native
-from atariagent.search import MCTS as PythonMCTS
-from atariagent.search import MCTSConfig
+from atariagent.search import SearchConfig
+from atariagent.search import TreeSearch as PythonTreeSearch
 
 CHECKPOINT = (
     Path(__file__).resolve().parents[1]
@@ -32,9 +32,7 @@ def checkpoint_networks():
     value_support_size = int(prediction_state["value.projection.3.weight"].shape[0])
     dynamics_state = checkpoint["dynamics"]
     if "action_projection.weight" not in dynamics_state:
-        dynamics_state = python_models.DynamicsNetwork(
-            action_space_size
-        ).state_dict()
+        dynamics_state = python_models.DynamicsNetwork(action_space_size).state_dict()
     native_models = native.InferenceModels(
         representation=native.RepresentationNetwork(in_channels),
         dynamics=native.DynamicsNetwork(action_space_size),
@@ -89,12 +87,18 @@ def test_native_batched_evaluator_matches_python(checkpoint_networks) -> None:
     torch.testing.assert_close(actual[4], expected[4])
 
 
-def test_native_complete_mcts_matches_python(checkpoint_networks) -> None:
+@pytest.mark.parametrize("search_algorithm", ["puct", "gumbel"])
+def test_native_complete_tree_search_matches_python(
+    checkpoint_networks,
+    search_algorithm: str,
+) -> None:
     native_models, dynamics, prediction = checkpoint_networks
-    config = MCTSConfig(
+    config = SearchConfig(
         num_simulations=8,
         discount=0.9,
         value_prefix_horizon=3,
+        search_algorithm=search_algorithm,
+        num_top_actions=4,
     )
     python_evaluator = PythonBatchedNetworkEvaluator(
         dynamics,
@@ -103,7 +107,7 @@ def test_native_complete_mcts_matches_python(checkpoint_networks) -> None:
         value_decoder=python_categorical_to_scalar,
         value_prefix_decoder=python_categorical_to_scalar,
     )
-    python_mcts = PythonMCTS(
+    python_search = PythonTreeSearch(
         config,
         evaluator=python_evaluator,
         rng=random.Random(0),
@@ -113,7 +117,7 @@ def test_native_complete_mcts_matches_python(checkpoint_networks) -> None:
         native_models.prediction,
         18,
     )
-    native_mcts = native.MCTS(
+    native_search = native.TreeSearch(
         native_evaluator,
         config.num_simulations,
         config.discount,
@@ -124,18 +128,22 @@ def test_native_complete_mcts_matches_python(checkpoint_networks) -> None:
         config.root_exploration_fraction,
         config.value_prefix_horizon,
         0,
+        config.search_algorithm,
+        config.num_top_actions,
+        config.c_visit,
+        config.c_scale,
     )
     states = torch.randn(2, 64, 6, 6)
     with torch.inference_mode():
         policy_logits, value_logits = prediction(states)
         root_values = python_categorical_to_scalar(value_logits)
-        expected = python_mcts.search_batch(
+        expected = python_search.search_batch(
             states,
             root_values,
             policy_logits,
             _deterministic_ties=True,
         )
-        visit_counts, root_values = native_mcts.search_batch(
+        search_output, root_values = native_search.search_batch(
             states,
             root_values,
             policy_logits,
@@ -143,7 +151,12 @@ def test_native_complete_mcts_matches_python(checkpoint_networks) -> None:
             True,
         )
 
-    np.testing.assert_array_equal(visit_counts.numpy(), expected.visit_counts)
+    if search_algorithm == "gumbel":
+        np.testing.assert_allclose(
+            search_output.numpy(), expected.policy_targets, rtol=1e-5, atol=1e-6
+        )
+    else:
+        np.testing.assert_array_equal(search_output.numpy(), expected.visit_counts)
     np.testing.assert_allclose(
         root_values.numpy(), expected.root_values, rtol=1e-6, atol=1e-6
     )

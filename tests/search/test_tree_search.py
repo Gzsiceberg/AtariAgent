@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import math
 import random
+from dataclasses import dataclass, field
 
 import numpy as np
 import pytest
 import torch
 
-from atariagent.search import MCTS, MCTSConfig, PackedEvaluator
+from atariagent.search import (
+    MCTS,
+    MCTSConfig,
+    PackedEvaluator,
+    SearchConfig,
+    TreeSearch,
+)
 
 
 class PackedScalarEvaluator:
@@ -119,13 +125,13 @@ def _expand(node: _Node, evaluation: _Evaluation) -> None:
 
 
 def _reference_batch(
-    config: MCTSConfig,
+    config: SearchConfig,
     roots: list[_Evaluation],
     *,
     seed: int,
     add_exploration_noise: bool,
 ) -> tuple[list[tuple[int, ...]], list[float]]:
-    """Independent Python MCTS retained only for native differential tests."""
+    """Independent Python PUCT retained only for native differential tests."""
     rng = random.Random(seed)
     nodes: list[_Node] = []
     stats: list[_Stats] = []
@@ -136,15 +142,13 @@ def _reference_batch(
         root.value_sum = evaluation.value
         if add_exploration_noise:
             samples = [
-                rng.gammavariate(config.dirichlet_alpha, 1.0)
-                for _ in root.children
+                rng.gammavariate(config.dirichlet_alpha, 1.0) for _ in root.children
             ]
             total = sum(samples)
             for child, sample in zip(root.children, samples, strict=True):
                 child.prior = (
-                    (1.0 - config.root_exploration_fraction) * child.prior
-                    + config.root_exploration_fraction * sample / total
-                )
+                    1.0 - config.root_exploration_fraction
+                ) * child.prior + config.root_exploration_fraction * sample / total
         nodes.append(root)
         stats.append(_Stats(config.value_delta_max))
 
@@ -174,13 +178,11 @@ def _reference_batch(
                     if node is root and visited_q
                     else 0.0
                     if node is root
-                    else (parent_mean_q + sum(visited_q))
-                    / (1 + len(visited_q))
+                    else (parent_mean_q + sum(visited_q)) / (1 + len(visited_q))
                 )
                 child_visits = sum(child.visits for child in node.children)
                 exploration_scale = config.pb_c_init + math.log(
-                    (child_visits + config.pb_c_base + 1.0)
-                    / config.pb_c_base
+                    (child_visits + config.pb_c_base + 1.0) / config.pb_c_base
                 )
                 sqrt_visits = math.sqrt(child_visits)
                 scores = []
@@ -235,13 +237,13 @@ def _reference_batch(
     )
 
 
-def _make_mcts(
-    config: MCTSConfig | None = None,
+def _make_search(
+    config: SearchConfig | None = None,
     *,
     seed: int = 0,
     evaluator: PackedEvaluator | None = None,
-) -> MCTS:
-    return MCTS(
+) -> TreeSearch:
+    return TreeSearch(
         config,
         evaluator=evaluator or PackedScalarEvaluator(),
         rng=random.Random(seed),
@@ -249,22 +251,29 @@ def _make_mcts(
 
 
 def test_default_config_matches_efficientzero_search() -> None:
-    config = MCTSConfig()
+    config = SearchConfig()
     assert config.num_simulations == 50
     assert config.value_prefix_horizon == 5
+    assert config.search_algorithm == "puct"
 
 
-def test_mcts_requires_a_packed_evaluator() -> None:
+def test_legacy_mcts_names_and_mode_remain_compatible() -> None:
+    assert MCTS is TreeSearch
+    assert MCTSConfig is SearchConfig
+    assert SearchConfig(search_algorithm="mcts").search_algorithm == "puct"
+
+
+def test_tree_search_requires_a_packed_evaluator() -> None:
     with pytest.raises(TypeError, match="PackedEvaluator"):
-        MCTS(evaluator=object())  # type: ignore[arg-type]
+        TreeSearch(evaluator=object())  # type: ignore[arg-type]
 
 
 def test_search_batch_evaluates_all_roots_once_per_simulation() -> None:
     evaluator = PackedScalarEvaluator()
-    config = MCTSConfig(num_simulations=4)
+    config = SearchConfig(num_simulations=4)
     states = torch.arange(3, dtype=torch.float32).unsqueeze(1)
 
-    results = _make_mcts(config, evaluator=evaluator).search_batch(
+    results = _make_search(config, evaluator=evaluator).search_batch(
         states,
         torch.zeros(3),
         torch.zeros(3, 3),
@@ -277,7 +286,7 @@ def test_search_batch_evaluates_all_roots_once_per_simulation() -> None:
 
 @pytest.mark.parametrize("seed", [0, 1, 4, 17])
 def test_native_batch_search_matches_python_reference(seed: int) -> None:
-    config = MCTSConfig(
+    config = SearchConfig(
         num_simulations=20,
         discount=0.9,
         value_prefix_horizon=3,
@@ -286,7 +295,7 @@ def test_native_batch_search_matches_python_reference(seed: int) -> None:
     root_values = torch.arange(3, dtype=torch.float32)
     root_logits = torch.tensor([[1.0, 0.2, -0.7]]).expand(3, -1)
 
-    native = _make_mcts(config, seed=seed).search_batch(
+    native = _make_search(config, seed=seed).search_batch(
         states,
         root_values,
         root_logits,
@@ -295,10 +304,7 @@ def test_native_batch_search_matches_python_reference(seed: int) -> None:
     )
     counts, values = _reference_batch(
         config,
-        [
-            _Evaluation(index, 0.0, float(index), [1.0, 0.2, -0.7])
-            for index in range(3)
-        ],
+        [_Evaluation(index, 0.0, float(index), [1.0, 0.2, -0.7]) for index in range(3)],
         seed=seed,
         add_exploration_noise=True,
     )
@@ -311,8 +317,27 @@ def test_native_batch_search_matches_python_reference(seed: int) -> None:
     )
 
 
+def test_gumbel_materialization_uses_direct_action_and_improved_policy() -> None:
+    config = SearchConfig(
+        num_simulations=8,
+        search_algorithm="gumbel",
+        num_top_actions=2,
+    )
+    mcts = _make_search(config)
+    batch = mcts.search_batch(
+        torch.zeros(1, 1),
+        torch.zeros(1),
+        torch.tensor([[1.0, 0.2, -0.7]]),
+    )
+    result = mcts.materialize_results(batch, temperature=10.0)[0]
+
+    assert result.action == int(batch.selected_actions[0])
+    np.testing.assert_array_equal(result.policy_target, batch.policy_targets[0])
+    np.testing.assert_array_equal(result.target_policy, batch.policy_targets[0])
+
+
 def test_temperature_zero_returns_greedy_action() -> None:
-    mcts = _make_mcts(MCTSConfig(num_simulations=7))
+    mcts = _make_search(SearchConfig(num_simulations=7))
     batch = mcts.search_batch(
         torch.zeros(2, 1),
         torch.zeros(2),
@@ -342,8 +367,8 @@ def test_module_evaluator_uses_inference_and_eval_modes() -> None:
             return super().evaluate_tensors(states, actions, hidden, resets)
 
     evaluator = ModuleEvaluator()
-    _make_mcts(
-        MCTSConfig(num_simulations=2),
+    _make_search(
+        SearchConfig(num_simulations=2),
         evaluator=evaluator,
     ).search_batch(
         torch.zeros(2, 1),

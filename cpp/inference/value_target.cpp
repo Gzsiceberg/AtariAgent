@@ -69,7 +69,11 @@ ValueTargetNetwork::ValueTargetNetwork(
     double dirichlet_alpha,
     double root_exploration_fraction,
     std::int64_t value_prefix_horizon,
-    std::uint64_t seed
+    std::uint64_t seed,
+    const std::string& search_algorithm,
+    std::int64_t num_top_actions,
+    double c_visit,
+    double c_scale
 )
     : representation_(std::move(representation)),
       prediction_(std::move(prediction)),
@@ -90,7 +94,7 @@ ValueTargetNetwork::ValueTargetNetwork(
     evaluator_ = std::make_shared<BatchedNetworkEvaluator>(
         dynamics_, prediction_, action_space_size, support_min_, support_max_
     );
-    mcts_ = std::make_shared<MCTS>(
+    search_ = std::make_shared<TreeSearch>(
         evaluator_,
         num_simulations,
         discount,
@@ -100,7 +104,11 @@ ValueTargetNetwork::ValueTargetNetwork(
         dirichlet_alpha,
         root_exploration_fraction,
         value_prefix_horizon,
-        seed + 1
+        seed + 1,
+        search_algorithm,
+        num_top_actions,
+        c_visit,
+        c_scale
     );
     eval();
 }
@@ -231,15 +239,17 @@ ValueTargetNetwork::policy_reanalysis_outputs(
         torch::Tensor values = categorical_to_scalar(
             value_logits.to(torch::kFloat32), support_min_, support_max_
         );
-        auto [visits, root_values] = mcts_->search_batch(
+        auto [search_output, root_values] = search_->search_batch(
             states,
             values,
             policy_logits,
             add_exploration_noise,
             deterministic_ties
         );
-        torch::Tensor policies = visits.to(torch::kFloat32);
-        policies.div_(policies.sum(1, true));
+        torch::Tensor policies = search_output.to(torch::kFloat32);
+        if (!search_->uses_gumbel()) {
+            policies.div_(policies.sum(1, true));
+        }
         policy_chunks.push_back(std::move(policies));
         value_chunks.push_back(std::move(root_values));
     }

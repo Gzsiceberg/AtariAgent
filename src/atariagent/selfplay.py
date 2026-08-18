@@ -152,16 +152,11 @@ class GameTrajectory:
 
     @property
     def target_policy(self) -> tuple[tuple[float, ...], ...]:
-        """Normalized MCTS visit distributions used as policy targets."""
-        distributions = []
-        for result in self.search_results:
-            total_visits = sum(result.visit_counts)
-            if total_visits <= 0:
-                raise ValueError("MCTS search result must contain visited actions")
-            distributions.append(
-                tuple(count / total_visits for count in result.visit_counts)
-            )
-        return tuple(distributions)
+        """Search-improved distributions used as policy targets."""
+        return tuple(
+            tuple(float(probability) for probability in result.target_policy)
+            for result in self.search_results
+        )
 
     @property
     def root_values(self) -> tuple[float, ...]:

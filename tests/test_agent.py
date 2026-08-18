@@ -10,7 +10,7 @@ from atariagent import (
     BatchedNetworkEvaluator,
     categorical_to_scalar,
 )
-from atariagent.search import MCTS, MCTSConfig
+from atariagent.search import SearchConfig, TreeSearch
 
 
 class RecordingRepresentation(nn.Module):
@@ -79,11 +79,12 @@ def test_agent_batches_root_and_recurrent_network_inference() -> None:
         representation_network=representation,
         dynamics_network=dynamics,
         prediction_network=prediction,
-        mcts_config=MCTSConfig(num_simulations=simulations),
+        search_config=SearchConfig(num_simulations=simulations),
     )
 
     output = agent(torch.randn(3, 4, 96, 96, requires_grad=True))
 
+    assert agent.mcts is agent.search
     assert isinstance(agent.recurrent_evaluator, BatchedNetworkEvaluator)
     assert not hasattr(agent, "_evaluate_recurrent_batch")
     assert isinstance(output, AgentOutput)
@@ -114,8 +115,8 @@ def test_packed_policy_search_returns_complete_results() -> None:
     values = categorical_to_scalar(value_logits)
     simulations = 7
 
-    mcts = MCTS(
-        MCTSConfig(num_simulations=simulations),
+    mcts = TreeSearch(
+        SearchConfig(num_simulations=simulations),
         evaluator=evaluator,
         rng=random.Random(4),
     )
@@ -142,7 +143,7 @@ def test_agent_runs_every_network_without_gradients_and_in_eval_mode() -> None:
         representation_network=representation,
         dynamics_network=dynamics,
         prediction_network=prediction,
-        mcts_config=MCTSConfig(num_simulations=2),
+        search_config=SearchConfig(num_simulations=2),
     )
     assert agent.training
 
@@ -162,7 +163,7 @@ def test_agent_prepares_raw_atari_observations() -> None:
         representation_network=representation,
         dynamics_network=RecordingDynamics(),
         prediction_network=RecordingPrediction(3),
-        mcts_config=MCTSConfig(num_simulations=1),
+        search_config=SearchConfig(num_simulations=1),
     )
     observations = [
         np.full((4, 96, 96, 3), 255, dtype=np.uint8),
@@ -183,7 +184,7 @@ def test_agent_accepts_one_unbatched_observation() -> None:
         representation_network=RecordingRepresentation(),
         dynamics_network=RecordingDynamics(),
         prediction_network=RecordingPrediction(3),
-        mcts_config=MCTSConfig(num_simulations=1),
+        search_config=SearchConfig(num_simulations=1),
     )
 
     output = agent(torch.randn(4, 96, 96))

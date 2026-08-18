@@ -1,11 +1,13 @@
 """Planning and tree-search utilities."""
 
-from .mcts import (
+from .tree_search import (
     MCTS,
     MCTSConfig,
     PackedEvaluator,
     SearchBatchResult,
+    SearchConfig,
     SearchResult,
+    TreeSearch,
 )
 
 __all__ = [
@@ -13,5 +15,7 @@ __all__ = [
     "MCTSConfig",
     "PackedEvaluator",
     "SearchBatchResult",
+    "SearchConfig",
     "SearchResult",
+    "TreeSearch",
 ]

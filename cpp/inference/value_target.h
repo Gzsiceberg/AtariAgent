@@ -1,6 +1,6 @@
 #pragma once
 
-#include "inference/mcts.h"
+#include "inference/tree_search.h"
 #include "models/representation.h"
 #include "models/state_dict.h"
 
@@ -32,7 +32,11 @@ public:
         double dirichlet_alpha = 0.3,
         double root_exploration_fraction = 0.25,
         std::int64_t value_prefix_horizon = 5,
-        std::uint64_t seed = 0
+        std::uint64_t seed = 0,
+        const std::string& search_algorithm = "puct",
+        std::int64_t num_top_actions = 4,
+        double c_visit = 50.0,
+        double c_scale = 0.1
     );
 
     void eval();
@@ -76,7 +80,7 @@ private:
     std::shared_ptr<PredictionNetworkImpl> prediction_;
     std::shared_ptr<DynamicsNetworkImpl> dynamics_;
     std::shared_ptr<BatchedNetworkEvaluator> evaluator_;
-    std::shared_ptr<MCTS> mcts_;
+    std::shared_ptr<TreeSearch> search_;
     std::int64_t support_min_;
     std::int64_t support_max_;
     std::int64_t chunk_size_;

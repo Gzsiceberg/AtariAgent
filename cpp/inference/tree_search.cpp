@@ -1,4 +1,4 @@
-#include "inference/mcts.h"
+#include "inference/tree_search.h"
 
 #include "native_search.h"
 
@@ -17,19 +17,19 @@
 namespace atariagent::native {
 namespace {
 
-std::atomic<int> mcts_num_threads{1};
+std::atomic<int> tree_search_num_threads{1};
 
-int configured_mcts_num_threads() {
-    return mcts_num_threads.load(std::memory_order_relaxed);
+int configured_tree_search_num_threads() {
+    return tree_search_num_threads.load(std::memory_order_relaxed);
 }
 
 }  // namespace
 
-int set_mcts_num_threads(int count) {
+int set_tree_search_num_threads(int count) {
     if (count <= 0) {
         throw std::invalid_argument("thread count must be positive");
     }
-    mcts_num_threads.store(count, std::memory_order_relaxed);
+    tree_search_num_threads.store(count, std::memory_order_relaxed);
 #ifdef ATARIAGENT_HAS_OPENMP
     omp_set_num_threads(count);
     return count;
@@ -38,7 +38,7 @@ int set_mcts_num_threads(int count) {
 #endif
 }
 
-MCTS::MCTS(
+TreeSearch::TreeSearch(
     std::shared_ptr<BatchedNetworkEvaluator> evaluator,
     std::int64_t num_simulations,
     double discount,
@@ -48,7 +48,11 @@ MCTS::MCTS(
     double dirichlet_alpha,
     double root_exploration_fraction,
     std::int64_t value_prefix_horizon,
-    std::uint64_t seed
+    std::uint64_t seed,
+    const std::string& search_algorithm,
+    std::int64_t num_top_actions,
+    double c_visit,
+    double c_scale
 )
     : evaluator_(std::move(evaluator)),
       num_simulations_(num_simulations),
@@ -59,9 +63,21 @@ MCTS::MCTS(
       dirichlet_alpha_(dirichlet_alpha),
       root_exploration_fraction_(root_exploration_fraction),
       value_prefix_horizon_(value_prefix_horizon),
+      search_algorithm_(
+          search_algorithm == "gumbel"
+              ? SearchAlgorithm::Gumbel
+              : SearchAlgorithm::Puct
+      ),
+      num_top_actions_(num_top_actions),
+      c_visit_(c_visit),
+      c_scale_(c_scale),
       rng_(seed) {
     if (!evaluator_) {
         throw std::invalid_argument("evaluator must not be null");
+    }
+    if (search_algorithm != "puct" && search_algorithm != "mcts"
+        && search_algorithm != "gumbel") {
+        throw std::invalid_argument("search_algorithm must be puct or gumbel");
     }
     if (num_simulations_ <= 0 || value_prefix_horizon_ <= 0) {
         throw std::invalid_argument(
@@ -73,11 +89,22 @@ MCTS::MCTS(
         || dirichlet_alpha_ <= 0.0
         || root_exploration_fraction_ < 0.0
         || root_exploration_fraction_ > 1.0) {
-        throw std::invalid_argument("invalid MCTS configuration");
+        throw std::invalid_argument("invalid tree-search configuration");
+    }
+    if (search_algorithm_ == SearchAlgorithm::Gumbel
+        && (num_top_actions_ < 2 || num_top_actions_ > evaluator_->action_space_size()
+            || (num_top_actions_ & (num_top_actions_ - 1)) != 0
+            || num_simulations_ < num_top_actions_
+            || c_visit_ < 0.0 || c_scale_ <= 0.0)) {
+        throw std::invalid_argument("invalid Gumbel search configuration");
     }
 }
 
-std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
+bool TreeSearch::uses_gumbel() const {
+    return search_algorithm_ == SearchAlgorithm::Gumbel;
+}
+
+std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
     const torch::Tensor& root_states,
     const torch::Tensor& root_values,
     const torch::Tensor& root_policy_logits,
@@ -110,7 +137,10 @@ std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
     evaluator_->validate_policy(root_policy_logits, root_count);
     if (root_count == 0) {
         return {
-            torch::empty({0, action_count}, torch::kInt32),
+            torch::empty(
+                {0, action_count},
+                uses_gumbel() ? torch::kFloat32 : torch::kInt32
+            ),
             torch::empty({0}, torch::kFloat32),
         };
     }
@@ -135,7 +165,7 @@ std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
         for (std::int64_t action = 0; action < action_count; ++action) {
             priors[action] = prior_data[root][action];
         }
-        if (add_exploration_noise) {
+        if (add_exploration_noise && !uses_gumbel()) {
             add_root_noise(priors);
         }
         trees.emplace_back(
@@ -147,7 +177,12 @@ std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
             static_cast<int>(value_prefix_horizon_),
             static_cast<float>(value_delta_max_),
             rng_(),
-            deterministic_ties
+            deterministic_ties,
+            search_algorithm_,
+            static_cast<int>(num_top_actions_),
+            static_cast<float>(c_visit_),
+            static_cast<float>(c_scale_),
+            add_exploration_noise
         );
     }
 
@@ -206,7 +241,7 @@ std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
     using namespace torch::indexing;
     for (std::int64_t simulation = 0; simulation < num_simulations_; ++simulation) {
 #pragma omp parallel for if(root_count >= 32) schedule(static) \
-    num_threads(configured_mcts_num_threads())
+    num_threads(configured_tree_search_num_threads())
         for (std::int64_t root = 0; root < root_count; ++root) {
             auto [slot, action, reset] = trees[root].traverse(
                 static_cast<float>(pb_c_base_),
@@ -251,7 +286,7 @@ std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
             );
         }
 #pragma omp parallel for if(root_count >= 32) schedule(static) \
-    num_threads(configured_mcts_num_threads())
+    num_threads(configured_tree_search_num_threads())
         for (std::int64_t root = 0; root < root_count; ++root) {
             const float* row = output_data + root * output_stride;
             trees[root].expand_and_back_up(
@@ -263,27 +298,38 @@ std::tuple<torch::Tensor, torch::Tensor> MCTS::search_batch(
         }
     }
 
-    torch::Tensor visits = torch::empty(
+    torch::Tensor search_output = torch::empty(
         {root_count, action_count},
-        torch::TensorOptions().dtype(torch::kInt32)
+        torch::TensorOptions().dtype(
+            uses_gumbel() ? torch::kFloat32 : torch::kInt32
+        )
     );
     torch::Tensor values = torch::empty(
         {root_count}, torch::TensorOptions().dtype(torch::kFloat32)
     );
-    auto* visits_data = visits.data_ptr<std::int32_t>();
+    auto* visits_data = uses_gumbel()
+        ? nullptr
+        : search_output.data_ptr<std::int32_t>();
+    auto* policy_data = uses_gumbel()
+        ? search_output.data_ptr<float>()
+        : nullptr;
     auto* roots_data = values.data_ptr<float>();
 #pragma omp parallel for if(root_count >= 32) schedule(static) \
-    num_threads(configured_mcts_num_threads())
+    num_threads(configured_tree_search_num_threads())
     for (std::int64_t root = 0; root < root_count; ++root) {
-        trees[root].write_visit_counts(
-            visits_data + root * action_count
-        );
+        if (uses_gumbel()) {
+            trees[root].write_policy(policy_data + root * action_count);
+        } else {
+            trees[root].write_visit_counts(
+                visits_data + root * action_count
+            );
+        }
         roots_data[root] = trees[root].root_value();
     }
-    return {visits, values};
+    return {search_output, values};
 }
 
-void MCTS::add_root_noise(std::vector<float>& priors) {
+void TreeSearch::add_root_noise(std::vector<float>& priors) {
     std::gamma_distribution<double> distribution(dirichlet_alpha_, 1.0);
     std::vector<double> samples(priors.size());
     double total = 0.0;

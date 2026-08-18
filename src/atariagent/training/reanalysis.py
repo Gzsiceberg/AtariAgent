@@ -16,10 +16,10 @@ from atariagent.models.native import (
     PredictionNetwork,
     RepresentationNetwork,
     make_value_target,
-    set_mcts_num_threads,
+    set_tree_search_num_threads,
 )
 from atariagent.replay_batch import ReplayBatch
-from atariagent.search import MCTSConfig
+from atariagent.search import SearchConfig
 
 Precision = Literal["fp32", "bf16"]
 TargetState = dict[str, Tensor]
@@ -90,14 +90,14 @@ class ReanalysisPipeline:
         *,
         in_channels: int,
         action_space_size: int,
-        mcts_config: MCTSConfig,
+        search_config: SearchConfig,
         policy_chunk_size: int,
         cache_targets: bool,
         rng_seed: int,
         support_min: int,
         support_max: int,
         precision: Precision,
-        mcts_threads: int,
+        search_threads: int,
         prefetch_batches: int,
         timeout_seconds: float,
         target_update_interval: int,
@@ -105,10 +105,10 @@ class ReanalysisPipeline:
     ) -> None:
         if isinstance(cache_targets, bool) is False:
             raise TypeError("cache_targets must be a boolean")
-        if isinstance(mcts_threads, bool) or not isinstance(mcts_threads, int):
-            raise TypeError("mcts_threads must be an integer")
-        if mcts_threads <= 0:
-            raise ValueError("mcts_threads must be positive")
+        if isinstance(search_threads, bool) or not isinstance(search_threads, int):
+            raise TypeError("search_threads must be an integer")
+        if search_threads <= 0:
+            raise ValueError("search_threads must be positive")
         if isinstance(prefetch_batches, bool) or not isinstance(prefetch_batches, int):
             raise TypeError("prefetch_batches must be an integer")
         if prefetch_batches <= 0:
@@ -121,7 +121,7 @@ class ReanalysisPipeline:
             raise TypeError("target_update_interval must be an integer")
         if target_update_interval <= 0:
             raise ValueError("target_update_interval must be positive")
-        set_mcts_num_threads(mcts_threads)
+        set_tree_search_num_threads(search_threads)
 
         self.device = torch.device(
             device
@@ -142,7 +142,7 @@ class ReanalysisPipeline:
         self.target = make_value_target(
             models,
             action_space_size,
-            mcts_config,
+            search_config,
             seed=rng_seed,
             support_min=support_min,
             support_max=support_max,

@@ -1,7 +1,7 @@
 #include <torch/extension.h>
 
 #include "inference/evaluator.h"
-#include "inference/mcts.h"
+#include "inference/tree_search.h"
 #include "inference/value_target.h"
 #include "models/dynamics.h"
 #include "models/prediction.h"
@@ -52,10 +52,12 @@ void add_inference_module_methods(
 PYBIND11_MODULE(_models_native, module) {
     module.doc() = "Inference-only LibTorch implementations of AtariAgent";
     module.def(
-        "set_mcts_num_threads",
-        &set_mcts_num_threads,
+        "set_tree_search_num_threads",
+        &set_tree_search_num_threads,
         py::arg("count")
     );
+    module.attr("set_mcts_num_threads") =
+        module.attr("set_tree_search_num_threads");
 
     auto residual = py::class_<ResidualBlockImpl, std::shared_ptr<ResidualBlockImpl>>(
         module, "ResidualBlock"
@@ -222,8 +224,11 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("batch_size")
         );
 
-    auto mcts = py::class_<MCTS, std::shared_ptr<MCTS>>(module, "MCTS");
-    mcts
+    auto tree_search = py::class_<
+        TreeSearch,
+        std::shared_ptr<TreeSearch>
+    >(module, "TreeSearch");
+    tree_search
         .def(
             py::init<
                 std::shared_ptr<BatchedNetworkEvaluator>,
@@ -235,7 +240,11 @@ PYBIND11_MODULE(_models_native, module) {
                 double,
                 double,
                 std::int64_t,
-                std::uint64_t
+                std::uint64_t,
+                const std::string&,
+                std::int64_t,
+                double,
+                double
             >(),
             py::arg("evaluator"),
             py::arg("num_simulations") = 50,
@@ -246,17 +255,22 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("dirichlet_alpha") = 0.3,
             py::arg("root_exploration_fraction") = 0.25,
             py::arg("value_prefix_horizon") = 5,
-            py::arg("seed") = 0
+            py::arg("seed") = 0,
+            py::arg("search_algorithm") = "puct",
+            py::arg("num_top_actions") = 4,
+            py::arg("c_visit") = 50.0,
+            py::arg("c_scale") = 0.1
         )
         .def(
             "search_batch",
-            &MCTS::search_batch,
+            &TreeSearch::search_batch,
             py::arg("root_states"),
             py::arg("root_values"),
             py::arg("root_policy_logits"),
             py::arg("add_exploration_noise") = false,
             py::arg("deterministic_ties") = false
         );
+    module.attr("MCTS") = module.attr("TreeSearch");
 
     auto target = py::class_<
         ValueTargetNetwork,
@@ -281,7 +295,11 @@ PYBIND11_MODULE(_models_native, module) {
                 double,
                 double,
                 std::int64_t,
-                std::uint64_t
+                std::uint64_t,
+                const std::string&,
+                std::int64_t,
+                double,
+                double
             >(),
             py::arg("representation"),
             py::arg("prediction"),
@@ -299,7 +317,11 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("dirichlet_alpha") = 0.3,
             py::arg("root_exploration_fraction") = 0.25,
             py::arg("value_prefix_horizon") = 5,
-            py::arg("seed") = 0
+            py::arg("seed") = 0,
+            py::arg("search_algorithm") = "puct",
+            py::arg("num_top_actions") = 4,
+            py::arg("c_visit") = 50.0,
+            py::arg("c_scale") = 0.1
         )
         .def("eval", [](ValueTargetNetwork& self) -> ValueTargetNetwork& {
             self.eval();

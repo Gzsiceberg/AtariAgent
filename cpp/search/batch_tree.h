@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace atariagent::native {
 
@@ -24,7 +25,12 @@ public:
         int value_prefix_horizon,
         float minimum_delta,
         std::uint64_t seed,
-        bool deterministic_ties
+        bool deterministic_ties,
+        const std::string& search_algorithm = "puct",
+        int num_top_actions = 4,
+        float c_visit = 50.0F,
+        float c_scale = 0.1F,
+        bool use_gumbel_noise = true
     );
     ~BatchTree();
 
@@ -39,6 +45,8 @@ public:
         FloatArray policy_logits
     );
     pybind11::array_t<std::int32_t> visit_counts_array() const;
+    pybind11::array_t<float> policy_array() const;
+    pybind11::array_t<std::int64_t> selected_actions_array() const;
     pybind11::array_t<float> root_values_array() const;
 
 private:

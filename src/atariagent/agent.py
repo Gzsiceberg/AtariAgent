@@ -1,4 +1,4 @@
-"""Batched EfficientZero agent for selecting actions with MCTS."""
+"""Batched EfficientZero agent for selecting actions with tree search."""
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -13,7 +13,7 @@ import torch
 from torch import Tensor, nn
 
 from .models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
-from .search import MCTS, MCTSConfig, SearchResult
+from .search import SearchConfig, SearchResult, TreeSearch
 
 
 AtariObservation: TypeAlias = NDArray[np.uint8]
@@ -134,7 +134,7 @@ class AgentOutput:
 
 
 class BatchedNetworkEvaluator:
-    """Evaluate MCTS leaves with batched dynamics and prediction networks."""
+    """Evaluate tree-search leaves with batched dynamics and prediction networks."""
 
     def __init__(
         self,
@@ -168,7 +168,7 @@ class BatchedNetworkEvaluator:
         value_prefix_hidden: RewardHidden,
         reset_value_prefix: Tensor | None = None,
     ) -> tuple[Tensor, RewardHidden, Tensor, Tensor, Tensor]:
-        """Evaluate packed MCTS leaves without per-root Python objects."""
+        """Evaluate packed search leaves without per-root Python objects."""
         batch_size = states.shape[0]
         if actions.shape != (batch_size, 1):
             raise ValueError("actions must have shape (batch_size, 1)")
@@ -217,7 +217,7 @@ class BatchedNetworkEvaluator:
         device: torch.device,
         dtype: torch.dtype,
     ) -> RewardHidden:
-        """Allocate one packed zero recurrent state for native MCTS."""
+        """Allocate one packed zero recurrent state for native search."""
         hidden = torch.zeros(
             1, batch_size, self.hidden_size, device=device, dtype=dtype
         )
@@ -225,9 +225,9 @@ class BatchedNetworkEvaluator:
 
 
 class AtariAgent(nn.Module):
-    """Use EfficientZero networks and batched MCTS to choose Atari actions.
+    """Use EfficientZero networks and batched tree search for Atari actions.
 
-    Root observations are encoded and predicted in one batch. Each MCTS
+    Root observations are encoded and predicted in one batch. Each search
     simulation also evaluates one selected leaf per environment in one
     dynamics/prediction batch. Network execution is always performed with
     inference mode enabled and batch-normalization layers in evaluation mode.
@@ -241,14 +241,18 @@ class AtariAgent(nn.Module):
         representation_network: nn.Module | None = None,
         dynamics_network: nn.Module | None = None,
         prediction_network: nn.Module | None = None,
-        mcts_config: MCTSConfig | None = None,
-        mcts_rng: random.Random | None = None,
+        search_config: SearchConfig | None = None,
+        search_rng: random.Random | None = None,
         value_decoder: ScalarDecoder = categorical_to_scalar,
         value_prefix_decoder: ScalarDecoder = categorical_to_scalar,
+        mcts_rng: random.Random | None = None,
     ) -> None:
         super().__init__()
         if action_space_size <= 0:
             raise ValueError("action_space_size must be positive")
+        if search_rng is not None and mcts_rng is not None:
+            raise ValueError("provide search_rng or mcts_rng, not both")
+        search_rng = search_rng if search_rng is not None else mcts_rng
         self.action_space_size = action_space_size
         self.representation_network = (
             representation_network
@@ -274,11 +278,12 @@ class AtariAgent(nn.Module):
             value_decoder=self.value_decoder,
             value_prefix_decoder=self.value_prefix_decoder,
         )
-        self.mcts = MCTS(
-            mcts_config,
+        self.search = TreeSearch(
+            search_config,
             evaluator=self.recurrent_evaluator,
-            rng=mcts_rng,
+            rng=search_rng,
         )
+        self.mcts = self.search  # Backward-compatible attribute alias.
 
     def forward(
         self,
@@ -287,7 +292,7 @@ class AtariAgent(nn.Module):
         add_exploration_noise: bool = False,
         temperature: float = 0.0,
     ) -> AgentOutput:
-        """Return one MCTS-selected action and search result per observation."""
+        """Return one search-selected action and result per observation."""
         return self.act(
             observations,
             add_exploration_noise=add_exploration_noise,
@@ -318,13 +323,13 @@ class AtariAgent(nn.Module):
                 "value_decoder",
             )
 
-            search_batch = self.mcts.search_batch(
+            search_batch = self.search.search_batch(
                 states,
                 values,
                 policy_logits,
                 add_exploration_noise=add_exploration_noise,
             )
-            search_results = self.mcts.materialize_results(
+            search_results = self.search.materialize_results(
                 search_batch,
                 temperature=temperature,
             )

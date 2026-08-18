@@ -26,6 +26,11 @@ PYBIND11_MODULE(_mcts_native, module) {
                 int,
                 float,
                 std::uint64_t,
+                bool,
+                const std::string&,
+                int,
+                float,
+                float,
                 bool
             >(),
             py::arg("root_priors"),
@@ -36,7 +41,12 @@ PYBIND11_MODULE(_mcts_native, module) {
             py::arg("value_prefix_horizon"),
             py::arg("minimum_delta"),
             py::arg("seed"),
-            py::arg("deterministic_ties") = false
+            py::arg("deterministic_ties") = false,
+            py::arg("search_algorithm") = "puct",
+            py::arg("num_top_actions") = 4,
+            py::arg("c_visit") = 50.0F,
+            py::arg("c_scale") = 0.1F,
+            py::arg("use_gumbel_noise") = true
         )
         .def(
             "traverse_arrays",
@@ -53,5 +63,7 @@ PYBIND11_MODULE(_mcts_native, module) {
             py::arg("policy_logits")
         )
         .def("visit_counts_array", &BatchTree::visit_counts_array)
+        .def("policy_array", &BatchTree::policy_array)
+        .def("selected_actions_array", &BatchTree::selected_actions_array)
         .def("root_values_array", &BatchTree::root_values_array);
 }

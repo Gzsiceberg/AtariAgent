@@ -31,7 +31,7 @@ from atariagent.evaluation import (
     write_evaluation_history,
 )
 from atariagent.models import ConsistencyNetwork
-from atariagent.search import MCTSConfig
+from atariagent.search import SearchConfig
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
     BatchWorker,
@@ -246,6 +246,8 @@ def main(config: TrainMuZeroConfig) -> None:
         raise ValueError("evaluation.num_envs must be positive")
     if config.self_play.num_envs <= 0:
         raise ValueError("self_play.num_envs must be positive")
+    if config.self_play.search_algorithm not in {"puct", "mcts", "gumbel"}:
+        raise ValueError("self_play.search_algorithm must be puct or gumbel")
     if config.self_play.total_transitions <= 0:
         raise ValueError("self_play.total_transitions must be positive")
     if config.self_play.steps_per_iteration <= 0:
@@ -282,12 +284,16 @@ def main(config: TrainMuZeroConfig) -> None:
         agent = AtariAgent(
             config.environment.frame_stack * image_channels,
             action_space_size,
-            mcts_config=MCTSConfig(
+            search_config=SearchConfig(
                 num_simulations=config.self_play.num_simulations,
                 discount=discount,
                 value_prefix_horizon=config.training.lstm_horizon,
+                search_algorithm=config.self_play.search_algorithm,
+                num_top_actions=config.self_play.num_top_actions,
+                c_visit=config.self_play.c_visit,
+                c_scale=config.self_play.c_scale,
             ),
-            mcts_rng=random.Random(config.seed),
+            search_rng=random.Random(config.seed),
         ).to(device)
         consistency_network = (
             ConsistencyNetwork().to(device)
@@ -352,7 +358,7 @@ def main(config: TrainMuZeroConfig) -> None:
             reanalysis_pipeline = ReanalysisPipeline(
                 in_channels=config.environment.frame_stack * image_channels,
                 action_space_size=action_space_size,
-                mcts_config=agent.mcts.config,
+                search_config=agent.search.config,
                 policy_chunk_size=(
                     config.training.policy_reanalysis_chunk_size
                 ),
@@ -361,7 +367,7 @@ def main(config: TrainMuZeroConfig) -> None:
                 support_min=-300,
                 support_max=300,
                 precision=config.training.precision,
-                mcts_threads=config.training.reanalysis_worker_num_threads,
+                search_threads=config.training.reanalysis_worker_num_threads,
                 prefetch_batches=(
                     config.training.reanalysis_prefetch_batches
                 ),
@@ -580,6 +586,7 @@ def main(config: TrainMuZeroConfig) -> None:
             clip_rewards=config.self_play.clip_rewards,
             add_exploration_noise=config.self_play.add_exploration_noise,
         ) as worker:
+            search_mode = agent.search.config.search_algorithm.upper()
             while worker.total_transitions < config.self_play.total_transitions:
                 collection_iteration += 1
                 vector_steps = next_collection_vector_steps(
@@ -589,8 +596,8 @@ def main(config: TrainMuZeroConfig) -> None:
                     config.self_play.steps_per_iteration,
                 )
                 warming_up = len(replay) < minimum_replay_size
-                # Temperature affects only rollout behavior/action selection;
-                # training targets always normalize the raw MCTS visit counts.
+                # Temperature affects PUCT rollout actions only. Gumbel uses
+                # its direct sequential-halving action and improved policy.
                 temperature = visit_softmax_temperature(
                     update, config.training.steps
                 )
@@ -611,7 +618,7 @@ def main(config: TrainMuZeroConfig) -> None:
                     "added": insertion.added_transitions,
                     "replay": f"{len(replay)}/{replay.max_transitions}",
                     "temperature": f"{temperature:.2f}",
-                    "mode": "MCTS",
+                    "mode": search_mode,
                 }
                 if self_play_episode_rewards:
                     recent_stats = EvaluationStats.from_rewards(
@@ -645,7 +652,7 @@ def main(config: TrainMuZeroConfig) -> None:
                         f"min={min(recent_rewards):.2f} "
                         f"max={max(recent_rewards):.2f} "
                         f"latest={completed_rewards[-1]:.2f} "
-                        "mode=MCTS[/dim]"
+                        f"mode={search_mode}[/dim]"
                     )
                 if warming_up and len(replay) >= minimum_replay_size:
                     log(

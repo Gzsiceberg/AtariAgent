@@ -8,6 +8,11 @@
 
 namespace atariagent::native {
 
+enum class SearchAlgorithm {
+    Puct,
+    Gumbel,
+};
+
 class MinMaxStats {
 public:
     explicit MinMaxStats(float minimum_delta);
@@ -49,7 +54,12 @@ public:
         int value_prefix_horizon,
         float minimum_delta,
         std::uint64_t seed,
-        bool deterministic_ties
+        bool deterministic_ties,
+        SearchAlgorithm algorithm = SearchAlgorithm::Puct,
+        int num_top_actions = 4,
+        float c_visit = 50.0F,
+        float c_scale = 0.1F,
+        bool use_gumbel_noise = true
     );
 
     std::tuple<int, int, bool> traverse(float pb_c_base, float pb_c_init);
@@ -60,6 +70,8 @@ public:
         std::span<const float> policy_logits
     );
     void write_visit_counts(std::int32_t* output) const;
+    void write_policy(float* output) const;
+    int selected_action() const;
     float root_value() const;
 
 private:
@@ -97,6 +109,12 @@ private:
         float pb_c_base,
         float pb_c_init
     );
+    int select_gumbel_child(int node_index);
+    float mixed_value(int node_index) const;
+    std::vector<float> transformed_completed_q(int node_index) const;
+    std::vector<float> improved_policy(int node_index) const;
+    void initialize_gumbel_candidates();
+    void advance_gumbel_phase();
     void back_up(float leaf_value);
     void rebuild_min_max();
 
@@ -106,6 +124,17 @@ private:
     MinMaxStats stats_;
     std::mt19937_64 rng_;
     bool deterministic_ties_;
+    SearchAlgorithm algorithm_;
+    int num_simulations_;
+    int num_top_actions_;
+    float c_visit_;
+    float c_scale_;
+    int completed_simulations_ = 0;
+    int current_num_top_actions_ = 0;
+    int phase_visit_threshold_ = 0;
+    int used_phase_visits_ = 0;
+    std::vector<float> gumbels_;
+    std::vector<int> selected_root_actions_;
     std::vector<SearchNode> nodes_;
     std::vector<int> path_;
     std::vector<int> min_max_stack_;

@@ -3,7 +3,6 @@
 #include "native_search.h"
 
 #include <cmath>
-#include <random>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
@@ -28,7 +27,12 @@ public:
         int value_prefix_horizon,
         float minimum_delta,
         std::uint64_t seed,
-        bool deterministic_ties
+        bool deterministic_ties,
+        const std::string& search_algorithm,
+        int num_top_actions,
+        float c_visit,
+        float c_scale,
+        bool use_gumbel_noise
     ) {
         if (root_priors.ndim() != 2
             || root_values.ndim() != 1
@@ -56,11 +60,21 @@ public:
             throw std::invalid_argument("value prefix horizon must be positive");
         }
 
+        SearchAlgorithm algorithm;
+        if (search_algorithm == "puct" || search_algorithm == "mcts") {
+            algorithm = SearchAlgorithm::Puct;
+        } else if (search_algorithm == "gumbel") {
+            algorithm = SearchAlgorithm::Gumbel;
+        } else {
+            throw std::invalid_argument(
+                "search_algorithm must be puct or gumbel"
+            );
+        }
+
         const auto priors_data = root_priors.unchecked<2>();
         const auto values_data = root_values.unchecked<1>();
         const auto prefixes_data = root_value_prefixes.unchecked<1>();
         roots_.reserve(static_cast<std::size_t>(root_count));
-        std::mt19937_64 seed_generator(seed);
         for (py::ssize_t index = 0; index < root_count; ++index) {
             if (!std::isfinite(values_data(index))
                 || !std::isfinite(prefixes_data(index))) {
@@ -84,8 +98,13 @@ public:
                 discount,
                 value_prefix_horizon,
                 minimum_delta,
-                seed_generator(),
-                deterministic_ties
+                seed + static_cast<std::uint64_t>(index),
+                deterministic_ties,
+                algorithm,
+                num_top_actions,
+                c_visit,
+                c_scale,
+                use_gumbel_noise
             );
         }
     }
@@ -175,6 +194,33 @@ public:
         return result;
     }
 
+    py::array_t<float> policy_array() const {
+        py::array_t<float> result({
+            static_cast<py::ssize_t>(roots_.size()),
+            static_cast<py::ssize_t>(action_count_),
+        });
+        auto output = result.mutable_unchecked<2>();
+        for (py::ssize_t index = 0;
+             index < static_cast<py::ssize_t>(roots_.size());
+             ++index) {
+            roots_[index].write_policy(&output(index, 0));
+        }
+        return result;
+    }
+
+    py::array_t<std::int64_t> selected_actions_array() const {
+        py::array_t<std::int64_t> result(
+            static_cast<py::ssize_t>(roots_.size())
+        );
+        auto output = result.mutable_unchecked<1>();
+        for (py::ssize_t index = 0;
+             index < static_cast<py::ssize_t>(roots_.size());
+             ++index) {
+            output(index) = roots_[index].selected_action();
+        }
+        return result;
+    }
+
     py::array_t<float> root_values_array() const {
         py::array_t<float> result(static_cast<py::ssize_t>(roots_.size()));
         auto output = result.mutable_unchecked<1>();
@@ -200,7 +246,12 @@ BatchTree::BatchTree(
     int value_prefix_horizon,
     float minimum_delta,
     std::uint64_t seed,
-    bool deterministic_ties
+    bool deterministic_ties,
+    const std::string& search_algorithm,
+    int num_top_actions,
+    float c_visit,
+    float c_scale,
+    bool use_gumbel_noise
 )
     : impl_(std::make_unique<Impl>(
           std::move(root_priors),
@@ -211,7 +262,12 @@ BatchTree::BatchTree(
           value_prefix_horizon,
           minimum_delta,
           seed,
-          deterministic_ties
+          deterministic_ties,
+          search_algorithm,
+          num_top_actions,
+          c_visit,
+          c_scale,
+          use_gumbel_noise
       )) {}
 
 BatchTree::~BatchTree() = default;
@@ -236,6 +292,14 @@ void BatchTree::expand_and_back_up_arrays(
 
 py::array_t<std::int32_t> BatchTree::visit_counts_array() const {
     return impl_->visit_counts_array();
+}
+
+py::array_t<float> BatchTree::policy_array() const {
+    return impl_->policy_array();
+}
+
+py::array_t<std::int64_t> BatchTree::selected_actions_array() const {
+    return impl_->selected_actions_array();
 }
 
 py::array_t<float> BatchTree::root_values_array() const {

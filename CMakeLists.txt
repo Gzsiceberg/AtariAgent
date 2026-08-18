@@ -91,7 +91,7 @@ pybind11_add_module(
         cpp/models/dynamics.cpp
         cpp/models/prediction.cpp
         cpp/inference/evaluator.cpp
-        cpp/inference/mcts.cpp
+        cpp/inference/tree_search.cpp
         cpp/inference/value_target.cpp
         cpp/reanalysis/cache.cpp
         cpp/reanalysis/engine.cpp

@@ -1,20 +1,22 @@
 #pragma once
 
 #include "inference/evaluator.h"
+#include "native_search.h"
 
 #include <cstdint>
 #include <memory>
 #include <random>
+#include <string>
 #include <tuple>
 #include <vector>
 
 namespace atariagent::native {
 
-int set_mcts_num_threads(int count);
+int set_tree_search_num_threads(int count);
 
-class MCTS {
+class TreeSearch {
 public:
-    MCTS(
+    TreeSearch(
         std::shared_ptr<BatchedNetworkEvaluator> evaluator,
         std::int64_t num_simulations = 50,
         double discount = 0.997,
@@ -24,7 +26,11 @@ public:
         double dirichlet_alpha = 0.3,
         double root_exploration_fraction = 0.25,
         std::int64_t value_prefix_horizon = 5,
-        std::uint64_t seed = 0
+        std::uint64_t seed = 0,
+        const std::string& search_algorithm = "puct",
+        std::int64_t num_top_actions = 4,
+        double c_visit = 50.0,
+        double c_scale = 0.1
     );
 
     std::tuple<torch::Tensor, torch::Tensor> search_batch(
@@ -34,6 +40,8 @@ public:
         bool add_exploration_noise = false,
         bool deterministic_ties = false
     );
+
+    bool uses_gumbel() const;
 
 private:
     void add_root_noise(std::vector<float>& priors);
@@ -47,6 +55,10 @@ private:
     double dirichlet_alpha_;
     double root_exploration_fraction_;
     std::int64_t value_prefix_horizon_;
+    SearchAlgorithm search_algorithm_;
+    std::int64_t num_top_actions_;
+    double c_visit_;
+    double c_scale_;
     std::mt19937_64 rng_;
 };
 

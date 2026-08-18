@@ -13,7 +13,7 @@ import torch
 
 from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
 from atariagent.replay_batch import ReplayBatch
-from atariagent.search import MCTSConfig
+from atariagent.search import SearchConfig
 from atariagent.training import ReanalysisPipeline, make_target_state
 
 
@@ -74,7 +74,7 @@ def benchmark_depth(depth: int, args: argparse.Namespace, batch: ReplayBatch):
     pipeline = ReanalysisPipeline(
         in_channels=12,
         action_space_size=args.action_space_size,
-        mcts_config=MCTSConfig(
+        search_config=SearchConfig(
             num_simulations=args.num_simulations,
             value_prefix_horizon=5,
         ),
@@ -84,7 +84,7 @@ def benchmark_depth(depth: int, args: argparse.Namespace, batch: ReplayBatch):
         support_min=-300,
         support_max=300,
         precision=args.precision,
-        mcts_threads=args.worker_threads,
+        search_threads=args.worker_threads,
         prefetch_batches=depth,
         timeout_seconds=600.0,
         target_update_interval=200,

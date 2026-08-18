@@ -319,19 +319,20 @@ class FIFOReplayBuffer:
         actions = np.ascontiguousarray(np.asarray(trajectory.actions, dtype=np.int64))
         rewards64 = np.asarray(trajectory.rewards, dtype=np.float64)
         rewards = np.ascontiguousarray(rewards64, dtype=np.float32)
-        visit_counts = np.asarray(
-            [result.visit_counts for result in trajectory.search_results],
-            dtype=np.float32,
+        policy_targets = np.ascontiguousarray(
+            np.asarray(
+                [
+                    result.target_policy
+                    for result in trajectory.search_results
+                ],
+                dtype=np.float32,
+            )
         )
-        if visit_counts.shape != (
+        if policy_targets.shape != (
             trajectory.stored_transition_count,
             action_space_size,
         ):
             raise ValueError("policy targets have an invalid shape")
-        visit_totals = visit_counts.sum(axis=1, keepdims=True)
-        if np.any(visit_totals <= 0.0):
-            raise ValueError("MCTS search result must contain visited actions")
-        policy_targets = np.ascontiguousarray(visit_counts / visit_totals)
         root_values64 = np.fromiter(
             (result.root_value for result in trajectory.search_results),
             dtype=np.float64,
