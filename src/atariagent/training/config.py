@@ -71,10 +71,9 @@ class TrainingConfig:
     batch_worker_timeout_seconds: float = 600.0
     reanalysis_timeout_seconds: float = 600.0
     reanalysis_worker_num_threads: int = 4
-    target_update_interval_start: int = 200
-    target_update_interval_end: int = 800
-    target_update_interval_ramp_steps: int = 10_000
-    target_update_interval_quantum: int = 100
+    target_update_interval: int = 1_000
+    initial_target_update_interval: int = 200
+    initial_target_update_steps: int = 1_000
     discount: float = 0.997
     learning_rate: float = 0.2
     momentum: float = 0.9
@@ -177,74 +176,33 @@ def final_evaluation_max_episode_steps(frame_skip: int) -> int:
     return FINAL_EVALUATION_RAW_FRAMES // frame_skip
 
 
-def target_network_update_interval(
+def target_network_update_due(
     update: int,
     *,
-    start: int,
-    end: int,
-    ramp_steps: int,
-    quantum: int,
-) -> int:
-    """Return the quantized target-copy interval at ``update``."""
+    interval: int,
+    initial_interval: int,
+    initial_steps: int,
+) -> bool:
+    """Return whether the delayed target network should be hard-copied."""
     for value, name in (
         (update, "update"),
-        (start, "start"),
-        (end, "end"),
-        (ramp_steps, "ramp_steps"),
-        (quantum, "quantum"),
+        (interval, "interval"),
+        (initial_interval, "initial_interval"),
+        (initial_steps, "initial_steps"),
     ):
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"{name} must be an integer")
     if update < 0:
         raise ValueError("update must be non-negative")
-    if start <= 0 or end <= 0 or ramp_steps <= 0 or quantum <= 0:
-        raise ValueError("target update schedule values must be positive")
-    if end < start:
-        raise ValueError("end must be greater than or equal to start")
-    if start % quantum != 0 or end % quantum != 0:
-        raise ValueError("start and end must be divisible by quantum")
-    if update >= ramp_steps:
-        return end
-
-    # Round the exact linear interpolation to the nearest quantum using
-    # integer arithmetic, avoiding Python's ties-to-even round behavior.
-    numerator = start * ramp_steps + (end - start) * update
-    denominator = ramp_steps
-    quantum_units = (
-        2 * numerator + quantum * denominator
-    ) // (2 * quantum * denominator)
-    return min(max(quantum_units * quantum, start), end)
-
-
-def target_network_update_steps(
-    total_updates: int,
-    *,
-    start: int,
-    end: int,
-    ramp_steps: int,
-    quantum: int,
-) -> tuple[int, ...]:
-    """Return all scheduled target-copy updates through ``total_updates``."""
-    if isinstance(total_updates, bool) or not isinstance(total_updates, int):
-        raise TypeError("total_updates must be an integer")
-    if total_updates < 0:
-        raise ValueError("total_updates must be non-negative")
-
-    updates: list[int] = []
-    previous_update = 0
-    while True:
-        interval = target_network_update_interval(
-            previous_update,
-            start=start,
-            end=end,
-            ramp_steps=ramp_steps,
-            quantum=quantum,
-        )
-        next_update = previous_update + interval
-        if next_update > total_updates:
-            return tuple(updates)
-        updates.append(next_update)
-        previous_update = next_update
+    if interval <= 0 or initial_interval <= 0:
+        raise ValueError("target update intervals must be positive")
+    if initial_steps < 0:
+        raise ValueError("initial_steps must be non-negative")
+    if update == 0:
+        return False
+    if update <= initial_steps:
+        return update % initial_interval == 0
+    return (update - initial_steps) % interval == 0
 
 
 def next_collection_vector_steps(
@@ -307,7 +265,6 @@ __all__ = [
     "final_evaluation_max_episode_steps",
     "next_collection_vector_steps",
     "register_train_agent_config",
-    "target_network_update_interval",
-    "target_network_update_steps",
+    "target_network_update_due",
     "visit_softmax_temperature",
 ]

@@ -50,7 +50,7 @@ from atariagent.training.config import (
     final_evaluation_max_episode_steps,
     next_collection_vector_steps,
     register_train_agent_config,
-    target_network_update_steps,
+    target_network_update_due,
     visit_softmax_temperature,
 )
 from atariagent.typecheck import set_runtime_typechecking
@@ -195,15 +195,17 @@ def main(config: TrainAgentConfig) -> None:
         and not config.training.use_target_network_reanalysis
     ):
         raise ValueError("search value targets require target reanalysis")
-    scheduled_target_updates = frozenset(
-        target_network_update_steps(
-            config.training.steps + config.training.final_steps,
-            start=config.training.target_update_interval_start,
-            end=config.training.target_update_interval_end,
-            ramp_steps=config.training.target_update_interval_ramp_steps,
-            quantum=config.training.target_update_interval_quantum,
-        )
-    )
+    for value, name in (
+        (config.training.target_update_interval, "target_update_interval"),
+        (
+            config.training.initial_target_update_interval,
+            "initial_target_update_interval",
+        ),
+    ):
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+    if config.training.initial_target_update_steps < 0:
+        raise ValueError("initial_target_update_steps must be non-negative")
     if config.training.policy_reanalysis_chunk_size <= 0:
         raise ValueError("policy_reanalysis_chunk_size must be positive")
     if not isinstance(config.training.cache_reanalyzed_targets, bool):
@@ -382,7 +384,10 @@ def main(config: TrainAgentConfig) -> None:
                     config.training.reanalysis_prefetch_batches
                 ),
                 timeout_seconds=config.training.reanalysis_timeout_seconds,
-                target_update_interval=config.training.target_update_interval_end,
+                target_update_interval=max(
+                    config.training.target_update_interval,
+                    config.training.initial_target_update_interval,
+                ),
                 device=device,
             )
             reanalysis_pipeline.publish_weights(
@@ -509,7 +514,14 @@ def main(config: TrainAgentConfig) -> None:
             batch_worker.complete(ready, metrics.priorities)
 
             update += 1
-            if update in scheduled_target_updates:
+            if target_network_update_due(
+                update,
+                interval=config.training.target_update_interval,
+                initial_interval=(
+                    config.training.initial_target_update_interval
+                ),
+                initial_steps=config.training.initial_target_update_steps,
+            ):
                 target_state = make_target_state(
                     agent.representation_network,
                     agent.prediction_network,
