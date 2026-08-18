@@ -34,7 +34,7 @@ set_mcts_num_threads = set_tree_search_num_threads
 
 @dataclass(frozen=True)
 class InferenceModels:
-    """The three checkpointed networks used by MuZero inference."""
+    """The three checkpointed networks used by AtariAgent inference."""
 
     representation: RepresentationNetwork
     dynamics: DynamicsNetwork

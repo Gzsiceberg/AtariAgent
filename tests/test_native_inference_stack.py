@@ -14,12 +14,10 @@ from atariagent.models import native
 from atariagent.search import SearchConfig
 from atariagent.search import TreeSearch as PythonTreeSearch
 
-CHECKPOINT = (
-    Path(__file__).resolve().parents[1]
-    / "checkpoints"
-    / "Alien-v5"
-    / "muzero_latest.pt"
+CHECKPOINT_DIRECTORY = (
+    Path(__file__).resolve().parents[1] / "checkpoints" / "Alien-v5"
 )
+CHECKPOINT = next(CHECKPOINT_DIRECTORY.glob("*_latest.pt"))
 
 
 @pytest.fixture(scope="module")

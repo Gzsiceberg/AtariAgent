@@ -17,8 +17,8 @@ from benchmark_reanalysis_pool import make_batch
 from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
 from atariagent.search import SearchConfig
 from atariagent.training import (
-    MuZeroTrainer,
     ReanalysisPipeline,
+    Trainer,
     make_target_state,
 )
 from atariagent.typecheck import set_runtime_typechecking
@@ -100,7 +100,7 @@ def main() -> None:
     representation = RepresentationNetwork(12).to(device)
     prediction = PredictionNetwork(args.action_space_size).to(device)
     dynamics = DynamicsNetwork(args.action_space_size).to(device)
-    trainer = MuZeroTrainer(
+    trainer = Trainer(
         representation, dynamics, prediction,
         unroll_steps=args.unroll_steps, lstm_horizon=5,
         precision=args.precision, compile_model=True, lr_warmup_steps=0,

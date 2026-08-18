@@ -5,7 +5,7 @@ from .checkpoint import (
     representative_checkpoint_path,
     representative_checkpoint_updates,
 )
-from .muzero import MuZeroTrainer, MuZeroTrainMetrics
+from .learner import Trainer, TrainMetrics
 from .reanalysis import (
     ReadyReanalysis,
     ReanalysisPipeline,
@@ -15,11 +15,11 @@ from .reanalysis import (
 
 __all__ = [
     "BatchWorker",
-    "MuZeroTrainMetrics",
-    "MuZeroTrainer",
     "ReadyBatch",
     "ReadyReanalysis",
     "ReanalysisPipeline",
+    "TrainMetrics",
+    "Trainer",
     "make_target_state",
     "replay_batch_nbytes",
     "representative_checkpoint_path",

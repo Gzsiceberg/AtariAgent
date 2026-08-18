@@ -11,7 +11,7 @@ from atariagent.models import (
     RepresentationNetwork,
 )
 from atariagent.replay_batch import ReplayBatch
-from atariagent.training import MuZeroTrainer
+from atariagent.training import Trainer
 
 
 def test_scalar_categorical_loss_interpolates_transformed_target() -> None:
@@ -84,7 +84,7 @@ def test_optimized_scalar_loss_is_safe_under_bfloat16_autocast() -> None:
     assert torch.all(torch.isfinite(logits.grad))
 
 
-def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
+def test_agent_train_step_updates_all_supervised_output_heads() -> None:
     representation = RepresentationNetwork(4)
     dynamics = DynamicsNetwork(action_space_size=3)
     prediction = PredictionNetwork(action_space_size=3)
@@ -93,7 +93,7 @@ def test_muzero_train_step_updates_all_supervised_output_heads() -> None:
         projection_hidden_dim=64,
         prediction_hidden_dim=16,
     )
-    trainer = MuZeroTrainer(
+    trainer = Trainer(
         representation,
         dynamics,
         prediction,
@@ -168,7 +168,7 @@ class _RecordingTransforms(torch.nn.Module):
 
 
 def test_trainer_augments_root_and_packed_target_sequence_separately() -> None:
-    trainer = MuZeroTrainer(
+    trainer = Trainer(
         RepresentationNetwork(2),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),
@@ -264,13 +264,13 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         support_max=1,
         max_gradient_norm=100.0,
     )
-    eager = MuZeroTrainer(
+    eager = Trainer(
         representation,
         dynamics,
         prediction,
         **trainer_arguments,
     )
-    compiled = MuZeroTrainer(
+    compiled = Trainer(
         *compiled_modules,
         compile_model=True,
         **trainer_arguments,
@@ -320,18 +320,18 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         torch.testing.assert_close(compiled_parameter.grad, eager_parameter.grad)
 
 
-def test_muzero_requires_dynamics_gradient_scaling() -> None:
+def test_agent_requires_dynamics_gradient_scaling() -> None:
     with pytest.raises(ValueError, match="gradient scaling"):
-        MuZeroTrainer(
+        Trainer(
             _ScalarRepresentation(),
             _IdentityDynamics(scale_state_gradient=False),
             _ScalarPrediction(),
         )
 
 
-def test_muzero_halves_each_recurrent_state_gradient() -> None:
+def test_agent_halves_each_recurrent_state_gradient() -> None:
     representation = _ScalarRepresentation()
-    trainer = MuZeroTrainer(
+    trainer = Trainer(
         representation,
         _IdentityDynamics(),
         _ScalarPrediction(),
@@ -369,8 +369,8 @@ def test_muzero_halves_each_recurrent_state_gradient() -> None:
     assert representation.weight.grad == pytest.approx(-0.1875)
 
 
-def test_muzero_scales_root_and_recurrent_losses_together() -> None:
-    trainer = MuZeroTrainer(
+def test_agent_scales_root_and_recurrent_losses_together() -> None:
+    trainer = Trainer(
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),
@@ -405,7 +405,7 @@ def test_muzero_scales_root_and_recurrent_losses_together() -> None:
 
 def test_fp16_precision_is_not_supported() -> None:
     with pytest.raises(ValueError, match="fp32 or bf16"):
-        MuZeroTrainer(
+        Trainer(
             RepresentationNetwork(4),
             DynamicsNetwork(action_space_size=3),
             PredictionNetwork(action_space_size=3),
@@ -415,7 +415,7 @@ def test_fp16_precision_is_not_supported() -> None:
 
 def test_bf16_precision_requires_cuda() -> None:
     with pytest.raises(ValueError, match="requires a CUDA device"):
-        MuZeroTrainer(
+        Trainer(
             RepresentationNetwork(4),
             DynamicsNetwork(action_space_size=3),
             PredictionNetwork(action_space_size=3),
@@ -423,8 +423,8 @@ def test_bf16_precision_requires_cuda() -> None:
         )
 
 
-def test_muzero_trainer_uses_efficientzero_v1_optimizer_and_schedule() -> None:
-    trainer = MuZeroTrainer(
+def test_agent_trainer_uses_efficientzero_v1_optimizer_and_schedule() -> None:
+    trainer = Trainer(
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),

@@ -1,5 +1,5 @@
 defaults:
-  - train_muzero_schema
+  - train_agent_schema
   - override hydra/job_logging: disabled
   - _self_
 
@@ -111,7 +111,7 @@ loss:
   consistency_weight: 2.0
 
 checkpoint:
-  path: checkpoints/${environment_slug:${environment.id}}/muzero_latest.pt
+  path: checkpoints/${environment_slug:${environment.id}}/agent_latest.pt
   # Keep snapshots at ten evenly spaced points across the complete run.
   keep_representative: 10
 
@@ -119,8 +119,8 @@ evaluation:
   enabled: true
   episodes: 16
   num_envs: 16
-  data_path: evaluations/${environment_slug:${environment.id}}/muzero_evaluations.json
-  plot_path: evaluations/${environment_slug:${environment.id}}/muzero_evaluation.png
+  data_path: evaluations/${environment_slug:${environment.id}}/agent_evaluations.json
+  plot_path: evaluations/${environment_slug:${environment.id}}/agent_evaluation.png
 
 hydra:
   run:

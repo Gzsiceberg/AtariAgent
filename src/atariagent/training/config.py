@@ -1,4 +1,4 @@
-"""Hydra structured configuration for MuZero Atari training."""
+"""Hydra structured configuration for AtariAgent training."""
 
 from dataclasses import dataclass, field
 
@@ -116,7 +116,7 @@ class LossConfig:
 class CheckpointConfig:
     """Checkpoint destination and representative snapshot count."""
 
-    path: str = "checkpoints/${environment_slug:${environment.id}}/muzero_latest.pt"
+    path: str = "checkpoints/${environment_slug:${environment.id}}/agent_latest.pt"
     keep_representative: int = 10
 
 
@@ -128,16 +128,16 @@ class EvaluationConfig:
     episodes: int = 10
     num_envs: int = 4
     data_path: str = (
-        "evaluations/${environment_slug:${environment.id}}/muzero_evaluations.json"
+        "evaluations/${environment_slug:${environment.id}}/agent_evaluations.json"
     )
     plot_path: str = (
-        "evaluations/${environment_slug:${environment.id}}/muzero_evaluation.png"
+        "evaluations/${environment_slug:${environment.id}}/agent_evaluation.png"
     )
 
 
 @dataclass
-class TrainMuZeroConfig:
-    """Complete typed configuration for MuZero training."""
+class TrainAgentConfig:
+    """Complete typed configuration for AtariAgent training."""
 
     seed: int = 0
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
@@ -163,7 +163,7 @@ def environment_slug(environment_id: str) -> str:
 
 def checkpoint_path_for_environment(environment_id: str) -> str:
     """Return the default latest-checkpoint path for an environment."""
-    return f"checkpoints/{environment_slug(environment_id)}/muzero_latest.pt"
+    return f"checkpoints/{environment_slug(environment_id)}/agent_latest.pt"
 
 
 def final_evaluation_max_episode_steps(frame_skip: int) -> int:
@@ -279,7 +279,7 @@ def visit_softmax_temperature(trained_steps: int, total_steps: int) -> float:
     return 0.25
 
 
-def register_train_muzero_config() -> None:
+def register_train_agent_config() -> None:
     """Register the structured schema and environment-path resolver."""
     OmegaConf.register_new_resolver(
         "environment_slug",
@@ -287,8 +287,8 @@ def register_train_muzero_config() -> None:
         replace=True,
     )
     ConfigStore.instance().store(
-        name="train_muzero_schema",
-        node=TrainMuZeroConfig,
+        name="train_agent_schema",
+        node=TrainAgentConfig,
     )
 
 
@@ -300,13 +300,13 @@ __all__ = [
     "LossConfig",
     "ReplayConfig",
     "SelfPlayConfig",
-    "TrainMuZeroConfig",
+    "TrainAgentConfig",
     "TrainingConfig",
     "checkpoint_path_for_environment",
     "environment_slug",
     "final_evaluation_max_episode_steps",
     "next_collection_vector_steps",
-    "register_train_muzero_config",
+    "register_train_agent_config",
     "target_network_update_interval",
     "target_network_update_steps",
     "visit_softmax_temperature",

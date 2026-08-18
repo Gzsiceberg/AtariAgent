@@ -29,5 +29,5 @@ def test_representative_checkpoints_handle_short_training() -> None:
 
 def test_representative_checkpoint_path_is_numbered_next_to_latest() -> None:
     assert representative_checkpoint_path(
-        "checkpoints/muzero_latest.pt", 12_000
-    ).as_posix() == "checkpoints/muzero_update_00012000.pt"
+        "checkpoints/agent_latest.pt", 12_000
+    ).as_posix() == "checkpoints/agent_update_00012000.pt"

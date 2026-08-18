@@ -1,4 +1,4 @@
-"""Checkpoint scheduling helpers for MuZero training."""
+"""Checkpoint scheduling helpers for AtariAgent training."""
 
 from __future__ import annotations
 

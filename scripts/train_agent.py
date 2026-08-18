@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train AtariAgent with MuZero losses on FIFO self-play replay."""
+"""Train AtariAgent from FIFO self-play replay."""
 
 from __future__ import annotations
 
@@ -35,24 +35,24 @@ from atariagent.search import SearchConfig
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
     BatchWorker,
-    MuZeroTrainer,
     ReadyBatch,
     ReanalysisPipeline,
+    Trainer,
     make_target_state,
     representative_checkpoint_path,
     representative_checkpoint_updates,
 )
-from atariagent.training.muzero_config import (
-    TrainMuZeroConfig,
+from atariagent.training.config import (
+    TrainAgentConfig,
     final_evaluation_max_episode_steps,
     next_collection_vector_steps,
-    register_train_muzero_config,
+    register_train_agent_config,
     target_network_update_steps,
     visit_softmax_temperature,
 )
 from atariagent.typecheck import set_runtime_typechecking
 
-register_train_muzero_config()
+register_train_agent_config()
 
 
 def log(message: str) -> None:
@@ -64,7 +64,7 @@ def log(message: str) -> None:
 def resolve_device(name: str) -> torch.device:
     """Resolve the required CUDA training device."""
     if not torch.cuda.is_available():
-        raise RuntimeError("MuZero training requires a CUDA GPU")
+        raise RuntimeError("AtariAgent training requires a CUDA GPU")
     device = torch.device("cuda" if name == "auto" else name)
     if device.type != "cuda":
         raise ValueError("training.device must select a CUDA GPU")
@@ -90,7 +90,7 @@ def flatten_trajectories(
         yield from trajectories
 
 
-def create_environments(config: TrainMuZeroConfig) -> list[Environment]:
+def create_environments(config: TrainAgentConfig) -> list[Environment]:
     """Create identically preprocessed Atari environments."""
     environments: list[Environment] = []
     try:
@@ -113,7 +113,7 @@ def create_environments(config: TrainMuZeroConfig) -> list[Environment]:
     return environments
 
 
-def create_evaluation_environment(config: TrainMuZeroConfig) -> Environment:
+def create_evaluation_environment(config: TrainAgentConfig) -> Environment:
     """Create a full-episode Atari environment for policy evaluation."""
     return make_atari_environment(
         config.environment.id,
@@ -132,11 +132,11 @@ def save_checkpoint(
     path: Path,
     *,
     agent: AtariAgent,
-    trainer: MuZeroTrainer,
+    trainer: Trainer,
     target_state: Mapping[str, torch.Tensor],
     target_version: int,
     update: int,
-    config: TrainMuZeroConfig,
+    config: TrainAgentConfig,
 ) -> None:
     """Persist online networks, asynchronous target state, and optimizer."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,8 +158,8 @@ def save_checkpoint(
     torch.save(checkpoint, path)
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="train_muzero")
-def main(config: TrainMuZeroConfig) -> None:
+@hydra.main(version_base=None, config_path="../configs", config_name="train_agent")
+def main(config: TrainAgentConfig) -> None:
     """Alternate self-play collection with updates sampled from replay."""
     if config.training.batch_size < 2:
         raise ValueError("batch_size must be at least 2 for batch normalization")
@@ -298,7 +298,7 @@ def main(config: TrainMuZeroConfig) -> None:
             if config.loss.consistency_enabled
             else None
         )
-        trainer = MuZeroTrainer(
+        trainer = Trainer(
             agent.representation_network,
             agent.dynamics_network,
             agent.prediction_network,
@@ -414,7 +414,7 @@ def main(config: TrainMuZeroConfig) -> None:
             file=sys.stdout,
         )
         log(
-            "[bold cyan]MuZero training started[/bold cyan] "
+            "[bold cyan]AtariAgent training started[/bold cyan] "
             f"[dim]env={config.environment.id} device={device} "
             f"precision={config.training.precision} "
             f"deterministic={config.training.deterministic} "

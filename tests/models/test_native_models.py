@@ -5,12 +5,10 @@ import torch
 import atariagent.models as python_models
 from atariagent.models import native
 
-CHECKPOINT = (
-    Path(__file__).resolve().parents[2]
-    / "checkpoints"
-    / "Alien-v5"
-    / "muzero_latest.pt"
+CHECKPOINT_DIRECTORY = (
+    Path(__file__).resolve().parents[2] / "checkpoints" / "Alien-v5"
 )
+CHECKPOINT = next(CHECKPOINT_DIRECTORY.glob("*_latest.pt"))
 
 
 def _load_native_models():

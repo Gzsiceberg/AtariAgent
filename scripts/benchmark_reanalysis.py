@@ -15,8 +15,8 @@ from atariagent.models import DynamicsNetwork, PredictionNetwork, Representation
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import SearchConfig
 from atariagent.training import (
-    MuZeroTrainer,
     ReanalysisPipeline,
+    Trainer,
     make_target_state,
 )
 
@@ -64,7 +64,7 @@ def main() -> None:
     representation = RepresentationNetwork(4).to(device)
     dynamics = DynamicsNetwork(3).to(device)
     prediction = PredictionNetwork(3).to(device)
-    trainer = MuZeroTrainer(
+    trainer = Trainer(
         representation, dynamics, prediction,
         lr_warmup_steps=0, unroll_steps=1, lstm_horizon=1,
     )

@@ -1,4 +1,4 @@
-"""MuZero-style training on replayed self-play unrolls.
+"""Model-based training on replayed self-play unrolls.
 
 The recurrent reward head predicts EfficientZero value prefixes: rewards are
 accumulated between LSTM resets instead of predicting each immediate reward.
@@ -22,7 +22,7 @@ Precision = Literal["fp32", "bf16"]
 
 
 @dataclass(frozen=True, slots=True)
-class MuZeroTrainMetrics:
+class TrainMetrics:
     """Detached metrics from one optimizer update.
 
     Scalar values stay as tensors so ordinary updates do not synchronize the
@@ -41,8 +41,8 @@ class MuZeroTrainMetrics:
     priorities: Tensor
 
 
-class _MuZeroUnroll(nn.Module):
-    """Complete fixed-length MuZero forward and loss computation."""
+class _LearnerUnroll(nn.Module):
+    """Complete fixed-length learner forward and loss computation."""
 
     def __init__(
         self,
@@ -296,11 +296,11 @@ class _MuZeroUnroll(nn.Module):
         )
 
 
-class MuZeroTrainer:
+class Trainer:
     """Train all agent networks from :class:`ReplayBatch` self-play data.
 
     Root and recurrent losses are summed and scaled by ``1 / unroll_steps``.
-    Recurrent latent-state gradients are halved as in MuZero and EfficientZero.
+    Recurrent latent-state gradients are halved following EfficientZero.
     Replay batches already contain asynchronously refreshed value and policy
     targets. When a consistency network is supplied, recurrent dynamics states
     are aligned with stop-gradient representation states from the corresponding
@@ -452,7 +452,7 @@ class MuZeroTrainer:
         # Eager and compiled training share exactly one unroll implementation.
         # The original modules retain checkpoint state-dict keys because the
         # unroll and its compile wrapper reference the same parameters.
-        unroll = _MuZeroUnroll(
+        unroll = _LearnerUnroll(
             representation,
             dynamics,
             prediction,
@@ -483,7 +483,7 @@ class MuZeroTrainer:
         else:
             self._unroll = unroll
 
-    def train_step(self, batch: ReplayBatch) -> MuZeroTrainMetrics:
+    def train_step(self, batch: ReplayBatch) -> TrainMetrics:
         """Run one update from policy, n-step value, and value-prefix targets."""
         self._validate_batch(batch)
         for module in self._original_modules():
@@ -531,7 +531,7 @@ class MuZeroTrainer:
         self.optimizer.step()
         self._step_count += 1
 
-        return MuZeroTrainMetrics(
+        return TrainMetrics(
             loss=loss.detach(),
             policy_loss=policy_loss.detach(),
             value_loss=value_loss.detach(),
@@ -627,7 +627,7 @@ class MuZeroTrainer:
 
 
 __all__ = [
-    "MuZeroTrainMetrics",
-    "MuZeroTrainer",
     "Precision",
+    "TrainMetrics",
+    "Trainer",
 ]

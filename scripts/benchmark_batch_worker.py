@@ -17,7 +17,7 @@ from atariagent.models import (
     RepresentationNetwork,
 )
 from atariagent.replay import FIFOReplayBuffer
-from atariagent.training import BatchWorker, MuZeroTrainer
+from atariagent.training import BatchWorker, Trainer
 from benchmark_replay import make_trajectory
 
 
@@ -65,12 +65,12 @@ def make_replay(args: argparse.Namespace, *, seed: int) -> FIFOReplayBuffer:
     return replay
 
 
-def make_trainer(args: argparse.Namespace, device: torch.device) -> MuZeroTrainer:
+def make_trainer(args: argparse.Namespace, device: torch.device) -> Trainer:
     torch.manual_seed(args.seed)
     representation = RepresentationNetwork(12).to(device)
     dynamics = DynamicsNetwork(18).to(device)
     prediction = PredictionNetwork(18).to(device)
-    return MuZeroTrainer(
+    return Trainer(
         representation,
         dynamics,
         prediction,
@@ -91,7 +91,7 @@ def sample(replay: FIFOReplayBuffer, args: argparse.Namespace):
 
 def run_synchronous(
     replay: FIFOReplayBuffer,
-    trainer: MuZeroTrainer,
+    trainer: Trainer,
     args: argparse.Namespace,
     device: torch.device,
     updates: int,
@@ -135,7 +135,7 @@ def run_synchronous(
 
 def run_threaded(
     replay: FIFOReplayBuffer,
-    trainer: MuZeroTrainer,
+    trainer: Trainer,
     args: argparse.Namespace,
     device: torch.device,
     updates: int,

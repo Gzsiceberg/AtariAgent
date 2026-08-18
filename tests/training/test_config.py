@@ -1,6 +1,6 @@
 import pytest
 
-from atariagent.training.muzero_config import (
+from atariagent.training.config import (
     AugmentationConfig,
     LossConfig,
     TrainingConfig,
@@ -18,7 +18,7 @@ def test_output_paths_are_derived_from_environment_id() -> None:
     assert environment_slug("ALE/Pong-v5") == "Pong-v5"
     assert environment_slug("Pong-v5") == "Pong-v5"
     assert checkpoint_path_for_environment("ALE/Breakout-v5") == (
-        "checkpoints/Breakout-v5/muzero_latest.pt"
+        "checkpoints/Breakout-v5/agent_latest.pt"
     )
 
     with pytest.raises(ValueError, match="valid final component"):
