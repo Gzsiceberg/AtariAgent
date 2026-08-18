@@ -3,6 +3,7 @@
 #include "native_search.h"
 
 #include <cmath>
+#include <span>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
@@ -167,15 +168,14 @@ public:
         for (std::int64_t index = 0;
              index < static_cast<std::int64_t>(roots_.size());
              ++index) {
-            std::vector<float> policy(action_count_);
-            for (int action = 0; action < action_count_; ++action) {
-                policy[action] = policy_data(index, action);
-            }
             roots_[index].expand_and_back_up(
                 state_slot,
                 prefixes_data(index),
                 values_data(index),
-                policy
+                std::span<const float>(
+                    &policy_data(index, 0),
+                    static_cast<std::size_t>(action_count_)
+                )
             );
         }
     }

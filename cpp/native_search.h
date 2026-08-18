@@ -29,6 +29,7 @@ private:
 
 struct SearchNode {
     float prior = 0.0F;
+    float log_prior = 0.0F;
     int parent = -1;
     int action = -1;
     int depth = 0;
@@ -110,9 +111,9 @@ private:
         float pb_c_init
     );
     int select_gumbel_child(int node_index);
-    float mixed_value(int node_index) const;
-    std::vector<float> transformed_completed_q(int node_index) const;
-    std::vector<float> improved_policy(int node_index) const;
+    float mixed_value(int node_index, int* maximum_visits = nullptr) const;
+    void write_transformed_completed_q(int node_index, float* output) const;
+    void write_improved_policy(int node_index, float* output) const;
     void initialize_gumbel_candidates();
     void advance_gumbel_phase();
     void back_up(float leaf_value);
@@ -134,6 +135,7 @@ private:
     int phase_visit_threshold_ = 0;
     int used_phase_visits_ = 0;
     std::vector<float> gumbels_;
+    std::vector<float> gumbel_score_scratch_;
     std::vector<int> selected_root_actions_;
     std::vector<SearchNode> nodes_;
     std::vector<int> path_;

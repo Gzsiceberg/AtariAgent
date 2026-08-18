@@ -100,6 +100,7 @@ RootTree::RootTree(
 
     if (algorithm_ == SearchAlgorithm::Gumbel) {
         gumbels_.resize(action_count_, 0.0F);
+        gumbel_score_scratch_.resize(action_count_);
         if (use_gumbel_noise) {
             std::uint64_t state = seed;
             for (float& gumbel : gumbels_) {
@@ -168,7 +169,9 @@ void RootTree::expand_and_back_up(
     const bool reset = nodes_[leaf_index].depth % value_prefix_horizon_ == 0;
     expand_logits(leaf_index, state_slot, value_prefix, policy_logits, reset);
     back_up(value);
-    rebuild_min_max();
+    if (algorithm_ == SearchAlgorithm::Puct) {
+        rebuild_min_max();
+    }
     if (algorithm_ == SearchAlgorithm::Gumbel) {
         ++completed_simulations_;
         advance_gumbel_phase();
@@ -184,8 +187,7 @@ void RootTree::write_visit_counts(std::int32_t* output) const {
 
 void RootTree::write_policy(float* output) const {
     if (algorithm_ == SearchAlgorithm::Gumbel) {
-        const std::vector<float> policy = improved_policy(0);
-        std::copy(policy.begin(), policy.end(), output);
+        write_improved_policy(0, output);
         return;
     }
     const int first_child = nodes_[0].first_child;
@@ -307,6 +309,10 @@ void RootTree::append_child(
 ) {
     SearchNode child;
     child.prior = prior;
+    child.log_prior = std::log(std::max(
+        prior,
+        std::numeric_limits<float>::min()
+    ));
     child.parent = node_index;
     child.action = action;
     child.depth = depth;
@@ -413,12 +419,28 @@ int RootTree::select_gumbel_child(int node_index) {
         return first_child + selected_action;
     }
 
-    const std::vector<float> policy = improved_policy(node_index);
+    write_transformed_completed_q(
+        node_index,
+        gumbel_score_scratch_.data()
+    );
+    float maximum = -std::numeric_limits<float>::infinity();
+    for (int action = 0; action < action_count_; ++action) {
+        gumbel_score_scratch_[action] +=
+            nodes_[first_child + action].log_prior;
+        maximum = std::max(maximum, gumbel_score_scratch_[action]);
+    }
+    float policy_total = 0.0F;
+    for (int action = 0; action < action_count_; ++action) {
+        gumbel_score_scratch_[action] = std::exp(
+            gumbel_score_scratch_[action] - maximum
+        );
+        policy_total += gumbel_score_scratch_[action];
+    }
     const float denominator = 1.0F + static_cast<float>(nodes_[node_index].visit_count);
     int best_action = 0;
     float best_score = -std::numeric_limits<float>::infinity();
     for (int action = 0; action < action_count_; ++action) {
-        const float score = policy[action]
+        const float score = gumbel_score_scratch_[action] / policy_total
             - static_cast<float>(nodes_[first_child + action].visit_count)
                 / denominator;
         if (score > best_score) {
@@ -429,17 +451,22 @@ int RootTree::select_gumbel_child(int node_index) {
     return first_child + best_action;
 }
 
-float RootTree::mixed_value(int node_index) const {
+float RootTree::mixed_value(int node_index, int* maximum_visits) const {
     const SearchNode& node = nodes_[node_index];
     const int first_child = node.first_child;
     float prior_sum = 0.0F;
     float weighted_q_sum = 0.0F;
+    int max_visits = 0;
     for (int action = 0; action < action_count_; ++action) {
         const SearchNode& child = nodes_[first_child + action];
+        max_visits = std::max(max_visits, child.visit_count);
         if (child.visit_count > 0) {
             prior_sum += child.prior;
             weighted_q_sum += child.prior * q_value(first_child + action);
         }
+    }
+    if (maximum_visits != nullptr) {
+        *maximum_visits = max_visits;
     }
     if (!(prior_sum > 0.0F)) {
         return node.value();
@@ -449,47 +476,40 @@ float RootTree::mixed_value(int node_index) const {
         / (1.0F + static_cast<float>(node.visit_count));
 }
 
-std::vector<float> RootTree::transformed_completed_q(int node_index) const {
+void RootTree::write_transformed_completed_q(
+    int node_index,
+    float* output
+) const {
     const int first_child = nodes_[node_index].first_child;
-    const float v_mix = mixed_value(node_index);
     int maximum_visits = 0;
-    std::vector<float> completed(action_count_);
+    const float v_mix = mixed_value(node_index, &maximum_visits);
+    const float scale = (c_visit_ + static_cast<float>(maximum_visits))
+        * c_scale_;
     for (int action = 0; action < action_count_; ++action) {
         const SearchNode& child = nodes_[first_child + action];
-        maximum_visits = std::max(maximum_visits, child.visit_count);
         const float q = child.visit_count > 0
             ? q_value(first_child + action)
             : v_mix;
-        completed[action] = stats_.normalize(q);
+        output[action] = stats_.normalize(q) * scale;
     }
-    const float scale = (c_visit_ + static_cast<float>(maximum_visits))
-        * c_scale_;
-    for (float& value : completed) {
-        value *= scale;
-    }
-    return completed;
 }
 
-std::vector<float> RootTree::improved_policy(int node_index) const {
+void RootTree::write_improved_policy(int node_index, float* output) const {
     const int first_child = nodes_[node_index].first_child;
-    std::vector<float> logits = transformed_completed_q(node_index);
+    write_transformed_completed_q(node_index, output);
     float maximum = -std::numeric_limits<float>::infinity();
     for (int action = 0; action < action_count_; ++action) {
-        logits[action] += std::log(std::max(
-            nodes_[first_child + action].prior,
-            std::numeric_limits<float>::min()
-        ));
-        maximum = std::max(maximum, logits[action]);
+        output[action] += nodes_[first_child + action].log_prior;
+        maximum = std::max(maximum, output[action]);
     }
     float total = 0.0F;
-    for (float& value : logits) {
-        value = std::exp(value - maximum);
-        total += value;
+    for (int action = 0; action < action_count_; ++action) {
+        output[action] = std::exp(output[action] - maximum);
+        total += output[action];
     }
-    for (float& value : logits) {
-        value /= total;
+    for (int action = 0; action < action_count_; ++action) {
+        output[action] /= total;
     }
-    return logits;
 }
 
 void RootTree::initialize_gumbel_candidates() {
@@ -500,14 +520,10 @@ void RootTree::initialize_gumbel_candidates() {
         selected_root_actions_.begin(),
         selected_root_actions_.end(),
         [&](int left, int right) {
-            const float left_score = gumbels_[left] + std::log(std::max(
-                nodes_[first_child + left].prior,
-                std::numeric_limits<float>::min()
-            ));
-            const float right_score = gumbels_[right] + std::log(std::max(
-                nodes_[first_child + right].prior,
-                std::numeric_limits<float>::min()
-            ));
+            const float left_score = gumbels_[left]
+                + nodes_[first_child + left].log_prior;
+            const float right_score = gumbels_[right]
+                + nodes_[first_child + right].log_prior;
             return left_score > right_score;
         }
     );
@@ -519,20 +535,18 @@ void RootTree::advance_gumbel_phase() {
         || selected_root_actions_.size() <= 1) {
         return;
     }
-    const std::vector<float> transformed = transformed_completed_q(0);
+    write_transformed_completed_q(0, gumbel_score_scratch_.data());
     const int first_child = nodes_[0].first_child;
     std::stable_sort(
         selected_root_actions_.begin(),
         selected_root_actions_.end(),
         [&](int left, int right) {
-            const float left_score = gumbels_[left] + std::log(std::max(
-                nodes_[first_child + left].prior,
-                std::numeric_limits<float>::min()
-            )) + transformed[left];
-            const float right_score = gumbels_[right] + std::log(std::max(
-                nodes_[first_child + right].prior,
-                std::numeric_limits<float>::min()
-            )) + transformed[right];
+            const float left_score = gumbels_[left]
+                + nodes_[first_child + left].log_prior
+                + gumbel_score_scratch_[left];
+            const float right_score = gumbels_[right]
+                + nodes_[first_child + right].log_prior
+                + gumbel_score_scratch_[right];
             return left_score > right_score;
         }
     );
@@ -568,6 +582,9 @@ void RootTree::back_up(float leaf_value) {
         node.value_sum += bootstrap;
         ++node.visit_count;
         bootstrap = reward(*iterator) + discount_ * bootstrap;
+        if (algorithm_ == SearchAlgorithm::Gumbel) {
+            stats_.update(bootstrap);
+        }
     }
 }
 

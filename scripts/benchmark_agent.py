@@ -5,16 +5,16 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import random
+from pathlib import Path
 from statistics import mean, median
 from time import perf_counter
 
 import torch
+from atariagent.search._mcts_native import set_num_threads
 
 from atariagent.agent import AtariAgent
 from atariagent.search import SearchConfig
-from atariagent.search._mcts_native import set_num_threads
 from atariagent.typecheck import set_runtime_typechecking
 
 
@@ -23,6 +23,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--action-space-size", type=int, default=18)
     parser.add_argument("--num-simulations", type=int, default=50)
+    parser.add_argument(
+        "--search-algorithm",
+        choices=("puct", "gumbel"),
+        default="puct",
+    )
+    parser.add_argument("--num-top-actions", type=int, default=4)
     parser.add_argument("--mcts-threads", type=int, default=4)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=30)
@@ -56,6 +62,8 @@ def main() -> None:
         search_config=SearchConfig(
             num_simulations=args.num_simulations,
             value_prefix_horizon=5,
+            search_algorithm=args.search_algorithm,
+            num_top_actions=args.num_top_actions,
         ),
         search_rng=random.Random(0),
     ).to(device).eval()
@@ -97,7 +105,9 @@ def main() -> None:
         "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
         "batch_size": args.batch_size,
         "action_space_size": args.action_space_size,
+        "search_algorithm": args.search_algorithm,
         "num_simulations": args.num_simulations,
+        "num_top_actions": args.num_top_actions,
         "mcts_threads": args.mcts_threads,
         "warmup": args.warmup,
         "iterations": args.iterations,
