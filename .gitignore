@@ -11,3 +11,4 @@ wheels/
 checkpoints
 evaluations
 benchmarks
+wandb

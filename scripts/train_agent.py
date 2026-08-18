@@ -319,6 +319,10 @@ def main(config: TrainAgentConfig) -> None:
                 action_space_size,
                 config.self_play.num_simulations,
             )
+            print(
+                f"num_simulations={config.self_play.num_simulations}, "
+                f"action_space_size={action_space_size}"
+            )
 
         resolved_config = OmegaConf.to_container(config, resolve=True)
         if not isinstance(resolved_config, Mapping):
