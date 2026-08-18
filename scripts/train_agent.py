@@ -31,7 +31,10 @@ from atariagent.evaluation import (
     write_evaluation_history,
 )
 from atariagent.models import ConsistencyNetwork
-from atariagent.search import SearchConfig
+from atariagent.search import (
+    SearchConfig,
+    efficientzero_atari_gumbel_settings,
+)
 from atariagent.selfplay import Environment, make_atari_environment
 from atariagent.training import (
     BatchWorker,
@@ -276,6 +279,15 @@ def main(config: TrainAgentConfig) -> None:
             for environment in environments
         ):
             raise ValueError("all environments must have the same action space")
+
+        if config.self_play.search_algorithm == "gumbel":
+            (
+                config.self_play.num_simulations,
+                config.self_play.num_top_actions,
+            ) = efficientzero_atari_gumbel_settings(
+                action_space_size,
+                config.self_play.num_simulations,
+            )
 
         image_channels = 1 if config.environment.grayscale else 3
         discount = config.training.discount ** config.environment.frame_skip

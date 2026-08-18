@@ -8,6 +8,7 @@ from .tree_search import (
     SearchConfig,
     SearchResult,
     TreeSearch,
+    efficientzero_atari_gumbel_settings,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "SearchConfig",
     "SearchResult",
     "TreeSearch",
+    "efficientzero_atari_gumbel_settings",
 ]

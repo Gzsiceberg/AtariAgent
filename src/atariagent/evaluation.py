@@ -13,7 +13,7 @@ import torch
 from tqdm.auto import tqdm
 
 from .agent import AtariAgent
-from .search import SearchConfig
+from .search import SearchConfig, efficientzero_atari_gumbel_settings
 from .selfplay import Environment
 from .typecheck import runtime_typechecking_enabled, set_runtime_typechecking
 
@@ -217,6 +217,11 @@ def load_agent_checkpoint(
             environment_config["frame_skip"]
         )
         lstm_horizon = int(training_config["lstm_horizon"])
+        if search_algorithm == "gumbel":
+            num_simulations, num_top_actions = efficientzero_atari_gumbel_settings(
+                action_space_size,
+                num_simulations,
+            )
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError(
             f"checkpoint {checkpoint_path} has an invalid config"

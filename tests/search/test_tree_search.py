@@ -14,7 +14,26 @@ from atariagent.search import (
     PackedEvaluator,
     SearchConfig,
     TreeSearch,
+    efficientzero_atari_gumbel_settings,
 )
+
+
+def test_efficientzero_atari_gumbel_settings_depend_on_action_count() -> None:
+    assert efficientzero_atari_gumbel_settings(3, 16) == (4, 2)
+    assert efficientzero_atari_gumbel_settings(4, 16) == (16, 4)
+    assert efficientzero_atari_gumbel_settings(15, 16) == (16, 4)
+    assert efficientzero_atari_gumbel_settings(16, 16) == (16, 8)
+    assert efficientzero_atari_gumbel_settings(18, 32) == (32, 8)
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_efficientzero_atari_gumbel_settings_reject_invalid_values(
+    value: int,
+) -> None:
+    with pytest.raises(ValueError, match="positive"):
+        efficientzero_atari_gumbel_settings(value, 16)
+    with pytest.raises(ValueError, match="positive"):
+        efficientzero_atari_gumbel_settings(18, value)
 
 
 class PackedScalarEvaluator:

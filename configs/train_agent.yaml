@@ -19,8 +19,10 @@ self_play:
   total_transitions: 100000
   # "gumbel" is EfficientZeroV2 top-m sequential halving; "puct" is conventional MCTS.
   search_algorithm: gumbel
+  # Gumbel training derives top-m from the game's action count: 2 below 4
+  # actions, 4 below 16 actions, and 8 otherwise. Below 4 actions N becomes 4.
   num_simulations: 16
-  num_top_actions: 4
+  num_top_actions: 4  # Legacy/checkpoint fallback; resolved at runtime for Gumbel.
   c_visit: 50.0
   c_scale: 0.1
   steps_per_iteration: 100
@@ -105,6 +107,8 @@ augmentation:
 # dynamics state with the representation of its corresponding observation.
 loss:
   policy_weight: 1.0
+  # EZV2 config uses 0.5, but its Value_loss applies another 0.5 when IQL is
+  # disabled. Our scalar cross-entropy has no internal half, so 0.25 is equal.
   value_weight: 0.25
   reward_weight: 1.0
   consistency_enabled: true

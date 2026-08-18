@@ -19,6 +19,27 @@ PackedHidden = tuple[Tensor, Tensor]
 PackedEvaluation = tuple[Tensor, PackedHidden, Tensor, Tensor, Tensor]
 
 
+def efficientzero_atari_gumbel_settings(
+    action_space_size: int,
+    num_simulations: int,
+) -> tuple[int, int]:
+    """Return EfficientZeroV2's game-dependent ``(N, top_m)`` settings."""
+    for value, name in (
+        (action_space_size, "action_space_size"),
+        (num_simulations, "num_simulations"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+
+    if action_space_size < 4:
+        return 4, 2
+    if action_space_size < 16:
+        return num_simulations, 4
+    return num_simulations, 8
+
+
 @runtime_checkable
 class PackedEvaluator(Protocol):
     """Typed network interface bound to one packed tree-search instance."""
@@ -495,4 +516,5 @@ __all__ = [
     "SearchConfig",
     "SearchResult",
     "TreeSearch",
+    "efficientzero_atari_gumbel_settings",
 ]
