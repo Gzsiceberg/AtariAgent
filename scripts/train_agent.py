@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import random
 import shutil
+import subprocess
 import sys
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from pathlib import Path
 
 import hydra
@@ -62,6 +64,19 @@ def log(message: str) -> None:
     """Print Rich markup without corrupting active tqdm progress bars."""
     with tqdm.external_write_mode():
         rich_print(message)
+
+
+def repository_commit() -> str:
+    """Return the commit checked out in this script's repository."""
+    repository_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 def resolve_device(name: str) -> torch.device:
@@ -164,6 +179,11 @@ def save_checkpoint(
 @hydra.main(version_base=None, config_path="../configs", config_name="train_agent")
 def main(config: TrainAgentConfig) -> None:
     """Alternate self-play collection with updates sampled from replay."""
+    start_time = datetime.now().astimezone().isoformat(timespec="seconds")
+    log(
+        "[bold cyan]AtariAgent launch[/bold cyan] "
+        f"[dim]commit={repository_commit()} start_time={start_time}[/dim]"
+    )
     if config.training.batch_size < 2:
         raise ValueError("batch_size must be at least 2 for batch normalization")
     if config.training.steps <= 0:
