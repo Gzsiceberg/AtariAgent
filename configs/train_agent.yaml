@@ -75,13 +75,17 @@ training:
   initial_target_update_steps: 2000
   # Per raw frame; training and MCTS use discount ** frame_skip.
   discount: 0.997
-  # EfficientZero V1 Atari optimizer and step learning-rate schedule.
+  # EfficientZero's default SGD uses 0.2; use 0.001 when selecting Adam.
+  optimizer: sgd  # sgd or adam
   learning_rate: 0.2
-  momentum: 0.9
+  momentum: 0.9  # Used only by SGD.
   weight_decay: 0.0001
-  lr_warmup_steps: 1000  # 1% of 100,000 collection-phase updates
-  lr_decay_rate: 0.1
+  # SGD warms up, then applies the rate every `lr_decay_steps` updates.
+  lr_warmup_steps: 1000
   lr_decay_steps: 100000
+  # SGD uses this as its step multiplier. Adam holds LR through `steps`, then
+  # linearly decays to this fraction over `final_steps`.
+  lr_decay_rate: 0.1
   max_gradient_norm: 5.0
   # FP32 is the deterministic baseline; BF16 is the optimized CUDA mode.
   precision: bf16  # fp32 or bf16

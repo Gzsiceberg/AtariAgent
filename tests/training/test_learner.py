@@ -98,7 +98,6 @@ def test_agent_train_step_updates_all_supervised_output_heads() -> None:
         dynamics,
         prediction,
         consistency_network=consistency,
-        lr_warmup_steps=0,
         unroll_steps=1,
         lstm_horizon=1,
     )
@@ -149,7 +148,7 @@ def test_agent_train_step_updates_all_supervised_output_heads() -> None:
     assert metrics.reward_loss > 0.0
     assert torch.isfinite(metrics.consistency_loss)
     assert metrics.consistency_loss.abs() > 0.0
-    assert metrics.learning_rate == pytest.approx(0.2)
+    assert metrics.learning_rate == pytest.approx(0.001)
     assert metrics.priorities == pytest.approx((1.000001, 1.000001))
     assert not torch.equal(policy_output.weight, initial_policy)
     assert not torch.equal(value_output.weight, initial_value)
@@ -257,7 +256,6 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         learning_rate=0.1,
         momentum=0.0,
         weight_decay=0.0,
-        lr_warmup_steps=0,
         unroll_steps=2,
         lstm_horizon=2,
         support_min=0,
@@ -336,7 +334,6 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
         _IdentityDynamics(),
         _ScalarPrediction(),
         learning_rate=0.1,
-        lr_warmup_steps=0,
         unroll_steps=2,
         lstm_horizon=2,
         policy_weight=1.0,
@@ -374,7 +371,6 @@ def test_agent_scales_root_and_recurrent_losses_together() -> None:
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),
-        lr_warmup_steps=0,
         unroll_steps=2,
         lstm_horizon=2,
     )
@@ -423,11 +419,32 @@ def test_bf16_precision_requires_cuda() -> None:
         )
 
 
-def test_agent_trainer_uses_efficientzero_v1_optimizer_and_schedule() -> None:
+def test_agent_trainer_defaults_to_adam() -> None:
     trainer = Trainer(
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),
+    )
+
+    assert isinstance(trainer.optimizer, torch.optim.Adam)
+    assert trainer.optimizer.defaults["lr"] == pytest.approx(0.001)
+    assert trainer.optimizer.defaults["weight_decay"] == pytest.approx(1e-4)
+    assert trainer._adjust_learning_rate() == pytest.approx(0.001)
+
+    trainer._step_count = 100_000
+    assert trainer._adjust_learning_rate() == pytest.approx(0.001)
+    trainer._step_count = 110_000
+    assert trainer._adjust_learning_rate() == pytest.approx(0.00055)
+    trainer._step_count = 120_000
+    assert trainer._adjust_learning_rate() == pytest.approx(0.0001)
+
+
+def test_agent_trainer_preserves_sgd_and_step_learning_rate_schedule() -> None:
+    trainer = Trainer(
+        RepresentationNetwork(4),
+        DynamicsNetwork(action_space_size=3),
+        PredictionNetwork(action_space_size=3),
+        optimizer="sgd",
         learning_rate=0.2,
         momentum=0.9,
         weight_decay=1e-4,

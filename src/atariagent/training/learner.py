@@ -19,6 +19,7 @@ from atariagent.models import consist_loss_func
 from atariagent.replay_batch import ReplayBatch
 
 Precision = Literal["fp32", "bf16"]
+OptimizerName = Literal["sgd", "adam"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,12 +320,15 @@ class Trainer:
         augmentation_shift_delta: int = 4,
         augmentation_intensity_scale: float = 0.05,
         image_shape: tuple[int, int] = (96, 96),
-        learning_rate: float = 0.2,
+        optimizer: OptimizerName = "adam",
+        learning_rate: float = 1e-3,
         momentum: float = 0.9,
         weight_decay: float = 1e-4,
         lr_warmup_steps: int = 1_000,
         lr_decay_rate: float = 0.1,
         lr_decay_steps: int = 100_000,
+        steps: int = 100_000,
+        final_steps: int = 20_000,
         unroll_steps: int = 5,
         lstm_horizon: int = 5,
         policy_weight: float = 1.0,
@@ -347,6 +351,8 @@ class Trainer:
             raise ValueError("augmentation_shift_delta must be non-negative")
         if augmentation_intensity_scale < 0.0:
             raise ValueError("augmentation_intensity_scale must be non-negative")
+        if optimizer not in ("sgd", "adam"):
+            raise ValueError("optimizer must be sgd or adam")
         if learning_rate <= 0.0:
             raise ValueError("learning_rate must be positive")
         if momentum < 0.0:
@@ -359,6 +365,10 @@ class Trainer:
             raise ValueError("lr_decay_rate must be in (0, 1]")
         if lr_decay_steps <= 0:
             raise ValueError("lr_decay_steps must be positive")
+        if steps <= 0:
+            raise ValueError("steps must be positive")
+        if final_steps < 0:
+            raise ValueError("final_steps must be non-negative")
         if max_gradient_norm <= 0.0:
             raise ValueError("max_gradient_norm must be positive")
         if priority_epsilon <= 0.0:
@@ -433,22 +443,32 @@ class Trainer:
         self.support_min = support_min
         self.support_max = support_max
         self.priority_epsilon = priority_epsilon
+        self.optimizer_name = optimizer
         self.learning_rate = learning_rate
         self.lr_warmup_steps = lr_warmup_steps
         self.lr_decay_rate = lr_decay_rate
         self.lr_decay_steps = lr_decay_steps
+        self.steps = steps
+        self.final_steps = final_steps
         self.precision: Precision = precision
         self.compile_model = compile_model
         self.compile_mode = compile_mode
         self._device = device
         self._step_count = 0
         self._parameters = parameters
-        self.optimizer = torch.optim.SGD(
-            parameters,
-            lr=learning_rate,
-            momentum=momentum,
-            weight_decay=weight_decay,
-        )
+        if optimizer == "sgd":
+            self.optimizer = torch.optim.SGD(
+                parameters,
+                lr=learning_rate,
+                momentum=momentum,
+                weight_decay=weight_decay,
+            )
+        else:
+            self.optimizer = torch.optim.Adam(
+                parameters,
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            )
         # Eager and compiled training share exactly one unroll implementation.
         # The original modules retain checkpoint state-dict keys because the
         # unroll and its compile wrapper reference the same parameters.
@@ -562,15 +582,30 @@ class Trainer:
         )
 
     def _adjust_learning_rate(self) -> float:
-        if self._step_count < self.lr_warmup_steps:
-            learning_rate = (
-                self.learning_rate * self._step_count / self.lr_warmup_steps
-            )
+        if self.optimizer_name == "sgd":
+            if self._step_count < self.lr_warmup_steps:
+                learning_rate = (
+                    self.learning_rate * self._step_count / self.lr_warmup_steps
+                )
+            else:
+                decay_count = (
+                    self._step_count - self.lr_warmup_steps
+                ) // self.lr_decay_steps
+                learning_rate = (
+                    self.learning_rate * self.lr_decay_rate**decay_count
+                )
         else:
-            decay_count = (
-                self._step_count - self.lr_warmup_steps
-            ) // self.lr_decay_steps
-            learning_rate = self.learning_rate * self.lr_decay_rate**decay_count
+            decay_progress = (
+                float(self._step_count >= self.steps)
+                if self.final_steps == 0
+                else min(
+                    max(self._step_count - self.steps, 0) / self.final_steps,
+                    1.0,
+                )
+            )
+            learning_rate = self.learning_rate * (
+                1.0 - decay_progress * (1.0 - self.lr_decay_rate)
+            )
         for parameter_group in self.optimizer.param_groups:
             parameter_group["lr"] = learning_rate
         return learning_rate

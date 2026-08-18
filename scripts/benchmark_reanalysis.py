@@ -66,7 +66,7 @@ def main() -> None:
     prediction = PredictionNetwork(3).to(device)
     trainer = Trainer(
         representation, dynamics, prediction,
-        lr_warmup_steps=0, unroll_steps=1, lstm_horizon=1,
+        unroll_steps=1, lstm_horizon=1,
     )
     pipeline = ReanalysisPipeline(
         in_channels=4,

@@ -103,7 +103,7 @@ def main() -> None:
     trainer = Trainer(
         representation, dynamics, prediction,
         unroll_steps=args.unroll_steps, lstm_horizon=5,
-        precision=args.precision, compile_model=True, lr_warmup_steps=0,
+        precision=args.precision, compile_model=True,
     )
     trainer.train_step(
         base_batch.without_reanalysis_metadata().to(

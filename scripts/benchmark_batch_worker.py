@@ -74,7 +74,6 @@ def make_trainer(args: argparse.Namespace, device: torch.device) -> Trainer:
         representation,
         dynamics,
         prediction,
-        lr_warmup_steps=0,
         unroll_steps=args.unroll_steps,
         lstm_horizon=args.unroll_steps,
         precision=args.precision,

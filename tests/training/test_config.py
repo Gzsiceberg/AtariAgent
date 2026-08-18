@@ -67,6 +67,13 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.target_update_interval == 1_000
     assert config.initial_target_update_interval == 200
     assert config.initial_target_update_steps == 1_000
+    assert config.optimizer == "adam"
+    assert config.learning_rate == pytest.approx(0.001)
+    assert config.lr_warmup_steps == 1_000
+    assert config.lr_decay_rate == pytest.approx(0.1)
+    assert config.lr_decay_steps == 100_000
+    assert config.steps == 100_000
+    assert config.final_steps == 20_000
     assert config.compile_mode == "max-autotune"
 
 

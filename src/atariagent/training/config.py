@@ -75,7 +75,8 @@ class TrainingConfig:
     initial_target_update_interval: int = 200
     initial_target_update_steps: int = 1_000
     discount: float = 0.997
-    learning_rate: float = 0.2
+    optimizer: str = "adam"
+    learning_rate: float = 1e-3
     momentum: float = 0.9
     weight_decay: float = 1e-4
     lr_warmup_steps: int = 1_000
