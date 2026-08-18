@@ -6,6 +6,7 @@ accumulated between LSTM resets instead of predicting each immediate reward.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Literal
@@ -13,6 +14,7 @@ from typing import Literal
 import torch
 from torch import Tensor, nn
 
+from atariagent.data import Transforms
 from atariagent.models import consist_loss_func
 from atariagent.replay_batch import ReplayBatch
 
@@ -48,6 +50,7 @@ class _MuZeroUnroll(nn.Module):
         dynamics: nn.Module,
         prediction: nn.Module,
         consistency_network: nn.Module | None,
+        augmentation: Transforms | None,
         *,
         unroll_steps: int,
         lstm_horizon: int,
@@ -64,6 +67,7 @@ class _MuZeroUnroll(nn.Module):
         self.dynamics = dynamics
         self.prediction = prediction
         self.consistency_network = consistency_network
+        self.augmentation = augmentation
         self.unroll_steps = unroll_steps
         self.lstm_horizon = lstm_horizon
         self.policy_weight = policy_weight
@@ -122,6 +126,43 @@ class _MuZeroUnroll(nn.Module):
         scalar = torch.nan_to_num(transformed.sign() * magnitude)
         return torch.where(scalar.abs() < epsilon, 0.0, scalar)
 
+    def _prepare_observations(
+        self, frames: Tensor
+    ) -> tuple[Tensor, Tensor | None]:
+        """Normalize and independently augment root and target observations."""
+        batch_size, frame_count, channels, height, width = frames.shape
+        stack_size = frame_count - self.unroll_steps
+        observations = frames[:, :stack_size].reshape(
+            batch_size,
+            stack_size * channels,
+            height,
+            width,
+        ).float().div(255.0)
+        if self.augmentation is not None:
+            observations = self.augmentation(observations)
+
+        if self.consistency_network is None:
+            return observations, None
+
+        # Packing time into channels gives every target stack one shared
+        # spatial shift and intensity draw, independently of the root draw.
+        target_sequence = frames[:, 1:].reshape(
+            batch_size,
+            (frame_count - 1) * channels,
+            height,
+            width,
+        ).float().div(255.0)
+        if self.augmentation is not None:
+            target_sequence = self.augmentation(target_sequence)
+        target_frames = target_sequence.reshape(
+            batch_size,
+            frame_count - 1,
+            channels,
+            height,
+            width,
+        )
+        return observations, target_frames
+
     def forward(
         self,
         frames: Tensor,
@@ -137,12 +178,7 @@ class _MuZeroUnroll(nn.Module):
         """Return the total losses and replay priorities for one batch."""
         batch_size = actions.shape[0]
         stack_size = frames.shape[1] - self.unroll_steps
-        observations = frames[:, :stack_size].reshape(
-            batch_size,
-            stack_size * frames.shape[2],
-            frames.shape[3],
-            frames.shape[4],
-        ).float().div(255.0)
+        observations, target_frames = self._prepare_observations(frames)
 
         prefix = torch.zeros_like(rewards[:, 0])
         prefix_targets: list[Tensor] = []
@@ -203,14 +239,15 @@ class _MuZeroUnroll(nn.Module):
             recurrent_value_loss += step_value_loss
 
             if self.consistency_network is not None:
-                target_observations = frames[
-                    :, step + 1 : step + 1 + stack_size
+                assert target_frames is not None
+                target_observations = target_frames[
+                    :, step : step + stack_size
                 ].reshape(
                     batch_size,
-                    stack_size * frames.shape[2],
-                    frames.shape[3],
-                    frames.shape[4],
-                ).float().div(255.0)
+                    observations.shape[1],
+                    target_frames.shape[3],
+                    target_frames.shape[4],
+                )
                 with torch.no_grad():
                     target_state = self.representation(target_observations)
                 predicted_projection, target_projection = (
@@ -276,6 +313,10 @@ class MuZeroTrainer:
         prediction: nn.Module,
         *,
         consistency_network: nn.Module | None = None,
+        augmentation: Sequence[str] | None = None,
+        augmentation_shift_delta: int = 4,
+        augmentation_intensity_scale: float = 0.05,
+        image_shape: tuple[int, int] = (96, 96),
         learning_rate: float = 0.2,
         momentum: float = 0.9,
         weight_decay: float = 1e-4,
@@ -300,6 +341,10 @@ class MuZeroTrainer:
             raise ValueError("unroll_steps must be positive")
         if lstm_horizon <= 0:
             raise ValueError("lstm_horizon must be positive")
+        if augmentation_shift_delta < 0:
+            raise ValueError("augmentation_shift_delta must be non-negative")
+        if augmentation_intensity_scale < 0.0:
+            raise ValueError("augmentation_intensity_scale must be non-negative")
         if learning_rate <= 0.0:
             raise ValueError("learning_rate must be positive")
         if momentum < 0.0:
@@ -361,6 +406,16 @@ class MuZeroTrainer:
         self.original_dynamics = dynamics
         self.original_prediction = prediction
         self.original_consistency_network = consistency_network
+        self.transforms = (
+            None
+            if augmentation is None
+            else Transforms(
+                augmentation,
+                shift_delta=augmentation_shift_delta,
+                image_shape=image_shape,
+                intensity_scale=augmentation_intensity_scale,
+            )
+        )
         self.representation = representation
         self.dynamics = dynamics
         self.prediction = prediction
@@ -400,6 +455,7 @@ class MuZeroTrainer:
             dynamics,
             prediction,
             consistency_network,
+            self.transforms,
             unroll_steps=unroll_steps,
             lstm_horizon=lstm_horizon,
             policy_weight=policy_weight,
@@ -410,6 +466,7 @@ class MuZeroTrainer:
             support_max=support_max,
             priority_epsilon=priority_epsilon,
         )
+        self._uncompiled_unroll = unroll
         if compile_model:
             torch._dynamo.config.allow_rnn = True
             self._unroll = torch.compile(
@@ -479,6 +536,13 @@ class MuZeroTrainer:
             learning_rate=learning_rate,
             priorities=new_priorities.detach(),
         )
+
+    @torch.no_grad()
+    def _prepare_observations(
+        self, frames: Tensor
+    ) -> tuple[Tensor, Tensor | None]:
+        """Prepare observations through the same path as the learner graph."""
+        return self._uncompiled_unroll._prepare_observations(frames)
 
     def _original_modules(self) -> tuple[nn.Module, ...]:
         return tuple(

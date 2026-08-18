@@ -86,6 +86,14 @@ training:
   compile_mode: default
   log_every: 10
 
+# Apply independent draws to the root stack and the packed sequence of
+# consistency targets, matching the released EfficientZero Atari learner.
+augmentation:
+  enabled: true
+  transforms: [shift, intensity]
+  shift_delta: 4
+  intensity_scale: 0.05
+
 # EfficientZero Atari policy, value, value-prefix, and consistency settings.
 # Reward supervises an LSTM value prefix. Consistency aligns each recurrent
 # dynamics state with the representation of its corresponding observation.
@@ -94,7 +102,7 @@ loss:
   value_weight: 0.25
   reward_weight: 1.0
   consistency_enabled: true
-  consistency_weight: 5.0
+  consistency_weight: 2.0
 
 checkpoint:
   path: checkpoints/${environment_slug:${environment.id}}/muzero_latest.pt
