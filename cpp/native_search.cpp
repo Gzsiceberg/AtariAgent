@@ -136,17 +136,27 @@ std::tuple<int, int, bool> RootTree::traverse(
 ) {
     path_.clear();
     int node_index = 0;
-    float parent_mean_q = 0.0F;
     path_.push_back(node_index);
-    while (nodes_[node_index].expanded()) {
-        const float mean_q = node_mean_q(
-            node_index, parent_mean_q, node_index == 0
-        );
-        node_index = algorithm_ == SearchAlgorithm::Gumbel
-            ? select_gumbel_child(node_index)
-            : select_child(node_index, mean_q, pb_c_base, pb_c_init);
-        path_.push_back(node_index);
-        parent_mean_q = mean_q;
+    if (algorithm_ == SearchAlgorithm::Gumbel) {
+        while (nodes_[node_index].expanded()) {
+            node_index = select_gumbel_child(node_index);
+            path_.push_back(node_index);
+        }
+    } else {
+        float parent_mean_q = 0.0F;
+        while (nodes_[node_index].expanded()) {
+            const float mean_q = node_mean_q(
+                node_index, parent_mean_q, node_index == 0
+            );
+            node_index = select_child(
+                node_index,
+                mean_q,
+                pb_c_base,
+                pb_c_init
+            );
+            path_.push_back(node_index);
+            parent_mean_q = mean_q;
+        }
     }
     const SearchNode& leaf = nodes_[node_index];
     if (leaf.parent < 0 || leaf.action < 0) {
