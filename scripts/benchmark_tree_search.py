@@ -10,7 +10,7 @@ from statistics import mean, median
 from time import perf_counter
 
 import numpy as np
-from atariagent.search._mcts_native import BatchTree, set_num_threads
+from atariagent.search._tree_search_native import BatchTree, set_num_threads
 
 
 def parse_args() -> argparse.Namespace:

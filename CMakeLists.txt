@@ -68,17 +68,19 @@ function(configure_torch_extension target)
 endfunction()
 
 pybind11_add_module(
-    _mcts_native
+    _tree_search_native
     MODULE
-        cpp/mcts_bindings.cpp
+        cpp/tree_search_bindings.cpp
         cpp/native_search.cpp
         cpp/search/batch_tree.cpp
 )
-target_include_directories(_mcts_native PRIVATE cpp)
-configure_torch_extension(_mcts_native)
+target_include_directories(_tree_search_native PRIVATE cpp)
+configure_torch_extension(_tree_search_native)
 if(OpenMP_CXX_FOUND)
-    target_link_libraries(_mcts_native PRIVATE OpenMP::OpenMP_CXX)
-    target_compile_definitions(_mcts_native PRIVATE ATARIAGENT_HAS_OPENMP=1)
+    target_link_libraries(_tree_search_native PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_definitions(
+        _tree_search_native PRIVATE ATARIAGENT_HAS_OPENMP=1
+    )
 endif()
 
 pybind11_add_module(
@@ -106,5 +108,5 @@ if(TARGET torch_cuda)
     target_compile_definitions(_models_native PRIVATE ATARIAGENT_HAS_CUDA=1)
 endif()
 
-install(TARGETS _mcts_native DESTINATION atariagent/search)
+install(TARGETS _tree_search_native DESTINATION atariagent/search)
 install(TARGETS _models_native DESTINATION atariagent/models)

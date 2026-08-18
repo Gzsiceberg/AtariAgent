@@ -13,7 +13,7 @@ import torch
 from numpy.typing import NDArray
 from torch import Tensor, nn
 
-from ._mcts_native import BatchTree as NativeBatchTree
+from ._tree_search_native import BatchTree as NativeBatchTree
 
 PackedHidden = tuple[Tensor, Tensor]
 PackedEvaluation = tuple[Tensor, PackedHidden, Tensor, Tensor, Tensor]

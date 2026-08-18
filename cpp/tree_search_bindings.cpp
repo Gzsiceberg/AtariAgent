@@ -7,8 +7,8 @@
 namespace py = pybind11;
 using namespace atariagent::native;
 
-PYBIND11_MODULE(_mcts_native, module) {
-    module.doc() = "Native EfficientZero search and reanalysis operations";
+PYBIND11_MODULE(_tree_search_native, module) {
+    module.doc() = "Native batched PUCT and Gumbel tree search";
     module.def(
         "set_num_threads",
         &set_search_num_threads,
