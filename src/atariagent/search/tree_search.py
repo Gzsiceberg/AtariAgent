@@ -374,7 +374,6 @@ class TreeSearch:
         temperature: float = 1.0,
     ) -> tuple[SearchResult, ...]:
         """Sample actions and create per-root objects at the replay boundary."""
-        self._validate_temperature(temperature)
         if batch.selected_actions is not None:
             assert batch.policy_targets is not None
             return tuple(
@@ -393,6 +392,7 @@ class TreeSearch:
                 )
             )
 
+        self._validate_temperature(temperature)
         policies = _visit_policy(batch.visit_counts, temperature)
         return tuple(
             SearchResult(

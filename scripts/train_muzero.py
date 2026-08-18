@@ -596,16 +596,18 @@ def main(config: TrainMuZeroConfig) -> None:
                     config.self_play.steps_per_iteration,
                 )
                 warming_up = len(replay) < minimum_replay_size
-                # Temperature affects PUCT rollout actions only. Gumbel uses
-                # its direct sequential-halving action and improved policy.
-                temperature = visit_softmax_temperature(
-                    update, config.training.steps
-                )
                 previous_transitions = worker.total_transitions
-                grouped = worker.run(
-                    vector_steps,
-                    temperature=temperature,
-                )
+                if agent.search.config.search_algorithm == "puct":
+                    temperature = visit_softmax_temperature(
+                        update, config.training.steps
+                    )
+                    grouped = worker.run(
+                        vector_steps,
+                        temperature=temperature,
+                    )
+                else:
+                    temperature = None
+                    grouped = worker.run(vector_steps)
                 self_play_progress.update(
                     worker.total_transitions - previous_transitions
                 )
@@ -617,9 +619,10 @@ def main(config: TrainMuZeroConfig) -> None:
                     "iteration": collection_iteration,
                     "added": insertion.added_transitions,
                     "replay": f"{len(replay)}/{replay.max_transitions}",
-                    "temperature": f"{temperature:.2f}",
                     "mode": search_mode,
                 }
+                if temperature is not None:
+                    progress_stats["temperature"] = f"{temperature:.2f}"
                 if self_play_episode_rewards:
                     recent_stats = EvaluationStats.from_rewards(
                         tuple(self_play_episode_rewards[-100:])
