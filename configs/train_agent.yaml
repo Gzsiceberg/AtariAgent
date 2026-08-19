@@ -55,6 +55,9 @@ training:
   mixed_value_threshold: 5000
   # Refresh replay values and policies with the delayed target network.
   use_target_network_reanalysis: true
+  # Do not perturb PUCT reanalysis priors with Dirichlet noise. Gumbel
+  # reanalysis still uses its intrinsic Gumbel-Top-k sampling noise.
+  reanalysis_add_dirichlet_noise: false
   # Two 768-root chunks are faster here than 1024+512 and use less memory.
   policy_reanalysis_chunk_size: 768
   # Cache corrected TD values, MCTS root values, and policies by target version.
@@ -69,8 +72,8 @@ training:
   reanalysis_timeout_seconds: 600.0
   # Cap native OpenMP tree traversal to avoid CPU oversubscription.
   reanalysis_worker_num_threads: 4
-  # Hard-copy every 200 learner updates through update 1,000, then every 1,000.
-  target_update_interval: 800
+  # Hard-copy every 200 learner updates through update 2,000, then every 1,000.
+  target_update_interval: 1000
   initial_target_update_interval: 200
   initial_target_update_steps: 2000
   # Per raw frame; training and MCTS use discount ** frame_skip.

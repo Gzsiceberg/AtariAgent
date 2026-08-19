@@ -79,6 +79,7 @@ def benchmark_depth(depth: int, args: argparse.Namespace, batch: ReplayBatch):
             value_prefix_horizon=5,
         ),
         policy_chunk_size=args.chunk_size,
+        add_dirichlet_noise=False,
         cache_targets=False,
         rng_seed=0,
         support_min=-300,

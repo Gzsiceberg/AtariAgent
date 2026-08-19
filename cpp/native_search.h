@@ -38,6 +38,8 @@ struct SearchNode {
     bool reset_value_prefix = false;
     int visit_count = 0;
     float value_sum = 0.0F;
+    // Immutable network value captured when this node is expanded.
+    float raw_value = 0.0F;
     int first_child = -1;
 
     bool expanded() const;
@@ -70,10 +72,8 @@ public:
         float value,
         std::span<const float> policy_logits
     );
-    void write_visit_counts(std::int32_t* output) const;
-    void write_policy(float* output) const;
+    float write_policy_and_root_value(float* output) const;
     int selected_action() const;
-    float root_value() const;
 
 private:
     void expand_probabilities(
@@ -112,6 +112,8 @@ private:
     );
     int select_gumbel_child(int node_index);
     float mixed_value(int node_index, int* maximum_visits = nullptr) const;
+    float completed_q(int node_index, int action, float v_mix) const;
+    void write_policy(float* output) const;
     void write_transformed_completed_q(int node_index, float* output) const;
     void write_improved_policy(int node_index, float* output) const;
     void initialize_gumbel_candidates();

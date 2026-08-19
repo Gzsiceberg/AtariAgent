@@ -229,6 +229,10 @@ def main(config: TrainAgentConfig) -> None:
             raise ValueError(f"{name} must be positive")
     if config.training.initial_target_update_steps < 0:
         raise ValueError("initial_target_update_steps must be non-negative")
+    if not isinstance(
+        config.training.reanalysis_add_dirichlet_noise, bool
+    ):
+        raise TypeError("reanalysis_add_dirichlet_noise must be a boolean")
     if config.training.policy_reanalysis_chunk_size <= 0:
         raise ValueError("policy_reanalysis_chunk_size must be positive")
     if not isinstance(config.training.cache_reanalyzed_targets, bool):
@@ -418,6 +422,9 @@ def main(config: TrainAgentConfig) -> None:
                 search_config=agent.search.config,
                 policy_chunk_size=(
                     config.training.policy_reanalysis_chunk_size
+                ),
+                add_dirichlet_noise=(
+                    config.training.reanalysis_add_dirichlet_noise
                 ),
                 cache_targets=config.training.cache_reanalyzed_targets,
                 rng_seed=config.seed,

@@ -113,7 +113,7 @@ class FakeAgent:
         results = tuple(
             SearchResult(
                 action=1,
-                visit_counts=(1, 3),
+                policy_target=(0.25, 0.75),
                 root_value=float(self.calls + index),
             )
             for index in range(len(observations))

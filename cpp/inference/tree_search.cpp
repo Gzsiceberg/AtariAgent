@@ -137,10 +137,7 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
     evaluator_->validate_policy(root_policy_logits, root_count);
     if (root_count == 0) {
         return {
-            torch::empty(
-                {0, action_count},
-                uses_gumbel() ? torch::kFloat32 : torch::kInt32
-            ),
+            torch::empty({0, action_count}, torch::kFloat32),
             torch::empty({0}, torch::kFloat32),
         };
     }
@@ -298,35 +295,23 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
         }
     }
 
-    torch::Tensor search_output = torch::empty(
+    torch::Tensor policies = torch::empty(
         {root_count, action_count},
-        torch::TensorOptions().dtype(
-            uses_gumbel() ? torch::kFloat32 : torch::kInt32
-        )
+        torch::TensorOptions().dtype(torch::kFloat32)
     );
     torch::Tensor values = torch::empty(
         {root_count}, torch::TensorOptions().dtype(torch::kFloat32)
     );
-    auto* visits_data = uses_gumbel()
-        ? nullptr
-        : search_output.data_ptr<std::int32_t>();
-    auto* policy_data = uses_gumbel()
-        ? search_output.data_ptr<float>()
-        : nullptr;
+    auto* policy_data = policies.data_ptr<float>();
     auto* roots_data = values.data_ptr<float>();
 #pragma omp parallel for if(root_count >= 32) schedule(static) \
     num_threads(configured_tree_search_num_threads())
     for (std::int64_t root = 0; root < root_count; ++root) {
-        if (uses_gumbel()) {
-            trees[root].write_policy(policy_data + root * action_count);
-        } else {
-            trees[root].write_visit_counts(
-                visits_data + root * action_count
-            );
-        }
-        roots_data[root] = trees[root].root_value();
+        roots_data[root] = trees[root].write_policy_and_root_value(
+            policy_data + root * action_count
+        );
     }
-    return {search_output, values};
+    return {policies, values};
 }
 
 void TreeSearch::add_root_noise(std::vector<float>& priors) {

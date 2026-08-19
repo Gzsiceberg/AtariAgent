@@ -85,10 +85,8 @@ def run_algorithm(
             )
             expansion += perf_counter() - started
         started = perf_counter()
-        tree.visit_counts_array()
-        tree.root_values_array()
+        tree.policy_and_root_values_arrays()
         if algorithm == "gumbel":
-            tree.policy_array()
             tree.selected_actions_array()
         output = perf_counter() - started
         total = perf_counter() - total_started

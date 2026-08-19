@@ -41,14 +41,16 @@ public:
         int prefetch_batches,
         double timeout_seconds,
         int target_update_interval,
-        bool cache_targets
+        bool cache_targets,
+        bool add_search_noise
     )
         : target_(std::move(target)),
           device_(device),
           prefetch_batches_(prefetch_batches),
           timeout_seconds_(timeout_seconds),
           target_update_interval_(target_update_interval),
-          cache_targets_(cache_targets) {
+          cache_targets_(cache_targets),
+          add_search_noise_(add_search_noise) {
         if (!target_) {
             throw std::invalid_argument("target must not be null");
         }
@@ -615,7 +617,7 @@ private:
                 device_frames,
                 policy_mask.to(device_),
                 job->stack_size,
-                true,
+                add_search_noise_,
                 false
             );
         const auto root_count = positions.size(0);
@@ -716,6 +718,7 @@ private:
     double timeout_seconds_;
     int target_update_interval_;
     bool cache_targets_;
+    bool add_search_noise_;
     mutable std::mutex mutex_;
     std::condition_variable work_ready_;
     std::condition_variable result_ready_;
@@ -739,7 +742,8 @@ NativeReanalysisEngine::NativeReanalysisEngine(
     int prefetch_batches,
     double timeout_seconds,
     int target_update_interval,
-    bool cache_targets
+    bool cache_targets,
+    bool add_search_noise
 )
     : impl_(std::make_unique<Impl>(
           std::move(target),
@@ -747,7 +751,8 @@ NativeReanalysisEngine::NativeReanalysisEngine(
           prefetch_batches,
           timeout_seconds,
           target_update_interval,
-          cache_targets
+          cache_targets,
+          add_search_noise
       )) {}
 
 NativeReanalysisEngine::~NativeReanalysisEngine() = default;

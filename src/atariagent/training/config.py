@@ -63,6 +63,7 @@ class TrainingConfig:
     mixed_value_start_step: int = 30_000
     mixed_value_threshold: int = 5_000
     use_target_network_reanalysis: bool = True
+    reanalysis_add_dirichlet_noise: bool = False
     policy_reanalysis_chunk_size: int = 768
     cache_reanalyzed_targets: bool = True
     reanalysis_prefetch_batches: int = 2

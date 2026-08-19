@@ -95,6 +95,7 @@ RootTree::RootTree(
     root.value_prefix = root_value_prefix;
     root.visit_count = 1;
     root.value_sum = root_value;
+    root.raw_value = root_value;
     nodes_.push_back(std::move(root));
     expand_probabilities(0, 0, root_value_prefix, root_priors, false);
 
@@ -177,6 +178,7 @@ void RootTree::expand_and_back_up(
     }
     const int leaf_index = path_.back();
     const bool reset = nodes_[leaf_index].depth % value_prefix_horizon_ == 0;
+    nodes_[leaf_index].raw_value = value;
     expand_logits(leaf_index, state_slot, value_prefix, policy_logits, reset);
     back_up(value);
     if (algorithm_ == SearchAlgorithm::Puct) {
@@ -185,13 +187,6 @@ void RootTree::expand_and_back_up(
     if (algorithm_ == SearchAlgorithm::Gumbel) {
         ++completed_simulations_;
         advance_gumbel_phase();
-    }
-}
-
-void RootTree::write_visit_counts(std::int32_t* output) const {
-    const int first_child = nodes_[0].first_child;
-    for (int action = 0; action < action_count_; ++action) {
-        output[action] = nodes_[first_child + action].visit_count;
     }
 }
 
@@ -211,6 +206,22 @@ void RootTree::write_policy(float* output) const {
     }
 }
 
+float RootTree::write_policy_and_root_value(float* output) const {
+    write_policy(output);
+    if (algorithm_ != SearchAlgorithm::Gumbel) {
+        return nodes_[0].value();
+    }
+
+    // Evaluate the improved policy with raw completed Q values. The
+    // normalized, sigma-transformed values are only policy logits.
+    const float v_mix = mixed_value(0);
+    float value = 0.0F;
+    for (int action = 0; action < action_count_; ++action) {
+        value += output[action] * completed_q(0, action, v_mix);
+    }
+    return value;
+}
+
 int RootTree::selected_action() const {
     if (algorithm_ == SearchAlgorithm::Gumbel) {
         if (selected_root_actions_.empty()) {
@@ -228,8 +239,6 @@ int RootTree::selected_action() const {
     }
     return best_action;
 }
-
-float RootTree::root_value() const { return nodes_[0].value(); }
 
 void RootTree::expand_probabilities(
     int node_index,
@@ -429,28 +438,12 @@ int RootTree::select_gumbel_child(int node_index) {
         return first_child + selected_action;
     }
 
-    write_transformed_completed_q(
-        node_index,
-        gumbel_score_scratch_.data()
-    );
-    float maximum = -std::numeric_limits<float>::infinity();
-    for (int action = 0; action < action_count_; ++action) {
-        gumbel_score_scratch_[action] +=
-            nodes_[first_child + action].log_prior;
-        maximum = std::max(maximum, gumbel_score_scratch_[action]);
-    }
-    float policy_total = 0.0F;
-    for (int action = 0; action < action_count_; ++action) {
-        gumbel_score_scratch_[action] = std::exp(
-            gumbel_score_scratch_[action] - maximum
-        );
-        policy_total += gumbel_score_scratch_[action];
-    }
+    write_improved_policy(node_index, gumbel_score_scratch_.data());
     const float denominator = 1.0F + static_cast<float>(nodes_[node_index].visit_count);
     int best_action = 0;
     float best_score = -std::numeric_limits<float>::infinity();
     for (int action = 0; action < action_count_; ++action) {
-        const float score = gumbel_score_scratch_[action] / policy_total
+        const float score = gumbel_score_scratch_[action]
             - static_cast<float>(nodes_[first_child + action].visit_count)
                 / denominator;
         if (score > best_score) {
@@ -466,9 +459,11 @@ float RootTree::mixed_value(int node_index, int* maximum_visits) const {
     const int first_child = node.first_child;
     float prior_sum = 0.0F;
     float weighted_q_sum = 0.0F;
+    int total_visits = 0;
     int max_visits = 0;
     for (int action = 0; action < action_count_; ++action) {
         const SearchNode& child = nodes_[first_child + action];
+        total_visits += child.visit_count;
         max_visits = std::max(max_visits, child.visit_count);
         if (child.visit_count > 0) {
             prior_sum += child.prior;
@@ -479,27 +474,35 @@ float RootTree::mixed_value(int node_index, int* maximum_visits) const {
         *maximum_visits = max_visits;
     }
     if (!(prior_sum > 0.0F)) {
-        return node.value();
+        return node.raw_value;
     }
-    return (node.value() + static_cast<float>(node.visit_count)
-        * weighted_q_sum / prior_sum)
-        / (1.0F + static_cast<float>(node.visit_count));
+    const float visit_weight = static_cast<float>(total_visits);
+    return (node.raw_value
+        + visit_weight * weighted_q_sum / prior_sum)
+        / (1.0F + visit_weight);
+}
+
+float RootTree::completed_q(
+    int node_index,
+    int action,
+    float v_mix
+) const {
+    const int child_index = nodes_[node_index].first_child + action;
+    return nodes_[child_index].visit_count > 0
+        ? q_value(child_index)
+        : v_mix;
 }
 
 void RootTree::write_transformed_completed_q(
     int node_index,
     float* output
 ) const {
-    const int first_child = nodes_[node_index].first_child;
     int maximum_visits = 0;
     const float v_mix = mixed_value(node_index, &maximum_visits);
     const float scale = (c_visit_ + static_cast<float>(maximum_visits))
         * c_scale_;
     for (int action = 0; action < action_count_; ++action) {
-        const SearchNode& child = nodes_[first_child + action];
-        const float q = child.visit_count > 0
-            ? q_value(first_child + action)
-            : v_mix;
+        const float q = completed_q(node_index, action, v_mix);
         output[action] = stats_.normalize(q) * scale;
     }
 }

@@ -154,7 +154,9 @@ def test_native_complete_tree_search_matches_python(
             search_output.numpy(), expected.policy_targets, rtol=1e-5, atol=1e-6
         )
     else:
-        np.testing.assert_array_equal(search_output.numpy(), expected.visit_counts)
+        np.testing.assert_allclose(
+            search_output.numpy(), expected.policy_targets, rtol=1e-5, atol=1e-6
+        )
     np.testing.assert_allclose(
         root_values.numpy(), expected.root_values, rtol=1e-6, atol=1e-6
     )

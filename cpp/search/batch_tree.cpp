@@ -180,32 +180,22 @@ public:
         }
     }
 
-    py::array_t<std::int32_t> visit_counts_array() const {
-        py::array_t<std::int32_t> result({
-            static_cast<py::ssize_t>(roots_.size()),
+    py::tuple policy_and_root_values_arrays() const {
+        const auto root_count = static_cast<py::ssize_t>(roots_.size());
+        py::array_t<float> policies({
+            root_count,
             static_cast<py::ssize_t>(action_count_),
         });
-        auto output = result.mutable_unchecked<2>();
-        for (py::ssize_t index = 0;
-             index < static_cast<py::ssize_t>(roots_.size());
-             ++index) {
-            roots_[index].write_visit_counts(&output(index, 0));
+        py::array_t<float> values(root_count);
+        auto policy_output = policies.mutable_unchecked<2>();
+        auto value_output = values.mutable_unchecked<1>();
+#pragma omp parallel for if(root_count >= 32)
+        for (py::ssize_t index = 0; index < root_count; ++index) {
+            value_output(index) = roots_[index].write_policy_and_root_value(
+                &policy_output(index, 0)
+            );
         }
-        return result;
-    }
-
-    py::array_t<float> policy_array() const {
-        py::array_t<float> result({
-            static_cast<py::ssize_t>(roots_.size()),
-            static_cast<py::ssize_t>(action_count_),
-        });
-        auto output = result.mutable_unchecked<2>();
-        for (py::ssize_t index = 0;
-             index < static_cast<py::ssize_t>(roots_.size());
-             ++index) {
-            roots_[index].write_policy(&output(index, 0));
-        }
-        return result;
+        return py::make_tuple(policies, values);
     }
 
     py::array_t<std::int64_t> selected_actions_array() const {
@@ -217,17 +207,6 @@ public:
              index < static_cast<py::ssize_t>(roots_.size());
              ++index) {
             output(index) = roots_[index].selected_action();
-        }
-        return result;
-    }
-
-    py::array_t<float> root_values_array() const {
-        py::array_t<float> result(static_cast<py::ssize_t>(roots_.size()));
-        auto output = result.mutable_unchecked<1>();
-        for (py::ssize_t index = 0;
-             index < static_cast<py::ssize_t>(roots_.size());
-             ++index) {
-            output(index) = roots_[index].root_value();
         }
         return result;
     }
@@ -290,20 +269,12 @@ void BatchTree::expand_and_back_up_arrays(
     );
 }
 
-py::array_t<std::int32_t> BatchTree::visit_counts_array() const {
-    return impl_->visit_counts_array();
-}
-
-py::array_t<float> BatchTree::policy_array() const {
-    return impl_->policy_array();
+py::tuple BatchTree::policy_and_root_values_arrays() const {
+    return impl_->policy_and_root_values_arrays();
 }
 
 py::array_t<std::int64_t> BatchTree::selected_actions_array() const {
     return impl_->selected_actions_array();
-}
-
-py::array_t<float> BatchTree::root_values_array() const {
-    return impl_->root_values_array();
 }
 
 int set_search_num_threads(int count) {

@@ -93,7 +93,8 @@ def test_agent_batches_root_and_recurrent_network_inference() -> None:
     assert len(output.search_results) == 3
     assert output.predicted_values == (0.0, 0.0, 0.0)
     assert all(
-        sum(result.visit_counts) == simulations for result in output.search_results
+        np.isclose(result.target_policy.sum(), 1.0)
+        for result in output.search_results
     )
     assert representation.batch_sizes == [3]
     assert dynamics.batch_sizes == [3] * simulations
@@ -128,8 +129,8 @@ def test_packed_policy_search_returns_complete_results() -> None:
     )
     results = mcts.materialize_results(batch)
 
-    assert batch.visit_counts.shape == (states.shape[0], 3)
-    assert (batch.visit_counts.sum(axis=1) == simulations).all()
+    assert batch.policy_targets.shape == (states.shape[0], 3)
+    np.testing.assert_allclose(batch.policy_targets.sum(axis=1), 1.0)
     assert all(result.action in range(3) for result in results)
 
 

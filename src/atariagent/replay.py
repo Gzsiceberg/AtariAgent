@@ -305,7 +305,7 @@ class FIFOReplayBuffer:
     def _prepare_trajectory(self, trajectory: GameTrajectory) -> _StoredTrajectory:
         """Convert one immutable self-play block to contiguous replay data."""
         action_space_sizes = {
-            len(result.visit_counts) for result in trajectory.search_results
+            len(result.target_policy) for result in trajectory.search_results
         }
         if len(action_space_sizes) != 1:
             raise ValueError(

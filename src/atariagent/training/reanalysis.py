@@ -92,6 +92,7 @@ class ReanalysisPipeline:
         action_space_size: int,
         search_config: SearchConfig,
         policy_chunk_size: int,
+        add_dirichlet_noise: bool,
         cache_targets: bool,
         rng_seed: int,
         support_min: int,
@@ -103,7 +104,9 @@ class ReanalysisPipeline:
         target_update_interval: int,
         device: torch.device | str | None = None,
     ) -> None:
-        if isinstance(cache_targets, bool) is False:
+        if not isinstance(add_dirichlet_noise, bool):
+            raise TypeError("add_dirichlet_noise must be a boolean")
+        if not isinstance(cache_targets, bool):
             raise TypeError("cache_targets must be a boolean")
         if isinstance(search_threads, bool) or not isinstance(search_threads, int):
             raise TypeError("search_threads must be an integer")
@@ -152,6 +155,14 @@ class ReanalysisPipeline:
         self.prefetch_batches = prefetch_batches
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
+        # PUCT's optional Dirichlet prior perturbation and Gumbel-Top-k's
+        # intrinsic sampling noise have different roles. Reanalysis may disable
+        # only the former; Gumbel search still needs Gumbel noise to sample its
+        # root candidate ranking.
+        add_search_noise = (
+            search_config.search_algorithm == "gumbel"
+            or add_dirichlet_noise
+        )
         self._engine = NativeReanalysisEngine(
             self.target,
             str(self.device),
@@ -159,6 +170,7 @@ class ReanalysisPipeline:
             timeout_seconds,
             target_update_interval,
             cache_targets,
+            add_search_noise,
         )
         self._latest_target_state: TargetState | None = None
         self._closed = False

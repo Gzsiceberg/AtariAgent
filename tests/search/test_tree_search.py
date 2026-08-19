@@ -299,8 +299,8 @@ def test_search_batch_evaluates_all_roots_once_per_simulation() -> None:
     )
 
     assert evaluator.calls == config.num_simulations
-    assert results.visit_counts.shape == (states.shape[0], 3)
-    assert (results.visit_counts.sum(axis=1) == config.num_simulations).all()
+    assert results.policy_targets.shape == (states.shape[0], 3)
+    np.testing.assert_allclose(results.policy_targets.sum(axis=1), 1.0)
 
 
 @pytest.mark.parametrize("seed", [0, 1, 4, 17])
@@ -328,7 +328,9 @@ def test_native_batch_search_matches_python_reference(seed: int) -> None:
         add_exploration_noise=True,
     )
 
-    assert native.visit_counts.tolist() == [list(row) for row in counts]
+    expected_policies = np.asarray(counts, dtype=np.float32)
+    expected_policies /= expected_policies.sum(axis=1, keepdims=True)
+    np.testing.assert_allclose(native.policy_targets, expected_policies)
     assert native.root_values.tolist() == pytest.approx(
         values,
         rel=1e-5,
@@ -355,6 +357,46 @@ def test_gumbel_materialization_uses_direct_action_and_improved_policy() -> None
     np.testing.assert_array_equal(result.target_policy, batch.policy_targets[0])
 
 
+def test_gumbel_root_value_uses_improved_policy_completed_q() -> None:
+    config = SearchConfig(
+        num_simulations=2,
+        discount=0.9,
+        search_algorithm="gumbel",
+        num_top_actions=2,
+    )
+    root_logits = np.asarray([1.0, 0.2, -0.7])
+    raw_root_value = 0.6
+    batch = _make_search(config).search_batch(
+        torch.zeros(1, 1),
+        torch.tensor([raw_root_value]),
+        torch.from_numpy(root_logits).unsqueeze(0).float(),
+    )
+
+    counts = np.asarray([1, 1, 0])
+    priors = np.exp(root_logits - root_logits.max())
+    priors /= priors.sum()
+    action_indices = np.arange(root_logits.size)
+    q_values = 0.25 * (action_indices + 1) + config.discount * (
+        action_indices / 10.0
+    )
+    child_visits = int(counts.sum())
+    simulation_average = float(
+        (raw_root_value + (counts * q_values).sum()) / (1 + child_visits)
+    )
+    visited = counts > 0
+    prior_weighted_q = float(
+        (priors[visited] * q_values[visited]).sum() / priors[visited].sum()
+    )
+    v_mix = (
+        raw_root_value + child_visits * prior_weighted_q
+    ) / (1 + child_visits)
+    completed_q = np.where(visited, q_values, v_mix)
+    expected = float((batch.policy_targets[0] * completed_q).sum())
+
+    assert batch.root_values[0] == pytest.approx(expected)
+    assert batch.root_values[0] != pytest.approx(simulation_average)
+
+
 def test_temperature_zero_returns_greedy_action() -> None:
     mcts = _make_search(SearchConfig(num_simulations=7))
     batch = mcts.search_batch(
@@ -363,11 +405,9 @@ def test_temperature_zero_returns_greedy_action() -> None:
         torch.tensor([[2.0, -2.0, -3.0]]).expand(2, -1),
     )
     results = mcts.materialize_results(batch, temperature=0.0)
-    assert all(isinstance(result.visit_counts, np.ndarray) for result in results)
-    assert all(result.visit_counts.dtype == np.int32 for result in results)
+    assert all(result.policy_target.dtype == np.float32 for result in results)
     assert all(
-        result.action
-        == max(range(len(result.visit_counts)), key=result.visit_counts.__getitem__)
+        result.action == int(result.policy_target.argmax())
         for result in results
     )
 

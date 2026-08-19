@@ -56,6 +56,7 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.mixed_value_start_step == 30_000
     assert config.mixed_value_threshold == 5_000
     assert config.use_target_network_reanalysis
+    assert not config.reanalysis_add_dirichlet_noise
     assert config.policy_reanalysis_chunk_size == 768
     assert config.cache_reanalyzed_targets
     assert config.reanalysis_prefetch_batches == 2

@@ -76,6 +76,7 @@ def main() -> None:
             value_prefix_horizon=1,
         ),
         policy_chunk_size=768,
+        add_dirichlet_noise=False,
         cache_targets=False,
         rng_seed=0,
         support_min=-300,

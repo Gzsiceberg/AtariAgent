@@ -119,43 +119,30 @@ class SearchConfig:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class SearchResult:
-    """Materialized root output, including an optional improved policy."""
+    """Materialized action, search policy, and root value."""
 
     action: int
-    visit_counts: NDArray[np.int32]
+    policy_target: NDArray[np.float32]
     root_value: float
-    policy_target: NDArray[np.float32] | None = None
 
     def __post_init__(self) -> None:
-        counts = np.asarray(self.visit_counts, dtype=np.int32)
-        if counts.ndim != 1 or counts.shape[0] == 0:
-            raise ValueError("visit_counts must be a non-empty 1D array")
-        if not counts.flags.c_contiguous:
-            counts = np.ascontiguousarray(counts)
-        object.__setattr__(self, "visit_counts", counts)
-        if self.policy_target is not None:
-            policy = np.asarray(self.policy_target, dtype=np.float32)
-            if policy.shape != counts.shape or not np.isfinite(policy).all():
-                raise ValueError("policy_target must match finite visit_counts")
-            if np.any(policy < 0.0) or not np.isclose(policy.sum(), 1.0):
-                raise ValueError("policy_target must be a probability distribution")
-            object.__setattr__(
-                self,
-                "policy_target",
-                np.ascontiguousarray(policy),
-            )
+        policy = np.asarray(self.policy_target, dtype=np.float32)
+        if policy.ndim != 1 or policy.shape[0] == 0:
+            raise ValueError("policy_target must be a non-empty 1D array")
+        if not np.isfinite(policy).all() or np.any(policy < 0.0):
+            raise ValueError("policy_target must be finite and non-negative")
+        if not np.isclose(policy.sum(), 1.0):
+            raise ValueError("policy_target must be a probability distribution")
+        object.__setattr__(
+            self,
+            "policy_target",
+            np.ascontiguousarray(policy),
+        )
 
     @property
     def target_policy(self) -> NDArray[np.float32]:
         """Return the search policy target used by replay."""
-        if self.policy_target is not None:
-            return self.policy_target
-        total = int(self.visit_counts.sum())
-        if total <= 0:
-            raise ValueError("search result must contain visited actions")
-        return np.ascontiguousarray(
-            self.visit_counts.astype(np.float32) / total,
-        )
+        return self.policy_target
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SearchResult):
@@ -163,38 +150,32 @@ class SearchResult:
         return (
             self.action == other.action
             and self.root_value == other.root_value
-            and np.array_equal(self.visit_counts, other.visit_counts)
-            and (
-                (self.policy_target is None and other.policy_target is None)
-                or (
-                    self.policy_target is not None
-                    and other.policy_target is not None
-                    and np.array_equal(self.policy_target, other.policy_target)
-                )
-            )
+            and np.array_equal(self.policy_target, other.policy_target)
         )
 
 
 @dataclass(frozen=True, slots=True)
 class SearchBatchResult:
-    """Contiguous native search output before per-root materialization."""
+    """Contiguous search policies and values before materialization."""
 
-    visit_counts: NDArray[np.int32]
+    policy_targets: NDArray[np.float32]
     root_values: NDArray[np.float32]
-    policy_targets: NDArray[np.float32] | None = None
     selected_actions: NDArray[np.int64] | None = None
 
     def __post_init__(self) -> None:
-        if self.visit_counts.ndim != 2:
-            raise ValueError("visit_counts must have shape (roots, actions)")
-        if self.root_values.shape != (self.visit_counts.shape[0],):
+        if self.policy_targets.ndim != 2:
+            raise ValueError("policy_targets must have shape (roots, actions)")
+        root_count = self.policy_targets.shape[0]
+        if self.root_values.shape != (root_count,):
             raise ValueError("root_values must have shape (roots,)")
-        if self.policy_targets is not None and (
-            self.policy_targets.shape != self.visit_counts.shape
+        if not np.isfinite(self.policy_targets).all() or np.any(
+            self.policy_targets < 0.0
         ):
-            raise ValueError("policy_targets must match visit_counts")
+            raise ValueError("policy_targets must be finite and non-negative")
+        if root_count and not np.allclose(self.policy_targets.sum(axis=1), 1.0):
+            raise ValueError("policy_targets rows must sum to one")
         if self.selected_actions is not None and (
-            self.selected_actions.shape != (self.visit_counts.shape[0],)
+            self.selected_actions.shape != (root_count,)
         ):
             raise ValueError("selected_actions must have shape (roots,)")
 
@@ -230,19 +211,11 @@ class TreeSearch:
         root_count = root_states.shape[0]
         if root_count == 0:
             return SearchBatchResult(
-                visit_counts=np.empty(
+                policy_targets=np.empty(
                     (0, root_policy_logits.shape[-1]),
-                    dtype=np.int32,
+                    dtype=np.float32,
                 ),
                 root_values=np.empty(0, dtype=np.float32),
-                policy_targets=(
-                    np.empty(
-                        (0, root_policy_logits.shape[-1]),
-                        dtype=np.float32,
-                    )
-                    if self.config.search_algorithm == "gumbel"
-                    else None
-                ),
                 selected_actions=(
                     np.empty(0, dtype=np.int64)
                     if self.config.search_algorithm == "gumbel"
@@ -381,10 +354,10 @@ class TreeSearch:
                 )
 
         is_gumbel = self.config.search_algorithm == "gumbel"
+        policy_targets, root_values = tree.policy_and_root_values_arrays()
         return SearchBatchResult(
-            visit_counts=tree.visit_counts_array(),
-            root_values=tree.root_values_array(),
-            policy_targets=tree.policy_array() if is_gumbel else None,
+            policy_targets=policy_targets,
+            root_values=root_values,
             selected_actions=(tree.selected_actions_array() if is_gumbel else None),
         )
 
@@ -396,16 +369,13 @@ class TreeSearch:
     ) -> tuple[SearchResult, ...]:
         """Sample actions and create per-root objects at the replay boundary."""
         if batch.selected_actions is not None:
-            assert batch.policy_targets is not None
             return tuple(
                 SearchResult(
                     action=int(action),
-                    visit_counts=counts,
-                    root_value=float(value),
                     policy_target=policy,
+                    root_value=float(value),
                 )
-                for counts, value, policy, action in zip(
-                    batch.visit_counts,
+                for value, policy, action in zip(
                     batch.root_values,
                     batch.policy_targets,
                     batch.selected_actions,
@@ -414,20 +384,20 @@ class TreeSearch:
             )
 
         self._validate_temperature(temperature)
-        policies = _visit_policy(batch.visit_counts, temperature)
+        action_policies = _temperature_policy(batch.policy_targets, temperature)
         return tuple(
             SearchResult(
                 action=self.rng.choices(
-                    range(counts.shape[0]),
-                    weights=policy,
+                    range(policy_target.shape[0]),
+                    weights=action_policy,
                     k=1,
                 )[0],
-                visit_counts=counts,
+                policy_target=policy_target,
                 root_value=float(value),
             )
-            for counts, policy, value in zip(
-                batch.visit_counts,
-                policies,
+            for policy_target, action_policy, value in zip(
+                batch.policy_targets,
+                action_policies,
                 batch.root_values,
                 strict=True,
             )
@@ -475,18 +445,18 @@ def _evaluator_inference(evaluator: PackedEvaluator):
             module.train(was_training)
 
 
-def _visit_policy(
-    visits: NDArray[np.int32],
+def _temperature_policy(
+    policy: NDArray[np.float32],
     temperature: float,
 ) -> NDArray[np.float64]:
-    """Return batched temperature-adjusted visit weights with NumPy."""
-    if visits.ndim not in (1, 2) or visits.shape[-1] == 0:
-        raise ValueError("visits must have shape (actions,) or (roots, actions)")
-    squeeze = visits.ndim == 1
-    rows = visits[None, :] if squeeze else visits
+    """Apply action-selection temperature to one or more search policies."""
+    if policy.ndim not in (1, 2) or policy.shape[-1] == 0:
+        raise ValueError("policy must have shape (actions,) or (roots, actions)")
+    squeeze = policy.ndim == 1
+    rows = policy[None, :] if squeeze else policy
     totals = rows.sum(axis=1)
     if np.any(totals <= 0):
-        raise ValueError("at least one action must have been visited")
+        raise ValueError("each policy must have positive mass")
     if temperature == 0.0:
         policies = np.zeros(rows.shape, dtype=np.float64)
         policies[np.arange(rows.shape[0]), rows.argmax(axis=1)] = 1.0

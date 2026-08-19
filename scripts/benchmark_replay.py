@@ -82,9 +82,11 @@ def make_trajectory(
         )
         for offset in range(stored_steps + stack_size)
     )
+    policy = np.arange(1, action_space_size + 1, dtype=np.float32)
+    policy /= policy.sum()
     result = SearchResult(
         action=0,
-        visit_counts=tuple(range(1, action_space_size + 1)),
+        policy_target=policy,
         root_value=0.25,
     )
     return GameTrajectory(

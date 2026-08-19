@@ -44,10 +44,8 @@ public:
         FloatArray values,
         FloatArray policy_logits
     );
-    pybind11::array_t<std::int32_t> visit_counts_array() const;
-    pybind11::array_t<float> policy_array() const;
+    pybind11::tuple policy_and_root_values_arrays() const;
     pybind11::array_t<std::int64_t> selected_actions_array() const;
-    pybind11::array_t<float> root_values_array() const;
 
 private:
     class Impl;

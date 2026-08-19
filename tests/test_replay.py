@@ -28,7 +28,7 @@ def make_trajectory(
     results = tuple(
         SearchResult(
             action=step % 2,
-            visit_counts=(1, 3),
+            policy_target=(0.25, 0.75),
             root_value=float(initial_value + step),
         )
         for step in range(length)
@@ -560,17 +560,17 @@ def test_failed_trajectory_preparation_does_not_evict_existing_data() -> None:
         initial_value=10,
         terminated=True,
     )
-    invalid_result = SearchResult(
+    incompatible_result = SearchResult(
         action=0,
-        visit_counts=(0, 0),
+        policy_target=(1.0, 0.0, 0.0),
         root_value=0.0,
     )
     invalid = replace(
         invalid,
-        search_results=(invalid_result,) * invalid.stored_transition_count,
+        search_results=(incompatible_result, *invalid.search_results[1:]),
     )
 
-    with pytest.raises(ValueError, match="visited actions"):
+    with pytest.raises(ValueError, match="same size"):
         replay.add(invalid)
 
     assert len(replay) == 2

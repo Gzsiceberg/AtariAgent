@@ -246,11 +246,7 @@ ValueTargetNetwork::policy_reanalysis_outputs(
             add_exploration_noise,
             deterministic_ties
         );
-        torch::Tensor policies = search_output.to(torch::kFloat32);
-        if (!search_->uses_gumbel()) {
-            policies.div_(policies.sum(1, true));
-        }
-        policy_chunks.push_back(std::move(policies));
+        policy_chunks.push_back(std::move(search_output));
         value_chunks.push_back(std::move(root_values));
     }
     return {

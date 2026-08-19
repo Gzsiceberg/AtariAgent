@@ -62,8 +62,9 @@ PYBIND11_MODULE(_tree_search_native, module) {
             py::arg("values"),
             py::arg("policy_logits")
         )
-        .def("visit_counts_array", &BatchTree::visit_counts_array)
-        .def("policy_array", &BatchTree::policy_array)
-        .def("selected_actions_array", &BatchTree::selected_actions_array)
-        .def("root_values_array", &BatchTree::root_values_array);
+        .def(
+            "policy_and_root_values_arrays",
+            &BatchTree::policy_and_root_values_arrays
+        )
+        .def("selected_actions_array", &BatchTree::selected_actions_array);
 }

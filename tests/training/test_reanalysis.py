@@ -44,12 +44,14 @@ def _pipeline(
     prefetch_batches: int = 2,
     timeout_seconds: float = 60.0,
     target_update_interval: int = 200,
+    add_dirichlet_noise: bool = False,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
         action_space_size=2,
         search_config=SearchConfig(num_simulations=1),
         policy_chunk_size=4,
+        add_dirichlet_noise=add_dirichlet_noise,
         cache_targets=True,
         rng_seed=3,
         support_min=-300,
@@ -87,6 +89,18 @@ def test_native_pipeline_enforces_prefetch_bound_and_matches_requests() -> None:
         ready_ids = {pipeline.wait_next().request_id, pipeline.wait_next().request_id}
         assert ready_ids == {0, 1}
         assert pipeline.pending_count == 0
+    finally:
+        pipeline.close()
+
+
+def test_native_pipeline_accepts_dirichlet_noise_option() -> None:
+    pipeline = _pipeline(
+        prefetch_batches=1,
+        add_dirichlet_noise=True,
+    )
+    try:
+        pipeline.submit(_batch())
+        assert pipeline.wait_next().policy_roots_searched == 3
     finally:
         pipeline.close()
 
@@ -193,6 +207,7 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             action_space_size=2,
             search_config=SearchConfig(num_simulations=1),
             policy_chunk_size=4,
+            add_dirichlet_noise=False,
             cache_targets=True,
             rng_seed=0,
             support_min=-300,
