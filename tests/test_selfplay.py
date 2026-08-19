@@ -164,6 +164,7 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     first_run = worker.run(3)
 
     assert agent.calls == 3
+    assert all(kwargs["exploration_mode"] is True for kwargs in agent.kwargs)
     assert all(len(batch) == 2 for batch in agent.observation_batches)
     assert all(obs.shape == (4, 2, 2, 3) for obs in agent.observation_batches[0])
     assert [len(block) for block in first_run[0]] == [2]

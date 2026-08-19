@@ -133,7 +133,7 @@ def evaluate_agent(
             while environments:
                 output = agent.act(
                     observations,
-                    add_exploration_noise=False,
+                    exploration_mode=False,
                     temperature=0.0,
                 )
                 if len(output.actions) != len(environments):

@@ -35,7 +35,6 @@ class SelfPlayConfig:
     steps_per_iteration: int = 100
     trajectory_length: int = 400
     clip_rewards: bool = True
-    add_exploration_noise: bool = True
 
 
 @dataclass

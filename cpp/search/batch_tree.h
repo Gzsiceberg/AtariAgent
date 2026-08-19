@@ -30,7 +30,7 @@ public:
         int num_top_actions = 4,
         float c_visit = 50.0F,
         float c_scale = 0.1F,
-        bool use_gumbel_noise = true
+        bool exploration_mode = true
     );
     ~BatchTree();
 

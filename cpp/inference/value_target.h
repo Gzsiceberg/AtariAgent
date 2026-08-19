@@ -65,7 +65,7 @@ public:
         const torch::Tensor& frames,
         const torch::Tensor& policy_mask,
         std::int64_t stack_size,
-        bool add_exploration_noise = true,
+        bool exploration_mode = true,
         bool deterministic_ties = false
     );
 

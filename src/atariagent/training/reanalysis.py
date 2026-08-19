@@ -159,7 +159,7 @@ class ReanalysisPipeline:
         # intrinsic sampling noise have different roles. Reanalysis may disable
         # only the former; Gumbel search still needs Gumbel noise to sample its
         # root candidate ranking.
-        add_search_noise = (
+        exploration_mode = (
             search_config.search_algorithm == "gumbel"
             or add_dirichlet_noise
         )
@@ -170,7 +170,7 @@ class ReanalysisPipeline:
             timeout_seconds,
             target_update_interval,
             cache_targets,
-            add_search_noise,
+            exploration_mode,
         )
         self._latest_target_state: TargetState | None = None
         self._closed = False

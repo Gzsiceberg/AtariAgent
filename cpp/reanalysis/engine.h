@@ -20,7 +20,7 @@ public:
         double timeout_seconds,
         int target_update_interval,
         bool cache_targets,
-        bool add_search_noise
+        bool exploration_mode
     );
     ~NativeReanalysisEngine();
 

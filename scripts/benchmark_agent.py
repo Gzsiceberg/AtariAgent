@@ -82,7 +82,7 @@ def main() -> None:
     for _ in range(args.warmup):
         agent.act(
             observations,
-            add_exploration_noise=True,
+            exploration_mode=True,
             temperature=1.0,
         )
     synchronize()
@@ -94,7 +94,7 @@ def main() -> None:
         started = perf_counter()
         agent.act(
             observations,
-            add_exploration_noise=True,
+            exploration_mode=True,
             temperature=1.0,
         )
         synchronize()

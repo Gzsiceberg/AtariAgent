@@ -42,7 +42,7 @@ class SelfPlayAgent(Protocol):
         self,
         observations: Sequence[AtariObservation],
         *,
-        add_exploration_noise: bool = False,
+        exploration_mode: bool = False,
         temperature: float = 0.0,
     ) -> AgentOutput: ...
 
@@ -375,7 +375,6 @@ class SelfPlayWorker:
         lookahead_steps: int = 5,
         base_seed: int = 0,
         clip_rewards: bool = True,
-        add_exploration_noise: bool = True,
         temperature: float = 1.0,
     ) -> None:
         if environments is not None and environment_factory is not None:
@@ -426,7 +425,6 @@ class SelfPlayWorker:
         self.trajectory_length = trajectory_length
         self.lookahead_steps = lookahead_steps
         self.clip_rewards = clip_rewards
-        self.add_exploration_noise = add_exploration_noise
         self.temperature = float(temperature)
 
         self.total_vector_steps = 0
@@ -462,7 +460,7 @@ class SelfPlayWorker:
         for _ in range(steps):
             agent_output = self.agent.act(
                 self._observations,
-                add_exploration_noise=self.add_exploration_noise,
+                exploration_mode=True,
                 temperature=float(active_temperature),
             )
             self._validate_agent_output(agent_output)

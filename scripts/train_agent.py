@@ -650,7 +650,6 @@ def main(config: TrainAgentConfig) -> None:
             ),
             base_seed=config.seed,
             clip_rewards=config.self_play.clip_rewards,
-            add_exploration_noise=config.self_play.add_exploration_noise,
         ) as worker:
             search_mode = agent.search.config.search_algorithm.upper()
             while worker.total_transitions < config.self_play.total_transitions:

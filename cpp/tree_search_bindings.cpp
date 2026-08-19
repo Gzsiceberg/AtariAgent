@@ -46,7 +46,7 @@ PYBIND11_MODULE(_tree_search_native, module) {
             py::arg("num_top_actions") = 4,
             py::arg("c_visit") = 50.0F,
             py::arg("c_scale") = 0.1F,
-            py::arg("use_gumbel_noise") = true
+            py::arg("exploration_mode") = true
         )
         .def(
             "traverse_arrays",

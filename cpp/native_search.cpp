@@ -54,7 +54,7 @@ RootTree::RootTree(
     int num_top_actions,
     float c_visit,
     float c_scale,
-    bool use_gumbel_noise
+    bool exploration_mode
 )
     : action_count_(static_cast<int>(root_priors.size())),
       discount_(discount),
@@ -102,7 +102,7 @@ RootTree::RootTree(
     if (algorithm_ == SearchAlgorithm::Gumbel) {
         gumbels_.resize(action_count_, 0.0F);
         gumbel_score_scratch_.resize(action_count_);
-        if (use_gumbel_noise) {
+        if (exploration_mode) {
             std::uint64_t state = seed;
             for (float& gumbel : gumbels_) {
                 state += 0x9e3779b97f4a7c15ULL;

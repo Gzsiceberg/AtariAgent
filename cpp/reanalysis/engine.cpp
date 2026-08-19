@@ -42,7 +42,7 @@ public:
         double timeout_seconds,
         int target_update_interval,
         bool cache_targets,
-        bool add_search_noise
+        bool exploration_mode
     )
         : target_(std::move(target)),
           device_(device),
@@ -50,7 +50,7 @@ public:
           timeout_seconds_(timeout_seconds),
           target_update_interval_(target_update_interval),
           cache_targets_(cache_targets),
-          add_search_noise_(add_search_noise) {
+          exploration_mode_(exploration_mode) {
         if (!target_) {
             throw std::invalid_argument("target must not be null");
         }
@@ -617,7 +617,7 @@ private:
                 device_frames,
                 policy_mask.to(device_),
                 job->stack_size,
-                add_search_noise_,
+                exploration_mode_,
                 false
             );
         const auto root_count = positions.size(0);
@@ -718,7 +718,7 @@ private:
     double timeout_seconds_;
     int target_update_interval_;
     bool cache_targets_;
-    bool add_search_noise_;
+    bool exploration_mode_;
     mutable std::mutex mutex_;
     std::condition_variable work_ready_;
     std::condition_variable result_ready_;
@@ -743,7 +743,7 @@ NativeReanalysisEngine::NativeReanalysisEngine(
     double timeout_seconds,
     int target_update_interval,
     bool cache_targets,
-    bool add_search_noise
+    bool exploration_mode
 )
     : impl_(std::make_unique<Impl>(
           std::move(target),
@@ -752,7 +752,7 @@ NativeReanalysisEngine::NativeReanalysisEngine(
           timeout_seconds,
           target_update_interval,
           cache_targets,
-          add_search_noise
+          exploration_mode
       )) {}
 
 NativeReanalysisEngine::~NativeReanalysisEngine() = default;

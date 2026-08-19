@@ -37,7 +37,7 @@ class GreedyAgent:
 
     def act(self, observations, **kwargs):
         assert kwargs == {
-            "add_exploration_noise": False,
+            "exploration_mode": False,
             "temperature": 0.0,
         }
         return SimpleNamespace(actions=(1,))

@@ -28,7 +28,6 @@ self_play:
   steps_per_iteration: 100
   trajectory_length: 400
   clip_rewards: true
-  add_exploration_noise: true
 
 replay:
   max_transitions: 100000

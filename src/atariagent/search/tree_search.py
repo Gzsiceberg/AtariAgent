@@ -202,7 +202,7 @@ class TreeSearch:
         root_values: Tensor,
         root_policy_logits: Tensor,
         *,
-        add_exploration_noise: bool = False,
+        exploration_mode: bool = False,
         _deterministic_ties: bool = False,
     ) -> SearchBatchResult:
         """Search packed roots and return contiguous native arrays."""
@@ -250,7 +250,7 @@ class TreeSearch:
         root_priors = np.exp(root_logits)
         root_priors /= root_priors.sum(axis=1, keepdims=True)
         root_priors = np.ascontiguousarray(root_priors, dtype=np.float32)
-        if add_exploration_noise and self.config.search_algorithm == "puct":
+        if exploration_mode and self.config.search_algorithm == "puct":
             for priors in root_priors:
                 self._add_root_noise(priors)
 
@@ -268,7 +268,7 @@ class TreeSearch:
             self.config.num_top_actions,
             self.config.c_visit,
             self.config.c_scale,
-            add_exploration_noise,
+            exploration_mode,
         )
         device = root_states.device
         initial_hidden = evaluator.initial_hidden(

@@ -267,7 +267,7 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("root_states"),
             py::arg("root_values"),
             py::arg("root_policy_logits"),
-            py::arg("add_exploration_noise") = false,
+            py::arg("exploration_mode") = false,
             py::arg("deterministic_ties") = false
         );
     module.attr("MCTS") = module.attr("TreeSearch");
@@ -377,7 +377,7 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("timeout_seconds"),
             py::arg("target_update_interval"),
             py::arg("cache_targets"),
-            py::arg("add_search_noise")
+            py::arg("exploration_mode")
         )
         .def(
             "publish_weights",

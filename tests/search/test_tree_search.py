@@ -148,7 +148,7 @@ def _reference_batch(
     roots: list[_Evaluation],
     *,
     seed: int,
-    add_exploration_noise: bool,
+    exploration_mode: bool,
 ) -> tuple[list[tuple[int, ...]], list[float]]:
     """Independent Python PUCT retained only for native differential tests."""
     rng = random.Random(seed)
@@ -159,7 +159,7 @@ def _reference_batch(
         _expand(root, evaluation)
         root.visits = 1
         root.value_sum = evaluation.value
-        if add_exploration_noise:
+        if exploration_mode:
             samples = [
                 rng.gammavariate(config.dirichlet_alpha, 1.0) for _ in root.children
             ]
@@ -318,14 +318,14 @@ def test_native_batch_search_matches_python_reference(seed: int) -> None:
         states,
         root_values,
         root_logits,
-        add_exploration_noise=True,
+        exploration_mode=True,
         _deterministic_ties=True,
     )
     counts, values = _reference_batch(
         config,
         [_Evaluation(index, 0.0, float(index), [1.0, 0.2, -0.7]) for index in range(3)],
         seed=seed,
-        add_exploration_noise=True,
+        exploration_mode=True,
     )
 
     expected_policies = np.asarray(counts, dtype=np.float32)

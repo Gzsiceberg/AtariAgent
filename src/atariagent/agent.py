@@ -290,7 +290,7 @@ class AtariAgent(nn.Module):
         self,
         observations: Tensor | Sequence[AtariObservation],
         *,
-        add_exploration_noise: bool = False,
+        exploration_mode: bool = False,
         temperature: float = 0.0,
     ) -> AgentOutput:
         """Evaluate raw Atari observations or a prepared tensor batch."""
@@ -313,7 +313,7 @@ class AtariAgent(nn.Module):
                 states,
                 values,
                 policy_logits,
-                add_exploration_noise=add_exploration_noise,
+                exploration_mode=exploration_mode,
             )
             search_results = self.search.materialize_results(
                 search_batch,

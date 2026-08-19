@@ -37,7 +37,7 @@ public:
         const torch::Tensor& root_states,
         const torch::Tensor& root_values,
         const torch::Tensor& root_policy_logits,
-        bool add_exploration_noise = false,
+        bool exploration_mode = false,
         bool deterministic_ties = false
     );
 

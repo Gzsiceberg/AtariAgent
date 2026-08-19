@@ -108,7 +108,7 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
     const torch::Tensor& root_states,
     const torch::Tensor& root_values,
     const torch::Tensor& root_policy_logits,
-    bool add_exploration_noise,
+    bool exploration_mode,
     bool deterministic_ties
 ) {
     c10::InferenceMode inference_guard;
@@ -162,7 +162,7 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
         for (std::int64_t action = 0; action < action_count; ++action) {
             priors[action] = prior_data[root][action];
         }
-        if (add_exploration_noise && !uses_gumbel()) {
+        if (exploration_mode && !uses_gumbel()) {
             add_root_noise(priors);
         }
         trees.emplace_back(
@@ -179,7 +179,7 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
             static_cast<int>(num_top_actions_),
             static_cast<float>(c_visit_),
             static_cast<float>(c_scale_),
-            add_exploration_noise
+            exploration_mode
         );
     }
 
