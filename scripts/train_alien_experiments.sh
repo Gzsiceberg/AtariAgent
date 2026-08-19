@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run three Alien training experiments sequentially, then suspend the host.
+# Run two Alien training experiments sequentially, then suspend the host.
 
 set -Eeuo pipefail
 
@@ -53,19 +53,13 @@ run_training() {
     } 2>&1 | tee "$output_dir/training.log"
 }
 
-# The configured target update interval is 800 unless explicitly overridden.
-run_training target-update-400 \
-    training.target_update_interval=400
-
-run_training optimizer-adam \
-    training.optimizer=adam \
-    training.learning_rate=0.001
+run_training default
 
 run_training search-puct-simulations-50 \
     self_play.search_algorithm=puct \
     self_play.num_simulations=50
 
-printf '\nAll three training runs completed successfully. Suspending the host.\n'
+printf '\nBoth training runs completed successfully. Suspending the host.\n'
 sync
 
 if ! kill -0 "$SUDO_KEEPALIVE_PID" 2>/dev/null; then
