@@ -285,20 +285,6 @@ class AtariAgent(nn.Module):
         )
         self.mcts = self.search  # Backward-compatible attribute alias.
 
-    def forward(
-        self,
-        observations: Tensor | Sequence[AtariObservation],
-        *,
-        add_exploration_noise: bool = False,
-        temperature: float = 0.0,
-    ) -> AgentOutput:
-        """Return one search-selected action and result per observation."""
-        return self.act(
-            observations,
-            add_exploration_noise=add_exploration_noise,
-            temperature=temperature,
-        )
-
     @torch.inference_mode()
     def act(
         self,

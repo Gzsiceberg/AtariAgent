@@ -82,7 +82,7 @@ def test_agent_batches_root_and_recurrent_network_inference() -> None:
         search_config=SearchConfig(num_simulations=simulations),
     )
 
-    output = agent(torch.randn(3, 4, 96, 96, requires_grad=True))
+    output = agent.act(torch.randn(3, 4, 96, 96, requires_grad=True))
 
     assert agent.mcts is agent.search
     assert isinstance(agent.recurrent_evaluator, BatchedNetworkEvaluator)
@@ -148,7 +148,7 @@ def test_agent_runs_every_network_without_gradients_and_in_eval_mode() -> None:
     )
     assert agent.training
 
-    agent(torch.randn(2, 4, 96, 96))
+    agent.act(torch.randn(2, 4, 96, 96))
 
     modules = (representation, dynamics, prediction)
     assert all(not any(module.grad_modes) for module in modules)
@@ -188,7 +188,7 @@ def test_agent_accepts_one_unbatched_observation() -> None:
         search_config=SearchConfig(num_simulations=1),
     )
 
-    output = agent(torch.randn(4, 96, 96))
+    output = agent.act(torch.randn(4, 96, 96))
 
     assert len(output.actions) == 1
     assert len(output.search_results) == 1
