@@ -155,7 +155,12 @@ class ReanalysisPipeline:
         self.prefetch_batches = prefetch_batches
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
-        self.exploration_mode = exploration_mode
+        # Gumbel-Top-k always needs its intrinsic sampling noise during
+        # reanalysis. The configured exploration mode controls only PUCT's
+        # optional Dirichlet prior perturbation.
+        self.exploration_mode = (
+            search_config.search_algorithm == "gumbel" or exploration_mode
+        )
         self._engine = NativeReanalysisEngine(
             self.target,
             str(self.device),

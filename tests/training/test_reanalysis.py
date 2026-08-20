@@ -1,5 +1,4 @@
 from dataclasses import replace
-from time import sleep
 
 import pytest
 import torch
@@ -44,12 +43,17 @@ def _pipeline(
     prefetch_batches: int = 2,
     timeout_seconds: float = 60.0,
     target_update_interval: int = 200,
+    search_algorithm: str = "puct",
     exploration_mode: bool = False,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
         action_space_size=2,
-        search_config=SearchConfig(num_simulations=1),
+        search_config=SearchConfig(
+            num_simulations=2 if search_algorithm == "gumbel" else 1,
+            search_algorithm=search_algorithm,
+            num_top_actions=2,
+        ),
         policy_chunk_size=4,
         exploration_mode=exploration_mode,
         cache_targets=True,
@@ -93,16 +97,27 @@ def test_native_pipeline_enforces_prefetch_bound_and_matches_requests() -> None:
         pipeline.close()
 
 
-@pytest.mark.parametrize("exploration_mode", [False, True])
-def test_native_pipeline_accepts_exploration_mode_option(
+@pytest.mark.parametrize(
+    ("search_algorithm", "exploration_mode", "expected_exploration_mode"),
+    [
+        ("puct", False, False),
+        ("puct", True, True),
+        ("gumbel", False, True),
+        ("gumbel", True, True),
+    ],
+)
+def test_native_pipeline_applies_reanalysis_exploration_mode(
+    search_algorithm: str,
     exploration_mode: bool,
+    expected_exploration_mode: bool,
 ) -> None:
     pipeline = _pipeline(
         prefetch_batches=1,
+        search_algorithm=search_algorithm,
         exploration_mode=exploration_mode,
     )
     try:
-        assert pipeline.exploration_mode is exploration_mode
+        assert pipeline.exploration_mode is expected_exploration_mode
         pipeline.submit(_batch())
         assert pipeline.wait_next().policy_roots_searched == 3
     finally:
