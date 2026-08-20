@@ -18,7 +18,6 @@ from atariagent.training.config import (
     final_evaluation_max_episode_steps,
 )
 
-
 DEFAULT_ENVIRONMENT_ID = EnvironmentConfig().id
 
 
@@ -65,6 +64,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="parallel environments (default: checkpoint setting or 4)",
     )
+    parser.add_argument(
+        "--search-algorithm",
+        choices=("puct", "gumbel"),
+        default=None,
+        help="override the checkpoint search algorithm",
+    )
+    parser.add_argument(
+        "--num-simulations",
+        type=int,
+        default=None,
+        help="override the checkpoint search simulation count",
+    )
     parser.add_argument("--seed", type=int, default=0, help="first episode seed")
     parser.add_argument(
         "--device",
@@ -93,6 +104,8 @@ def main() -> int:
         raise SystemExit("--episodes must be positive")
     if args.num_envs is not None and args.num_envs <= 0:
         raise SystemExit("--num-envs must be positive")
+    if args.num_simulations is not None and args.num_simulations <= 0:
+        raise SystemExit("--num-simulations must be positive")
 
     device = resolve_device(args.device)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
@@ -126,6 +139,8 @@ def main() -> int:
         checkpoint_path,
         action_space_size=action_space_size,
         device=device,
+        search_algorithm_override=args.search_algorithm,
+        num_simulations_override=args.num_simulations,
     )
     stats = evaluate_agent(
         agent,

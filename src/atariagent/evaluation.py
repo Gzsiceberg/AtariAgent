@@ -194,8 +194,10 @@ def load_agent_checkpoint(
     *,
     action_space_size: int,
     device: torch.device,
+    search_algorithm_override: str | None = None,
+    num_simulations_override: int | None = None,
 ) -> tuple[AtariAgent, Mapping[str, Any]]:
-    """Build an agent from a training checkpoint and return its saved config."""
+    """Build an agent from a checkpoint, optionally overriding its search."""
     checkpoint_path = Path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     config = checkpoint.get("config")
@@ -208,8 +210,16 @@ def load_agent_checkpoint(
         training_config = config["training"]
         frame_stack = int(environment_config["frame_stack"])
         grayscale = bool(environment_config["grayscale"])
-        num_simulations = int(self_play_config["num_simulations"])
-        search_algorithm = str(self_play_config.get("search_algorithm", "puct"))
+        num_simulations = (
+            int(num_simulations_override)
+            if num_simulations_override is not None
+            else int(self_play_config["num_simulations"])
+        )
+        search_algorithm = (
+            str(search_algorithm_override)
+            if search_algorithm_override is not None
+            else str(self_play_config.get("search_algorithm", "puct"))
+        )
         num_top_actions = int(self_play_config.get("num_top_actions", 4))
         c_visit = float(self_play_config.get("c_visit", 50.0))
         c_scale = float(self_play_config.get("c_scale", 0.1))
@@ -226,6 +236,12 @@ def load_agent_checkpoint(
         raise ValueError(
             f"checkpoint {checkpoint_path} has an invalid config"
         ) from error
+
+    print(
+        "Evaluation search: "
+        f"num_simulations={num_simulations}, "
+        f"num_top_actions={num_top_actions}"
+    )
 
     image_channels = 1 if grayscale else 3
     agent = AtariAgent(

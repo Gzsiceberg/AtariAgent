@@ -2,11 +2,14 @@ import random
 from types import SimpleNamespace
 
 import pytest
+import torch
 
+import atariagent.evaluation as evaluation_module
 from atariagent.evaluation import (
     EvaluationRecord,
     EvaluationStats,
     evaluate_agent,
+    load_agent_checkpoint,
     plot_evaluation_history,
     write_evaluation_history,
 )
@@ -110,6 +113,64 @@ def test_evaluate_agent_batches_parallel_environments() -> None:
 def test_evaluate_agent_rejects_invalid_parallelism() -> None:
     with pytest.raises(ValueError, match="num_envs"):
         evaluate_agent(GreedyAgent(), OneStepEnvironment, episodes=1, num_envs=0)
+
+
+def test_load_agent_checkpoint_applies_search_overrides(monkeypatch) -> None:
+    checkpoint = {
+        "config": {
+            "environment": {
+                "frame_stack": 4,
+                "frame_skip": 4,
+                "grayscale": True,
+            },
+            "self_play": {
+                "num_simulations": 16,
+                "search_algorithm": "gumbel",
+                "num_top_actions": 4,
+            },
+            "training": {"discount": 0.997, "lstm_horizon": 5},
+        },
+        "representation": {},
+        "dynamics": {},
+        "prediction": {},
+    }
+
+    class FakeNetwork:
+        def load_state_dict(self, state_dict) -> None:
+            assert state_dict == {}
+
+    class FakeAgent:
+        def __init__(self, in_channels, action_space_size, *, search_config) -> None:
+            assert in_channels == 4
+            assert action_space_size == 6
+            self.search_config = search_config
+            self.representation_network = FakeNetwork()
+            self.dynamics_network = FakeNetwork()
+            self.prediction_network = FakeNetwork()
+
+        def to(self, device):
+            assert device == torch.device("cpu")
+            return self
+
+        def eval(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        evaluation_module.torch, "load", lambda *args, **kwargs: checkpoint
+    )
+    monkeypatch.setattr(evaluation_module, "AtariAgent", FakeAgent)
+
+    agent, saved_config = load_agent_checkpoint(
+        "checkpoint.pt",
+        action_space_size=6,
+        device=torch.device("cpu"),
+        search_algorithm_override="puct",
+        num_simulations_override=50,
+    )
+
+    assert agent.search_config.search_algorithm == "puct"
+    assert agent.search_config.num_simulations == 50
+    assert saved_config is checkpoint["config"]
 
 
 def test_evaluation_history_writes_json_and_plot(tmp_path) -> None:
