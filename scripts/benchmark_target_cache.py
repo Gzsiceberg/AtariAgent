@@ -120,7 +120,7 @@ def main() -> None:
             value_prefix_horizon=5,
         ),
         policy_chunk_size=args.chunk_size,
-        add_dirichlet_noise=False,
+        exploration_mode=False,
         cache_targets=True,
         rng_seed=0,
         support_min=-300,
