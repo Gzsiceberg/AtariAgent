@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run two Alien training experiments sequentially, then suspend the host.
+# Run one Alien training experiment, then suspend the host.
 
 set -Eeuo pipefail
 
@@ -53,13 +53,10 @@ run_training() {
     } 2>&1 | tee "$output_dir/training.log"
 }
 
-run_training gumbel-simulations-16 \
-    self_play.num_simulations=16
+run_training reanalysis-cache-clear-200 \
+    training.reanalysis_cache_clear_interval=200
 
-run_training gumbel-simulations-32 \
-    self_play.num_simulations=32
-
-printf '\nBoth training runs completed successfully. Suspending the host.\n'
+printf '\nTraining run completed successfully. Suspending the host.\n'
 sync
 
 if ! kill -0 "$SUDO_KEEPALIVE_PID" 2>/dev/null; then
