@@ -53,11 +53,11 @@ run_training() {
     } 2>&1 | tee "$output_dir/training.log"
 }
 
+run_training gumbel-simulations-16 \
+    self_play.num_simulations=16
+
 run_training gumbel-simulations-32 \
     self_play.num_simulations=32
-
-run_training gumbel-no-reanalysis-cache \
-    training.cache_reanalyzed_targets=false
 
 printf '\nBoth training runs completed successfully. Suspending the host.\n'
 sync
