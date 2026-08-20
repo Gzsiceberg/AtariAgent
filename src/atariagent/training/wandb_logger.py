@@ -37,8 +37,7 @@ class WandbLogger:
         if run is not None:
             for namespace, step_name in (
                 ("train", "train/update"),
-                ("self_play", "self_play/transitions"),
-                ("eval", "eval/update"),
+                ("self_play", "self_play/total_episodes"),
             ):
                 run.define_metric(step_name)
                 run.define_metric(f"{namespace}/*", step_metric=step_name)
@@ -95,9 +94,6 @@ class WandbLogger:
         *,
         recent_rewards: Sequence[float],
         latest_reward: float,
-        transitions: int,
-        iteration: int,
-        new_episodes: int,
         total_episodes: int,
     ) -> None:
         """Log rolling full-game self-play reward statistics."""
@@ -105,11 +101,7 @@ class WandbLogger:
             return
         self._run.log(
             {
-                "self_play/transitions": transitions,
-                "self_play/iteration": iteration,
-                "self_play/new_episodes": new_episodes,
                 "self_play/total_episodes": total_episodes,
-                "self_play/reward_window": len(recent_rewards),
                 "self_play/reward_mean_100": stats.mean,
                 "self_play/reward_median_100": stats.median,
                 "self_play/reward_std_100": stats.std,
@@ -118,14 +110,12 @@ class WandbLogger:
             }
         )
 
-    def log_evaluation(self, stats: EvaluationStats, *, update: int) -> None:
+    def log_evaluation(self, stats: EvaluationStats) -> None:
         """Log checkpoint evaluation reward statistics."""
         if self._run is None:
             return
         self._run.log(
             {
-                "eval/update": update,
-                "eval/episodes": len(stats.rewards),
                 "eval/reward_mean": stats.mean,
                 "eval/reward_median": stats.median,
                 "eval/reward_std": stats.std,

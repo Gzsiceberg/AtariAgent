@@ -540,7 +540,7 @@ def main(config: TrainAgentConfig) -> None:
                 evaluation_records,
                 environment_id=config.environment.id,
             )
-            wandb_logger.log_evaluation(stats, update=update)
+            wandb_logger.log_evaluation(stats)
             log(
                 "[bold blue]Evaluation complete[/bold blue] "
                 f"[dim]update={update:,} episodes={config.evaluation.episodes} "
@@ -718,9 +718,6 @@ def main(config: TrainAgentConfig) -> None:
                         recent_stats,
                         recent_rewards=recent_rewards,
                         latest_reward=completed_rewards[-1],
-                        transitions=worker.total_transitions,
-                        iteration=collection_iteration,
-                        new_episodes=len(completed_rewards),
                         total_episodes=len(self_play_episode_rewards),
                     )
                     log(
