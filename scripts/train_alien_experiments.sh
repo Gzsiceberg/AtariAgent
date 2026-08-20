@@ -53,8 +53,8 @@ run_training() {
     } 2>&1 | tee "$output_dir/training.log"
 }
 
-run_training reanalysis-cache-clear-200 \
-    training.reanalysis_cache_clear_interval=200
+run_training reanalysis-cache-clear-100 \
+    training.reanalysis_cache_clear_interval=100
 
 printf '\nTraining run completed successfully. Suspending the host.\n'
 sync
