@@ -126,7 +126,6 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch) -> None:
             "self_play": {
                 "num_simulations": 16,
                 "search_algorithm": "gumbel",
-                "num_top_actions": 4,
             },
             "training": {"discount": 0.997, "lstm_horizon": 5},
         },
@@ -142,7 +141,7 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch) -> None:
     class FakeAgent:
         def __init__(self, in_channels, action_space_size, *, search_config) -> None:
             assert in_channels == 4
-            assert action_space_size == 6
+            self.action_space_size = action_space_size
             self.search_config = search_config
             self.representation_network = FakeNetwork()
             self.dynamics_network = FakeNetwork()
@@ -168,9 +167,20 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch) -> None:
         num_simulations_override=50,
     )
 
+    assert agent.action_space_size == 6
     assert agent.search_config.search_algorithm == "puct"
     assert agent.search_config.num_simulations == 50
     assert saved_config is checkpoint["config"]
+
+    gumbel_agent, _ = load_agent_checkpoint(
+        "checkpoint.pt",
+        action_space_size=18,
+        device=torch.device("cpu"),
+    )
+
+    assert gumbel_agent.search_config.search_algorithm == "gumbel"
+    assert gumbel_agent.search_config.num_simulations == 16
+    assert gumbel_agent.search_config.num_top_actions == 8
 
 
 def test_evaluation_history_writes_json_and_plot(tmp_path) -> None:

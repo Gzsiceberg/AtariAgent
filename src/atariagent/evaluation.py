@@ -220,7 +220,7 @@ def load_agent_checkpoint(
             if search_algorithm_override is not None
             else str(self_play_config.get("search_algorithm", "puct"))
         )
-        num_top_actions = int(self_play_config.get("num_top_actions", 4))
+        num_top_actions = 4  # Unused by PUCT.
         c_visit = float(self_play_config.get("c_visit", 50.0))
         c_scale = float(self_play_config.get("c_scale", 0.1))
         discount = float(training_config["discount"]) ** int(

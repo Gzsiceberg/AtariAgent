@@ -315,16 +315,18 @@ def main(config: TrainAgentConfig) -> None:
         ):
             raise ValueError("all environments must have the same action space")
 
+        num_top_actions = 4  # Unused by PUCT.
         if config.self_play.search_algorithm == "gumbel":
             (
                 config.self_play.num_simulations,
-                config.self_play.num_top_actions,
+                num_top_actions,
             ) = efficientzero_atari_gumbel_settings(
                 action_space_size,
                 config.self_play.num_simulations,
             )
             print(
                 f"num_simulations={config.self_play.num_simulations}, "
+                f"num_top_actions={num_top_actions}, "
                 f"action_space_size={action_space_size}"
             )
 
@@ -347,7 +349,7 @@ def main(config: TrainAgentConfig) -> None:
                 discount=discount,
                 value_prefix_horizon=config.training.lstm_horizon,
                 search_algorithm=config.self_play.search_algorithm,
-                num_top_actions=config.self_play.num_top_actions,
+                num_top_actions=num_top_actions,
                 c_visit=config.self_play.c_visit,
                 c_scale=config.self_play.c_scale,
             ),
