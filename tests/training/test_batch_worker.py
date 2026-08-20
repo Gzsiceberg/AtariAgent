@@ -59,6 +59,27 @@ class _FakeReplay:
         self.priority_updates.append((indices.clone(), priorities.clone()))
 
 
+@pytest.mark.parametrize("interval", [True, 2.0])
+def test_worker_rejects_non_integer_cache_clear_interval(interval: object) -> None:
+    with pytest.raises(TypeError, match="reanalysis_cache_clear_interval"):
+        BatchWorker(
+            _FakeReplay(lambda _: _batch()),  # type: ignore[arg-type]
+            batch_size=2,
+            device="cpu",
+            reanalysis_cache_clear_interval=interval,  # type: ignore[arg-type]
+        )
+
+
+def test_worker_rejects_negative_cache_clear_interval() -> None:
+    with pytest.raises(ValueError, match="reanalysis_cache_clear_interval"):
+        BatchWorker(
+            _FakeReplay(lambda _: _batch()),  # type: ignore[arg-type]
+            batch_size=2,
+            device="cpu",
+            reanalysis_cache_clear_interval=-1,
+        )
+
+
 def test_worker_bounds_sampling_when_consumer_is_slow() -> None:
     sampled: list[int] = []
     lock = Lock()
@@ -140,6 +161,7 @@ class _FakeReanalysisPipeline:
         self.pending: list[tuple[int, ReplayBatch]] = []
         self.next_request_id = 0
         self.published_versions: list[int] = []
+        self.cache_clear_request_counts: list[int] = []
         self.cache_size = 0
 
     @property
@@ -169,6 +191,9 @@ class _FakeReanalysisPipeline:
     def publish_weights(self, version: int, state) -> None:
         del state
         self.published_versions.append(version)
+
+    def clear_cache(self) -> None:
+        self.cache_clear_request_counts.append(self.next_request_id)
 
 
 def test_worker_applies_mixed_values_before_learner_transfer() -> None:
@@ -225,6 +250,7 @@ def test_worker_reanalyzes_all_batches_in_order() -> None:
         batch_size=2,
         device="cpu",
         reanalysis_pipeline=pipeline,  # type: ignore[arg-type]
+        reanalysis_cache_clear_interval=2,
         max_in_flight=3,
         ready_prefetch=1,
         timeout_seconds=2.0,
@@ -242,4 +268,5 @@ def test_worker_reanalyzes_all_batches_in_order() -> None:
 
     assert steps == [0, 1, 2, 3, 4]
     assert includes == [True, True, True, True, True]
+    assert pipeline.cache_clear_request_counts == [2, 4]
     assert pipeline.published_versions == [10]

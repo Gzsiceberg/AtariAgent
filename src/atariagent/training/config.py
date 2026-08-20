@@ -64,6 +64,7 @@ class TrainingConfig:
     reanalysis_exploration_mode: bool = False
     policy_reanalysis_chunk_size: int = 768
     cache_reanalyzed_targets: bool = True
+    reanalysis_cache_clear_interval: int = 0
     reanalysis_prefetch_batches: int = 2
     batch_max_in_flight: int = 3
     batch_ready_prefetch: int = 2

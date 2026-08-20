@@ -208,6 +208,10 @@ def main(config: TrainAgentConfig) -> None:
             config.training.mixed_value_threshold,
             "mixed_value_threshold",
         ),
+        (
+            config.training.reanalysis_cache_clear_interval,
+            "reanalysis_cache_clear_interval",
+        ),
     ):
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"training.{name} must be an integer")
@@ -554,6 +558,9 @@ def main(config: TrainAgentConfig) -> None:
                 config.training.mixed_value_start_step
             ),
             mixed_value_threshold=config.training.mixed_value_threshold,
+            reanalysis_cache_clear_interval=(
+                config.training.reanalysis_cache_clear_interval
+            ),
             max_in_flight=config.training.batch_max_in_flight,
             ready_prefetch=config.training.batch_ready_prefetch,
             timeout_seconds=config.training.batch_worker_timeout_seconds,

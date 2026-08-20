@@ -218,6 +218,11 @@ class ReanalysisPipeline:
         )
         self._latest_target_state = dict(state)
 
+    def clear_cache(self) -> None:
+        """Queue a cache clear after all previously submitted requests."""
+        self._require_open()
+        self._engine.clear_cache()
+
     def submit(self, batch: ReplayBatch) -> int:
         """Queue one ReplayBatch by retaining its existing tensor storage."""
         self._require_open()

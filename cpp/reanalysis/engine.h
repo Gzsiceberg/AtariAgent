@@ -35,6 +35,7 @@ public:
     );
     std::int64_t submit(pybind11::object batch);
     pybind11::dict wait_next();
+    void clear_cache();
     void close();
     std::size_t pending_count() const;
     std::size_t max_pending() const;

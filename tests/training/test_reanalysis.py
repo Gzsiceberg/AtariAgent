@@ -172,6 +172,12 @@ def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
             first.batch.search_value_targets,
         )
 
+        pipeline.clear_cache()
+        pipeline.submit(batch)
+        refreshed = pipeline.wait_next()
+        assert refreshed.policy_roots_searched == 3
+        assert pipeline.cache_size == 3
+
         representation = RepresentationNetwork(4)
         prediction = PredictionNetwork(2)
         dynamics = DynamicsNetwork(2)

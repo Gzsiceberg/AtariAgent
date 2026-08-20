@@ -389,6 +389,7 @@ PYBIND11_MODULE(_models_native, module) {
         )
         .def("submit", &NativeReanalysisEngine::submit, py::arg("batch"))
         .def("wait_next", &NativeReanalysisEngine::wait_next)
+        .def("clear_cache", &NativeReanalysisEngine::clear_cache)
         .def("close", &NativeReanalysisEngine::close)
         .def_property_readonly(
             "pending_count", &NativeReanalysisEngine::pending_count

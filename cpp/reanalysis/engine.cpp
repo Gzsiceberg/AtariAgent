@@ -162,6 +162,17 @@ public:
         return job->request_id;
     }
 
+    void clear_cache() {
+        auto job = std::make_shared<Job>();
+        job->kind = Kind::CacheClear;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            require_open_locked();
+            jobs_.push_back(job);
+        }
+        work_ready_.notify_one();
+    }
+
     py::dict wait_next() {
         std::shared_ptr<Job> job;
         bool timed_out = false;
@@ -268,7 +279,7 @@ public:
 
 private:
     using Clock = std::chrono::steady_clock;
-    enum class Kind { Request, Weights };
+    enum class Kind { Request, Weights, CacheClear };
 
     struct Job {
         Kind kind = Kind::Request;
@@ -459,6 +470,8 @@ private:
             try {
                 if (job->kind == Kind::Weights) {
                     process_weights(job);
+                } else if (job->kind == Kind::CacheClear) {
+                    process_cache_clear();
                 } else {
                     process_request(job);
                 }
@@ -493,15 +506,17 @@ private:
             job->prediction,
             job->dynamics
         );
-        cache_.clear();
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            cache_size_ = 0;
-        }
+        process_cache_clear();
         active_version_ = job->version;
         job->representation.clear();
         job->prediction.clear();
         job->dynamics.clear();
+    }
+
+    void process_cache_clear() {
+        cache_.clear();
+        std::lock_guard<std::mutex> lock(mutex_);
+        cache_size_ = 0;
     }
 
     void process_request(const std::shared_ptr<Job>& job) {
@@ -776,6 +791,8 @@ std::int64_t NativeReanalysisEngine::submit(py::object batch) {
 }
 
 py::dict NativeReanalysisEngine::wait_next() { return impl_->wait_next(); }
+
+void NativeReanalysisEngine::clear_cache() { impl_->clear_cache(); }
 
 void NativeReanalysisEngine::close() { impl_->close(); }
 

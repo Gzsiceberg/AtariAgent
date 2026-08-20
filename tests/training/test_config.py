@@ -59,6 +59,7 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert not config.reanalysis_exploration_mode
     assert config.policy_reanalysis_chunk_size == 768
     assert config.cache_reanalyzed_targets
+    assert config.reanalysis_cache_clear_interval == 0
     assert config.reanalysis_prefetch_batches == 2
     assert config.batch_max_in_flight == 3
     assert config.batch_ready_prefetch == 2

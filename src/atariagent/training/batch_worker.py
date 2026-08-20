@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-import math
 from queue import Empty, Full, Queue, SimpleQueue
 from threading import Event, Lock, Semaphore, Thread
 from time import perf_counter
@@ -14,6 +14,7 @@ from torch import Tensor
 
 from atariagent.replay import FIFOReplayBuffer
 from atariagent.replay_batch import ReplayBatch
+
 from .reanalysis import ReanalysisPipeline, TargetState
 
 
@@ -80,6 +81,7 @@ class BatchWorker:
         value_target: str = "td",
         mixed_value_start_step: int = 30_000,
         mixed_value_threshold: int = 5_000,
+        reanalysis_cache_clear_interval: int = 0,
         max_in_flight: int = 3,
         ready_prefetch: int = 1,
         timeout_seconds: float = 600.0,
@@ -88,6 +90,10 @@ class BatchWorker:
             (batch_size, "batch_size"),
             (mixed_value_start_step, "mixed_value_start_step"),
             (mixed_value_threshold, "mixed_value_threshold"),
+            (
+                reanalysis_cache_clear_interval,
+                "reanalysis_cache_clear_interval",
+            ),
             (max_in_flight, "max_in_flight"),
             (ready_prefetch, "ready_prefetch"),
         ):
@@ -99,6 +105,10 @@ class BatchWorker:
             raise ValueError("value_target must be td, search, or mixed")
         if mixed_value_start_step < 0 or mixed_value_threshold < 0:
             raise ValueError("mixed value thresholds must be non-negative")
+        if reanalysis_cache_clear_interval < 0:
+            raise ValueError(
+                "reanalysis_cache_clear_interval must be non-negative"
+            )
         if max_in_flight <= 0:
             raise ValueError("max_in_flight must be positive")
         if ready_prefetch <= 0:
@@ -115,6 +125,9 @@ class BatchWorker:
         self.value_target = value_target
         self.mixed_value_start_step = mixed_value_start_step
         self.mixed_value_threshold = mixed_value_threshold
+        self.reanalysis_cache_clear_interval = (
+            reanalysis_cache_clear_interval
+        )
         self.max_in_flight = max_in_flight
         self.ready_prefetch = ready_prefetch
         self.timeout_seconds = timeout_seconds
@@ -311,6 +324,13 @@ class BatchWorker:
                 and self.outstanding_count < self.max_in_flight
             ):
                 self._drain_controls()
+                cache_clear_interval = self.reanalysis_cache_clear_interval
+                if (
+                    submitted_step > 0
+                    and cache_clear_interval > 0
+                    and submitted_step % cache_clear_interval == 0
+                ):
+                    pipeline.clear_cache()
                 token, batch, sample_ms = self._sample(True)
                 try:
                     request_id = pipeline.submit(batch)
