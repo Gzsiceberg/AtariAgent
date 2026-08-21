@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
 import os
-from pathlib import Path
 import sys
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pygame
 import torch
 
 from atariagent.evaluation import evaluate_agent, load_agent_checkpoint
@@ -20,8 +22,61 @@ from atariagent.training.config import (
     final_evaluation_max_episode_steps,
 )
 
-
 DEFAULT_ENVIRONMENT_ID = EnvironmentConfig().id
+ATARI_RAW_FRAMES_PER_SECOND = 60
+WINDOW_SCALE = 3
+
+
+class PygameDisplayEnvironment:
+    """Display RGB-array renders without ALE's OpenGL ``human`` renderer."""
+
+    def __init__(self, environment: Environment, *, frame_skip: int, title: str):
+        self.environment = environment
+        self.action_space = environment.action_space
+        self.frame_rate = max(1, round(ATARI_RAW_FRAMES_PER_SECOND / frame_skip))
+        self.title = title
+        self.screen: pygame.Surface | None = None
+        self.clock = pygame.time.Clock()
+
+    def reset(self, *, seed: int | None = None):
+        result = self.environment.reset(seed=seed)
+        self._display_frame()
+        return result
+
+    def step(self, action: int):
+        result = self.environment.step(action)
+        self._display_frame()
+        return result
+
+    def _display_frame(self) -> None:
+        frame = self.environment.render()  # type: ignore[attr-defined]
+        if isinstance(frame, list):
+            frame = frame[-1]
+        if not isinstance(frame, np.ndarray) or frame.ndim != 3:
+            raise RuntimeError("Atari environment did not render an RGB frame")
+
+        height, width = frame.shape[:2]
+        window_size = (width * WINDOW_SCALE, height * WINDOW_SCALE)
+        if self.screen is None:
+            pygame.display.init()
+            pygame.display.set_caption(self.title)
+            self.screen = pygame.display.set_mode(window_size)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                raise KeyboardInterrupt
+
+        surface = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
+        surface = pygame.transform.scale(surface, window_size)
+        self.screen.blit(surface, (0, 0))
+        pygame.display.flip()
+        self.clock.tick(self.frame_rate)
+
+    def close(self) -> None:
+        try:
+            self.environment.close()
+        finally:
+            pygame.display.quit()
 
 
 def resolve_device(name: str) -> torch.device:
@@ -34,7 +89,7 @@ def resolve_device(name: str) -> torch.device:
 def require_mapping(value: object, name: str) -> Mapping[str, Any]:
     """Return a checkpoint configuration section or raise a useful error."""
     if not isinstance(value, Mapping):
-        raise ValueError(f"checkpoint has no valid {name} config")
+        raise TypeError(f"checkpoint has no valid {name} config")
     return value
 
 
@@ -103,7 +158,7 @@ def main() -> int:
 
     def make_environment(*, visible: bool) -> Environment:
         frame_skip = int(environment_config["frame_skip"])
-        return make_atari_environment(
+        environment = make_atari_environment(
             str(environment_config["id"]),
             frame_stack=int(environment_config["frame_stack"]),
             frame_skip=frame_skip,
@@ -111,7 +166,14 @@ def main() -> int:
             max_episode_steps=final_evaluation_max_episode_steps(frame_skip),
             grayscale_obs=bool(environment_config["grayscale"]),
             terminal_on_life_loss=False,
-            render_mode="human" if visible else None,
+            render_mode="rgb_array" if visible else None,
+        )
+        if not visible:
+            return environment
+        return PygameDisplayEnvironment(
+            environment,
+            frame_skip=frame_skip,
+            title=f"AtariAgent — {environment_config['id']}",
         )
 
     probe_environment = make_environment(visible=False)
@@ -137,6 +199,7 @@ def main() -> int:
             agent,
             lambda: make_environment(visible=True),
             episodes=episodes,
+            num_envs=1,
             seed=args.seed,
             print_episode_results=True,
         )
