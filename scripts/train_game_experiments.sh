@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run one Alien training experiment, then suspend the host.
+# Train MsPacman and Breakout sequentially, then suspend the host.
 
 set -Eeuo pipefail
 
@@ -28,35 +28,40 @@ trap cleanup EXIT
 SUDO_KEEPALIVE_PID=$!
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
-RUN_ROOT="runs/alien_experiments/$RUN_ID"
+RUN_ROOT="runs/game_experiments/$RUN_ID"
 mkdir -p "$RUN_ROOT"
 
 run_training() {
-    local name="$1"
-    shift
-    local output_dir="$RUN_ROOT/$name"
+    local game="$1"
+    local environment_id="$2"
+    local name="$3"
+    shift 3
+    local output_dir="$RUN_ROOT/$game/$name"
     mkdir -p "$output_dir"
 
     {
-        printf '\n=== Starting %s ===\n' "$name"
+        printf '\n=== Starting %s: %s ===\n' "$game" "$name"
         printf 'Output directory: %s\n' "$output_dir"
 
         uv run python scripts/train_agent.py \
-            environment.id=ALE/Alien-v5 \
+            "environment.id=$environment_id" \
             "checkpoint.path=$output_dir/checkpoints/agent_latest.pt" \
             "evaluation.data_path=$output_dir/evaluations/agent_evaluations.json" \
             "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png" \
-            "wandb.tags=[automation,alien,$name]" \
+            "wandb.tags=[automation,$game,$name]" \
             "$@"
 
-        printf '=== Finished %s ===\n' "$name"
+        printf '=== Finished %s: %s ===\n' "$game" "$name"
     } 2>&1 | tee "$output_dir/training.log"
 }
 
-run_training reanalysis-cache-clear-50 \
-    training.reanalysis_cache_clear_interval=50
+run_training mspacman ALE/MsPacman-v5 reanalysis-cache-clear-200 \
+    training.reanalysis_cache_clear_interval=200
 
-printf '\nTraining run completed successfully. Suspending the host.\n'
+run_training breakout ALE/Breakout-v5 reanalysis-cache-clear-200 \
+    training.reanalysis_cache_clear_interval=200
+
+printf '\nAll training runs completed successfully. Suspending the host.\n'
 sync
 
 if ! kill -0 "$SUDO_KEEPALIVE_PID" 2>/dev/null; then
