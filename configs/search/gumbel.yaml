@@ -1,0 +1,9 @@
+# @package _global_
+
+# EfficientZero V2 top-m sequential-halving search.
+self_play:
+  search_algorithm: gumbel
+
+training:
+  # Refresh cached targets every 400 learner updates.
+  reanalysis_cache_clear_interval: 400

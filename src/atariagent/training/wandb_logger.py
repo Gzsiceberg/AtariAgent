@@ -54,7 +54,18 @@ class WandbLogger:
         if not config.enabled:
             return cls()
 
-        import wandb
+        try:
+            import wandb
+        except ImportError as error:
+            raise RuntimeError(
+                "Weights & Biases logging requires the optional dependency; "
+                "install it with `uv sync --extra wandb`"
+            ) from error
+        if not hasattr(wandb, "init"):
+            raise RuntimeError(
+                "Weights & Biases logging requires the optional dependency; "
+                "install it with `uv sync --extra wandb`"
+            )
 
         run = wandb.init(
             project=config.project,

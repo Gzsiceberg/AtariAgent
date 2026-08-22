@@ -139,7 +139,7 @@ class EvaluationConfig:
 class WandbConfig:
     """Optional Weights & Biases run settings."""
 
-    enabled: bool = True
+    enabled: bool = False
     project: str = "AtariAgent"
     entity: str | None = None
     tags: list[str] = field(default_factory=list)

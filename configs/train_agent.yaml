@@ -1,5 +1,6 @@
 defaults:
   - train_agent_schema
+  - search: puct
   - override hydra/job_logging: disabled
   - _self_
 
@@ -17,8 +18,6 @@ environment:
 self_play:
   num_envs: 4
   total_transitions: 100000
-  # "gumbel" is EfficientZeroV2 top-m sequential halving; "puct" is conventional MCTS.
-  search_algorithm: gumbel
   # Gumbel training derives top-m from the game's action count: 2 below 4
   # actions, 4 below 16 actions, and 8 otherwise. Below 4 actions N becomes 4.
   num_simulations: 16
@@ -58,10 +57,8 @@ training:
   reanalysis_exploration_mode: false
   # Two 768-root chunks are faster here than 1024+512 and use less memory.
   policy_reanalysis_chunk_size: 768
-  # Cache corrected TD values, MCTS root values, and policies by target version.
+  # Cache corrected TD values, MCTS root values, and policies by replay state.
   cache_reanalyzed_targets: true
-  # Clear the cache every N learner steps; 0 keeps entries until weights change.
-  reanalysis_cache_clear_interval: 0
   # Hard limit for queued native reanalysis requests.
   reanalysis_prefetch_batches: 2
   # Bound threaded sampling, reanalysis, H2D transfer, and ready GPU batches.
@@ -133,7 +130,8 @@ evaluation:
   plot_path: evaluations/${environment_slug:${environment.id}}/agent_evaluation.png
 
 wandb:
-  enabled: true
+  # Optional: install with `uv sync --extra wandb`, then override to true.
+  enabled: false
   project: AtariAgent
   entity: null
   tags: []

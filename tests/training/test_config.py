@@ -34,10 +34,10 @@ def test_augmentation_uses_efficientzero_atari_defaults() -> None:
     assert config.intensity_scale == pytest.approx(0.05)
 
 
-def test_wandb_is_enabled_by_default() -> None:
+def test_wandb_is_disabled_by_default() -> None:
     config = WandbConfig()
 
-    assert config.enabled
+    assert not config.enabled
     assert config.project == "AtariAgent"
     assert config.entity is None
     assert config.tags == []

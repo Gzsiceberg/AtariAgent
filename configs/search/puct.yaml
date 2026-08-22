@@ -1,0 +1,9 @@
+# @package _global_
+
+# Conventional PUCT MCTS. This is the default training configuration.
+self_play:
+  search_algorithm: puct
+
+training:
+  # Zero disables periodic cache clearing.
+  reanalysis_cache_clear_interval: 0

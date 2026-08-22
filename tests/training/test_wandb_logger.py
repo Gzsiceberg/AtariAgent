@@ -1,4 +1,6 @@
+import sys
 from collections.abc import Mapping
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -40,8 +42,6 @@ def make_train_metrics() -> TrainMetrics:
 def test_wandb_run_uses_game_and_repository_commit_as_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import wandb
-
     run = FakeRun()
     initialization: dict[str, object] = {}
 
@@ -49,9 +49,9 @@ def test_wandb_run_uses_game_and_repository_commit_as_name(
         initialization.update(kwargs)
         return run
 
-    monkeypatch.setattr(wandb, "init", fake_init)
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=fake_init))
     logger = WandbLogger.initialize(
-        WandbConfig(),
+        WandbConfig(enabled=True),
         run_name=wandb_run_name("ALE/MsPacman-v5", "0123456789abcdef"),
         run_config={"seed": 2},
     )
@@ -114,8 +114,28 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
     assert run.exit_code == 0
 
 
-def test_disabled_wandb_logger_is_a_no_op() -> None:
-    logger = WandbLogger()
+def test_enabled_wandb_logger_requires_optional_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "wandb", None)
+
+    with pytest.raises(RuntimeError, match="uv sync --extra wandb"):
+        WandbLogger.initialize(
+            WandbConfig(enabled=True),
+            run_name="missing-dependency",
+            run_config={},
+        )
+
+
+def test_disabled_wandb_logger_is_a_no_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "wandb", None)
+    logger = WandbLogger.initialize(
+        WandbConfig(),
+        run_name="disabled",
+        run_config={},
+    )
 
     logger.log_training(make_train_metrics(), update=1)
     logger.log_evaluation(EvaluationStats.from_rewards((1.0,)))

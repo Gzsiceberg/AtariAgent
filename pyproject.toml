@@ -1,8 +1,9 @@
 [project]
 name = "atariagent"
 version = "0.1.0"
-description = "Add your description here"
+description = "A single-GPU, performance-oriented EfficientZero implementation for Atari 100k"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.13"
 dependencies = [
     "beartype>=0.22.9",
@@ -17,6 +18,10 @@ dependencies = [
     "rich>=15.0.0",
     "torch>=2.13.0",
     "tqdm>=4.70.0",
+]
+
+[project.optional-dependencies]
+wandb = [
     "wandb>=0.28.1",
 ]
 
