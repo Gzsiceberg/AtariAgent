@@ -1,14 +1,19 @@
+from pathlib import Path
+
 import pytest
+from hydra import compose, initialize_config_dir
 
 from atariagent.training.config import (
     AugmentationConfig,
     LossConfig,
+    SelfPlayConfig,
     TrainingConfig,
     WandbConfig,
     checkpoint_path_for_environment,
     environment_slug,
     final_evaluation_max_episode_steps,
     next_collection_vector_steps,
+    register_train_agent_config,
     target_network_update_due,
     visit_softmax_temperature,
 )
@@ -32,6 +37,27 @@ def test_augmentation_uses_efficientzero_atari_defaults() -> None:
     assert config.transforms == ["shift", "intensity"]
     assert config.shift_delta == 4
     assert config.intensity_scale == pytest.approx(0.05)
+
+
+def test_self_play_defaults_to_50_simulation_puct() -> None:
+    config = SelfPlayConfig()
+
+    assert config.search_algorithm == "puct"
+    assert config.num_simulations == 50
+
+
+def test_search_presets_select_their_simulation_budgets() -> None:
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        puct = compose(config_name="train_agent")
+        gumbel = compose(config_name="train_agent", overrides=["search=gumbel"])
+
+    assert puct.self_play.search_algorithm == "puct"
+    assert puct.self_play.num_simulations == 50
+    assert gumbel.self_play.search_algorithm == "gumbel"
+    assert gumbel.self_play.num_simulations == 16
 
 
 def test_wandb_is_disabled_by_default() -> None:

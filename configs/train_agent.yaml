@@ -18,9 +18,6 @@ environment:
 self_play:
   num_envs: 4
   total_transitions: 100000
-  # Gumbel training derives top-m from the game's action count: 2 below 4
-  # actions, 4 below 16 actions, and 8 otherwise. Below 4 actions N becomes 4.
-  num_simulations: 16
   c_visit: 50.0
   c_scale: 0.1
   steps_per_iteration: 100

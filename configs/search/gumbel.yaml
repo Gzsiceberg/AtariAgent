@@ -3,6 +3,9 @@
 # EfficientZero V2 top-m sequential-halving search.
 self_play:
   search_algorithm: gumbel
+  # Top-m is derived from the game's action count: 2 below 4 actions, 4 below
+  # 16 actions, and 8 otherwise. Below 4 actions N becomes 4.
+  num_simulations: 16
 
 training:
   # Refresh cached targets every 400 learner updates.

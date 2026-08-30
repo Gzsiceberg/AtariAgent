@@ -3,6 +3,7 @@
 # Conventional PUCT MCTS. This is the default training configuration.
 self_play:
   search_algorithm: puct
+  num_simulations: 50
 
 training:
   # Zero disables periodic cache clearing.

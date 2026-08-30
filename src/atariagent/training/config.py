@@ -27,8 +27,8 @@ class SelfPlayConfig:
 
     num_envs: int = 4
     total_transitions: int = 100_000
-    num_simulations: int = 16
-    search_algorithm: str = "gumbel"
+    num_simulations: int = 50
+    search_algorithm: str = "puct"
     c_visit: float = 50.0
     c_scale: float = 0.1
     steps_per_iteration: int = 100
