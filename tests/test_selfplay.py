@@ -252,6 +252,28 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     assert worker.last_behavior_metrics.root_count == 4
 
 
+def test_worker_uses_uniform_random_policy_without_search_during_warmup() -> None:
+    agent = FakeAgent()
+    environments = [FakeEnvironment(episode_length=100) for _ in range(2)]
+    worker = SelfPlayWorker(agent, environments=environments, base_seed=7)
+
+    worker.run(3, random_policy=True)
+    trajectories = worker.flush()
+
+    assert agent.calls == 0
+    assert all(len(environment.actions) == 3 for environment in environments)
+    assert all(action in {0, 1} for environment in environments for action in environment.actions)
+    for trajectory in (trajectories[0][0], trajectories[1][0]):
+        assert trajectory.target_policy == ((0.5, 0.5),) * 3
+        assert trajectory.root_values == (0.0,) * 3
+        assert trajectory.predicted_values == (0.0,) * 3
+    assert worker.last_behavior_metrics is not None
+    assert worker.last_behavior_metrics.entropy == pytest.approx(np.log(2.0))
+    assert worker.last_behavior_metrics.max_probability == pytest.approx(0.5)
+    assert worker.last_behavior_metrics.effective_action_count == pytest.approx(2.0)
+    assert worker.last_behavior_metrics.root_count == 6
+
+
 def test_worker_waits_for_lookahead_and_keeps_it_in_next_block() -> None:
     worker = SelfPlayWorker(
         FakeAgent(),

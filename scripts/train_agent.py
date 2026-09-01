@@ -725,6 +725,7 @@ def main(config: TrainAgentConfig) -> None:
                     config.self_play.steps_per_iteration,
                 )
                 warming_up = len(replay) < minimum_replay_size
+                collection_mode = "RANDOM" if warming_up else search_mode
                 previous_transitions = worker.total_transitions
                 if agent.search.config.search_algorithm == "puct":
                     temperature = visit_softmax_temperature(
@@ -738,6 +739,7 @@ def main(config: TrainAgentConfig) -> None:
                         temperature=temperature,
                         root_noise_temperature=root_noise_temperature,
                         gumbel_sampling=False,
+                        random_policy=warming_up,
                     )
                 else:
                     temperature = None
@@ -746,6 +748,7 @@ def main(config: TrainAgentConfig) -> None:
                         vector_steps,
                         root_noise_temperature=0.0,
                         gumbel_sampling=True,
+                        random_policy=warming_up,
                     )
                 self_play_progress.update(
                     worker.total_transitions - previous_transitions
@@ -764,11 +767,11 @@ def main(config: TrainAgentConfig) -> None:
                     "iteration": collection_iteration,
                     "added": insertion.added_transitions,
                     "replay": f"{len(replay)}/{replay.max_transitions}",
-                    "mode": search_mode,
+                    "mode": collection_mode,
                 }
-                if temperature is not None:
+                if temperature is not None and not warming_up:
                     progress_stats["temperature"] = f"{temperature:.2f}"
-                if root_noise_temperature is not None:
+                if root_noise_temperature is not None and not warming_up:
                     progress_stats["root_noise"] = (
                         f"{root_noise_temperature:.2f}"
                     )
@@ -812,7 +815,7 @@ def main(config: TrainAgentConfig) -> None:
                         f"reward_std_10={recent_stats.std:.2f} "
                         f"reward_min_10={min(recent_rewards):.2f} "
                         f"reward_max_10={max(recent_rewards):.2f} "
-                        f"mode={search_mode}[/dim]"
+                        f"mode={collection_mode}[/dim]"
                     )
                 if warming_up and len(replay) >= minimum_replay_size:
                     log(

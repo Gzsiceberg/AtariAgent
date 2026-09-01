@@ -437,6 +437,7 @@ class SelfPlayWorker:
         self.lookahead_steps = lookahead_steps
         self.clip_rewards = clip_rewards
         self.temperature = float(temperature)
+        self._rng = np.random.default_rng(base_seed)
 
         self.total_vector_steps = 0
         self.total_transitions = 0
@@ -455,6 +456,7 @@ class SelfPlayWorker:
         temperature: float | None = None,
         root_noise_temperature: float = 1.0,
         gumbel_sampling: bool = True,
+        random_policy: bool = False,
     ) -> tuple[tuple[GameTrajectory, ...], ...]:
         """Advance each game and return blocks grouped by game."""
         if isinstance(steps, bool) or not isinstance(steps, int):
@@ -470,6 +472,8 @@ class SelfPlayWorker:
             raise ValueError("root_noise_temperature must be in [0, 1]")
         if not isinstance(gumbel_sampling, bool):
             raise TypeError("gumbel_sampling must be a boolean")
+        if not isinstance(random_policy, bool):
+            raise TypeError("random_policy must be a boolean")
         if self._closed:
             raise RuntimeError("cannot run a closed self-play worker")
 
@@ -482,11 +486,15 @@ class SelfPlayWorker:
         behavior_root_count = 0
 
         for _ in range(steps):
-            agent_output = self.agent.act(
-                self._observations,
-                temperature=float(active_temperature),
-                root_noise_temperature=float(root_noise_temperature),
-                gumbel_sampling=gumbel_sampling,
+            agent_output = (
+                self._random_agent_output()
+                if random_policy
+                else self.agent.act(
+                    self._observations,
+                    temperature=float(active_temperature),
+                    root_noise_temperature=float(root_noise_temperature),
+                    gumbel_sampling=gumbel_sampling,
+                )
             )
             self._validate_agent_output(agent_output)
             behavior_policies = agent_output.behavior_policies
@@ -671,6 +679,39 @@ class SelfPlayWorker:
             block_id=self._next_block_ids[index],
             stack_size=self.frame_stack,
             initial_observation=self._observations[index],
+        )
+
+    def _random_agent_output(self) -> AgentOutput:
+        """Return uniform warmup actions and targets without running search."""
+        results: list[SearchResult] = []
+        policies: list[np.ndarray] = []
+        for environment in self.environments:
+            action_count = getattr(environment.action_space, "n", None)
+            if isinstance(action_count, bool) or not isinstance(action_count, int):
+                raise TypeError("environment action_space.n must be an integer")
+            if action_count <= 0:
+                raise ValueError("environment action_space.n must be positive")
+            action = int(self._rng.integers(action_count))
+            policy = np.full(action_count, 1.0 / action_count, dtype=np.float32)
+            results.append(
+                SearchResult(
+                    action=action,
+                    policy_target=policy,
+                    root_value=0.0,
+                )
+            )
+            policies.append(policy)
+        try:
+            behavior_policies = np.stack(policies)
+        except ValueError as error:
+            raise ValueError(
+                "all self-play environments must have equal action counts"
+            ) from error
+        return AgentOutput(
+            actions=tuple(result.action for result in results),
+            search_results=tuple(results),
+            predicted_values=(0.0,) * self.num_envs,
+            behavior_policies=behavior_policies,
         )
 
     def _validate_agent_output(self, output: AgentOutput) -> None:
