@@ -7,7 +7,7 @@ defaults:
 seed: 2
 
 environment:
-  id: ALE/Alien-v5
+  id: ALE/Asterix-v5
   frame_stack: 4
   frame_skip: 4
   screen_size: 96
