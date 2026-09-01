@@ -61,7 +61,6 @@ class TrainingConfig:
     mixed_value_start_step: int = 30_000
     mixed_value_threshold: int = 5_000
     use_target_network_reanalysis: bool = True
-    reanalysis_exploration_mode: bool = False
     policy_reanalysis_chunk_size: int = 768
     cache_reanalyzed_targets: bool = True
     reanalysis_cache_clear_interval: int = 0
@@ -236,6 +235,18 @@ def next_collection_vector_steps(
     return min(max_vector_steps, remaining // num_envs)
 
 
+def puct_root_noise_temperature(
+    trained_steps: int,
+    total_steps: int,
+) -> float:
+    """Linearly anneal PUCT root-prior noise from one to zero."""
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+    if trained_steps < 0:
+        raise ValueError("trained_steps must be non-negative")
+    return max(0.0, 1.0 - trained_steps / total_steps)
+
+
 def visit_softmax_temperature(trained_steps: int, total_steps: int) -> float:
     """Return EfficientZero V1's schedule over collection-phase updates."""
     if total_steps <= 0:
@@ -277,6 +288,7 @@ __all__ = [
     "environment_slug",
     "final_evaluation_max_episode_steps",
     "next_collection_vector_steps",
+    "puct_root_noise_temperature",
     "register_train_agent_config",
     "target_network_update_due",
     "visit_softmax_temperature",

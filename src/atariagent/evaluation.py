@@ -133,8 +133,9 @@ def evaluate_agent(
             while environments:
                 output = agent.act(
                     observations,
-                    exploration_mode=False,
                     temperature=0.0,
+                    root_noise_temperature=0.0,
+                    gumbel_sampling=False,
                 )
                 if len(output.actions) != len(environments):
                     raise ValueError(

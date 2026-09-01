@@ -37,14 +37,18 @@ public:
         const torch::Tensor& root_states,
         const torch::Tensor& root_values,
         const torch::Tensor& root_policy_logits,
-        bool exploration_mode = false,
+        double root_noise_temperature = 0.0,
+        bool gumbel_sampling = false,
         bool deterministic_ties = false
     );
 
     bool uses_gumbel() const;
 
 private:
-    void add_root_noise(std::vector<float>& priors);
+    void add_root_noise(
+        std::vector<float>& priors,
+        double temperature
+    );
 
     std::shared_ptr<BatchedNetworkEvaluator> evaluator_;
     std::int64_t num_simulations_;

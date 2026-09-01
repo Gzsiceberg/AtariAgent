@@ -42,8 +42,9 @@ class SelfPlayAgent(Protocol):
         self,
         observations: Sequence[AtariObservation],
         *,
-        exploration_mode: bool = False,
         temperature: float = 0.0,
+        root_noise_temperature: float = 0.0,
+        gumbel_sampling: bool = False,
     ) -> AgentOutput: ...
 
 
@@ -441,6 +442,8 @@ class SelfPlayWorker:
         steps: int,
         *,
         temperature: float | None = None,
+        root_noise_temperature: float = 1.0,
+        gumbel_sampling: bool = True,
     ) -> tuple[tuple[GameTrajectory, ...], ...]:
         """Advance each game and return blocks grouped by game."""
         if isinstance(steps, bool) or not isinstance(steps, int):
@@ -450,6 +453,12 @@ class SelfPlayWorker:
         active_temperature = self.temperature if temperature is None else temperature
         if not np.isfinite(active_temperature) or active_temperature < 0.0:
             raise ValueError("temperature must be finite and non-negative")
+        if not np.isfinite(root_noise_temperature) or not (
+            0.0 <= root_noise_temperature <= 1.0
+        ):
+            raise ValueError("root_noise_temperature must be in [0, 1]")
+        if not isinstance(gumbel_sampling, bool):
+            raise TypeError("gumbel_sampling must be a boolean")
         if self._closed:
             raise RuntimeError("cannot run a closed self-play worker")
 
@@ -460,8 +469,9 @@ class SelfPlayWorker:
         for _ in range(steps):
             agent_output = self.agent.act(
                 self._observations,
-                exploration_mode=True,
                 temperature=float(active_temperature),
+                root_noise_temperature=float(root_noise_temperature),
+                gumbel_sampling=gumbel_sampling,
             )
             self._validate_agent_output(agent_output)
 

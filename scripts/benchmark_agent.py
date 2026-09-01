@@ -79,11 +79,16 @@ def main() -> None:
         if device.type == "cuda":
             torch.cuda.synchronize(device)
 
+    root_noise_temperature = (
+        1.0 if args.search_algorithm == "puct" else 0.0
+    )
+    gumbel_sampling = args.search_algorithm == "gumbel"
     for _ in range(args.warmup):
         agent.act(
             observations,
-            exploration_mode=True,
             temperature=1.0,
+            root_noise_temperature=root_noise_temperature,
+            gumbel_sampling=gumbel_sampling,
         )
     synchronize()
     if device.type == "cuda":
@@ -94,8 +99,9 @@ def main() -> None:
         started = perf_counter()
         agent.act(
             observations,
-            exploration_mode=True,
             temperature=1.0,
+            root_noise_temperature=root_noise_temperature,
+            gumbel_sampling=gumbel_sampling,
         )
         synchronize()
         durations.append((perf_counter() - started) * 1_000.0)

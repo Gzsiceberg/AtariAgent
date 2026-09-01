@@ -120,7 +120,6 @@ def main() -> None:
             value_prefix_horizon=5,
         ),
         policy_chunk_size=args.chunk_size,
-        exploration_mode=False,
         cache_targets=True,
         rng_seed=0,
         support_min=-300,
@@ -130,6 +129,7 @@ def main() -> None:
         prefetch_batches=2,
         timeout_seconds=600.0,
         target_update_interval=200,
+        root_noise_total_steps=100_000,
         device=device,
     )
     try:

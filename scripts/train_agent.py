@@ -53,6 +53,7 @@ from atariagent.training.config import (
     TrainAgentConfig,
     final_evaluation_max_episode_steps,
     next_collection_vector_steps,
+    puct_root_noise_temperature,
     register_train_agent_config,
     target_network_update_due,
     visit_softmax_temperature,
@@ -233,8 +234,6 @@ def main(config: TrainAgentConfig) -> None:
             raise ValueError(f"{name} must be positive")
     if config.training.initial_target_update_steps < 0:
         raise ValueError("initial_target_update_steps must be non-negative")
-    if not isinstance(config.training.reanalysis_exploration_mode, bool):
-        raise TypeError("reanalysis_exploration_mode must be a boolean")
     if config.training.policy_reanalysis_chunk_size <= 0:
         raise ValueError("policy_reanalysis_chunk_size must be positive")
     if not isinstance(config.training.cache_reanalyzed_targets, bool):
@@ -427,9 +426,6 @@ def main(config: TrainAgentConfig) -> None:
                 policy_chunk_size=(
                     config.training.policy_reanalysis_chunk_size
                 ),
-                exploration_mode=(
-                    config.training.reanalysis_exploration_mode
-                ),
                 cache_targets=config.training.cache_reanalyzed_targets,
                 rng_seed=config.seed,
                 support_min=-300,
@@ -444,6 +440,7 @@ def main(config: TrainAgentConfig) -> None:
                     config.training.target_update_interval,
                     config.training.initial_target_update_interval,
                 ),
+                root_noise_total_steps=config.training.steps,
                 device=device,
             )
             reanalysis_pipeline.publish_weights(
@@ -673,13 +670,23 @@ def main(config: TrainAgentConfig) -> None:
                     temperature = visit_softmax_temperature(
                         update, config.training.steps
                     )
+                    root_noise_temperature = puct_root_noise_temperature(
+                        update, config.training.steps
+                    )
                     grouped = worker.run(
                         vector_steps,
                         temperature=temperature,
+                        root_noise_temperature=root_noise_temperature,
+                        gumbel_sampling=False,
                     )
                 else:
                     temperature = None
-                    grouped = worker.run(vector_steps)
+                    root_noise_temperature = None
+                    grouped = worker.run(
+                        vector_steps,
+                        root_noise_temperature=0.0,
+                        gumbel_sampling=True,
+                    )
                 self_play_progress.update(
                     worker.total_transitions - previous_transitions
                 )
@@ -695,6 +702,10 @@ def main(config: TrainAgentConfig) -> None:
                 }
                 if temperature is not None:
                     progress_stats["temperature"] = f"{temperature:.2f}"
+                if root_noise_temperature is not None:
+                    progress_stats["root_noise"] = (
+                        f"{root_noise_temperature:.2f}"
+                    )
                 if self_play_episode_rewards:
                     recent_stats = EvaluationStats.from_rewards(
                         tuple(self_play_episode_rewards[-100:])

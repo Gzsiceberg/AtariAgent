@@ -41,16 +41,14 @@ public:
         int prefetch_batches,
         double timeout_seconds,
         int target_update_interval,
-        bool cache_targets,
-        bool exploration_mode
+        bool cache_targets
     )
         : target_(std::move(target)),
           device_(device),
           prefetch_batches_(prefetch_batches),
           timeout_seconds_(timeout_seconds),
           target_update_interval_(target_update_interval),
-          cache_targets_(cache_targets),
-          exploration_mode_(exploration_mode) {
+          cache_targets_(cache_targets) {
         if (!target_) {
             throw std::invalid_argument("target must not be null");
         }
@@ -105,8 +103,21 @@ public:
         wait_job(job, "timed out publishing target weights");
     }
 
-    std::int64_t submit(py::object batch) {
+    std::int64_t submit(
+        py::object batch,
+        double root_noise_temperature,
+        bool gumbel_sampling
+    ) {
+        if (!std::isfinite(root_noise_temperature)
+            || root_noise_temperature < 0.0
+            || root_noise_temperature > 1.0) {
+            throw std::invalid_argument(
+                "root_noise_temperature must be in [0, 1]"
+            );
+        }
         auto job = std::make_shared<Job>();
+        job->root_noise_temperature = root_noise_temperature;
+        job->gumbel_sampling = gumbel_sampling;
         job->kind = Kind::Request;
         job->original_batch = std::move(batch);
         job->frames = tensor_attribute(job->original_batch, "frames");
@@ -308,6 +319,8 @@ private:
         std::int64_t peak_memory_bytes = 0;
         std::int64_t roots_requested = 0;
         std::int64_t roots_searched = 0;
+        double root_noise_temperature = 0.0;
+        bool gumbel_sampling = false;
         std::exception_ptr error;
         bool done = false;
         std::mutex done_mutex;
@@ -632,7 +645,8 @@ private:
                 device_frames,
                 policy_mask.to(device_),
                 job->stack_size,
-                exploration_mode_,
+                job->root_noise_temperature,
+                job->gumbel_sampling,
                 false
             );
         const auto root_count = positions.size(0);
@@ -733,7 +747,6 @@ private:
     double timeout_seconds_;
     int target_update_interval_;
     bool cache_targets_;
-    bool exploration_mode_;
     mutable std::mutex mutex_;
     std::condition_variable work_ready_;
     std::condition_variable result_ready_;
@@ -757,8 +770,7 @@ NativeReanalysisEngine::NativeReanalysisEngine(
     int prefetch_batches,
     double timeout_seconds,
     int target_update_interval,
-    bool cache_targets,
-    bool exploration_mode
+    bool cache_targets
 )
     : impl_(std::make_unique<Impl>(
           std::move(target),
@@ -766,8 +778,7 @@ NativeReanalysisEngine::NativeReanalysisEngine(
           prefetch_batches,
           timeout_seconds,
           target_update_interval,
-          cache_targets,
-          exploration_mode
+          cache_targets
       )) {}
 
 NativeReanalysisEngine::~NativeReanalysisEngine() = default;
@@ -786,8 +797,14 @@ void NativeReanalysisEngine::publish_weights(
     );
 }
 
-std::int64_t NativeReanalysisEngine::submit(py::object batch) {
-    return impl_->submit(std::move(batch));
+std::int64_t NativeReanalysisEngine::submit(
+    py::object batch,
+    double root_noise_temperature,
+    bool gumbel_sampling
+) {
+    return impl_->submit(
+        std::move(batch), root_noise_temperature, gumbel_sampling
+    );
 }
 
 py::dict NativeReanalysisEngine::wait_next() { return impl_->wait_next(); }

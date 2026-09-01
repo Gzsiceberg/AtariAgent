@@ -19,8 +19,7 @@ public:
         int prefetch_batches,
         double timeout_seconds,
         int target_update_interval,
-        bool cache_targets,
-        bool exploration_mode
+        bool cache_targets
     );
     ~NativeReanalysisEngine();
 
@@ -33,7 +32,11 @@ public:
         const pybind11::dict& prediction,
         const pybind11::dict& dynamics
     );
-    std::int64_t submit(pybind11::object batch);
+    std::int64_t submit(
+        pybind11::object batch,
+        double root_noise_temperature,
+        bool gumbel_sampling
+    );
     pybind11::dict wait_next();
     void clear_cache();
     void close();

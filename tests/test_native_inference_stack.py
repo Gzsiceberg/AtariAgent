@@ -145,6 +145,7 @@ def test_native_complete_tree_search_matches_python(
             states,
             root_values,
             policy_logits,
+            1.0 if search_algorithm == "gumbel" else 0.0,
             False,
             True,
         )

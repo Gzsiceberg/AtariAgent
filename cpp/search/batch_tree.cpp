@@ -33,7 +33,7 @@ public:
         int num_top_actions,
         float c_visit,
         float c_scale,
-        bool exploration_mode
+        bool gumbel_sampling
     ) {
         if (root_priors.ndim() != 2
             || root_values.ndim() != 1
@@ -105,7 +105,7 @@ public:
                 num_top_actions,
                 c_visit,
                 c_scale,
-                exploration_mode
+                gumbel_sampling
             );
         }
     }
@@ -230,7 +230,7 @@ BatchTree::BatchTree(
     int num_top_actions,
     float c_visit,
     float c_scale,
-    bool exploration_mode
+    bool gumbel_sampling
 )
     : impl_(std::make_unique<Impl>(
           std::move(root_priors),
@@ -246,7 +246,7 @@ BatchTree::BatchTree(
           num_top_actions,
           c_visit,
           c_scale,
-          exploration_mode
+          gumbel_sampling
       )) {}
 
 BatchTree::~BatchTree() = default;

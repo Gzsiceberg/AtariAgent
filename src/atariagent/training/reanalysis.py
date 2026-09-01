@@ -21,6 +21,8 @@ from atariagent.models.native import (
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import SearchConfig
 
+from .config import puct_root_noise_temperature
+
 Precision = Literal["fp32", "bf16"]
 TargetState = dict[str, Tensor]
 
@@ -92,7 +94,6 @@ class ReanalysisPipeline:
         action_space_size: int,
         search_config: SearchConfig,
         policy_chunk_size: int,
-        exploration_mode: bool,
         cache_targets: bool,
         rng_seed: int,
         support_min: int,
@@ -102,10 +103,9 @@ class ReanalysisPipeline:
         prefetch_batches: int,
         timeout_seconds: float,
         target_update_interval: int,
+        root_noise_total_steps: int,
         device: torch.device | str | None = None,
     ) -> None:
-        if not isinstance(exploration_mode, bool):
-            raise TypeError("exploration_mode must be a boolean")
         if not isinstance(cache_targets, bool):
             raise TypeError("cache_targets must be a boolean")
         if isinstance(search_threads, bool) or not isinstance(search_threads, int):
@@ -124,6 +124,12 @@ class ReanalysisPipeline:
             raise TypeError("target_update_interval must be an integer")
         if target_update_interval <= 0:
             raise ValueError("target_update_interval must be positive")
+        if isinstance(root_noise_total_steps, bool) or not isinstance(
+            root_noise_total_steps, int
+        ):
+            raise TypeError("root_noise_total_steps must be an integer")
+        if root_noise_total_steps <= 0:
+            raise ValueError("root_noise_total_steps must be positive")
         set_tree_search_num_threads(search_threads)
 
         self.device = torch.device(
@@ -155,12 +161,8 @@ class ReanalysisPipeline:
         self.prefetch_batches = prefetch_batches
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
-        # Gumbel-Top-k always needs its intrinsic sampling noise during
-        # reanalysis. The configured exploration mode controls only PUCT's
-        # optional Dirichlet prior perturbation.
-        self.exploration_mode = (
-            search_config.search_algorithm == "gumbel" or exploration_mode
-        )
+        self.root_noise_total_steps = root_noise_total_steps
+        self.search_algorithm = search_config.search_algorithm
         self._engine = NativeReanalysisEngine(
             self.target,
             str(self.device),
@@ -168,7 +170,6 @@ class ReanalysisPipeline:
             timeout_seconds,
             target_update_interval,
             cache_targets,
-            self.exploration_mode,
         )
         self._latest_target_state: TargetState | None = None
         self._closed = False
@@ -223,10 +224,30 @@ class ReanalysisPipeline:
         self._require_open()
         self._engine.clear_cache()
 
-    def submit(self, batch: ReplayBatch) -> int:
-        """Queue one ReplayBatch by retaining its existing tensor storage."""
+    def root_noise_temperature(self, trained_steps: int) -> float:
+        """Return the search-noise temperature for a learner step."""
+        if isinstance(trained_steps, bool) or not isinstance(trained_steps, int):
+            raise TypeError("trained_steps must be an integer")
+        if trained_steps < 0:
+            raise ValueError("trained_steps must be non-negative")
+        if self.search_algorithm == "gumbel":
+            return 0.0
+        return puct_root_noise_temperature(
+            trained_steps,
+            self.root_noise_total_steps,
+        )
+
+    def submit(self, batch: ReplayBatch, *, trained_steps: int = 0) -> int:
+        """Queue one ReplayBatch with noise scheduled at ``trained_steps``."""
         self._require_open()
-        request_id = int(self._engine.submit(batch))
+        root_noise_temperature = self.root_noise_temperature(trained_steps)
+        request_id = int(
+            self._engine.submit(
+                batch,
+                root_noise_temperature,
+                self.search_algorithm == "gumbel",
+            )
+        )
         self._pending_bytes[request_id] = replay_batch_nbytes(batch)
         self.max_observed_pending = max(
             self.max_observed_pending,

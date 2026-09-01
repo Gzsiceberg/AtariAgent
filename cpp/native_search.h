@@ -62,7 +62,7 @@ public:
         int num_top_actions = 4,
         float c_visit = 50.0F,
         float c_scale = 0.1F,
-        bool exploration_mode = true
+        bool gumbel_sampling = true
     );
 
     std::tuple<int, int, bool> traverse(float pb_c_base, float pb_c_init);

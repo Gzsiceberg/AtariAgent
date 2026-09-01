@@ -267,7 +267,8 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("root_states"),
             py::arg("root_values"),
             py::arg("root_policy_logits"),
-            py::arg("exploration_mode") = false,
+            py::arg("root_noise_temperature") = 0.0,
+            py::arg("gumbel_sampling") = false,
             py::arg("deterministic_ties") = false
         );
     module.attr("MCTS") = module.attr("TreeSearch");
@@ -368,7 +369,6 @@ PYBIND11_MODULE(_models_native, module) {
                 int,
                 double,
                 int,
-                bool,
                 bool
             >(),
             py::arg("target"),
@@ -376,8 +376,7 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("prefetch_batches"),
             py::arg("timeout_seconds"),
             py::arg("target_update_interval"),
-            py::arg("cache_targets"),
-            py::arg("exploration_mode")
+            py::arg("cache_targets")
         )
         .def(
             "publish_weights",
@@ -387,7 +386,13 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("prediction"),
             py::arg("dynamics")
         )
-        .def("submit", &NativeReanalysisEngine::submit, py::arg("batch"))
+        .def(
+            "submit",
+            &NativeReanalysisEngine::submit,
+            py::arg("batch"),
+            py::arg("root_noise_temperature"),
+            py::arg("gumbel_sampling")
+        )
         .def("wait_next", &NativeReanalysisEngine::wait_next)
         .def("clear_cache", &NativeReanalysisEngine::clear_cache)
         .def("close", &NativeReanalysisEngine::close)

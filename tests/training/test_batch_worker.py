@@ -162,13 +162,15 @@ class _FakeReanalysisPipeline:
         self.next_request_id = 0
         self.published_versions: list[int] = []
         self.cache_clear_request_counts: list[int] = []
+        self.submitted_steps: list[int] = []
         self.cache_size = 0
 
     @property
     def needs_prefetch(self) -> bool:
         return len(self.pending) < self.prefetch_batches
 
-    def submit(self, batch: ReplayBatch) -> int:
+    def submit(self, batch: ReplayBatch, *, trained_steps: int = 0) -> int:
+        self.submitted_steps.append(trained_steps)
         request_id = self.next_request_id
         self.next_request_id += 1
         self.pending.append((request_id, batch))
@@ -268,5 +270,6 @@ def test_worker_reanalyzes_all_batches_in_order() -> None:
 
     assert steps == [0, 1, 2, 3, 4]
     assert includes == [True, True, True, True, True]
+    assert pipeline.submitted_steps == [0, 1, 2, 3, 4]
     assert pipeline.cache_clear_request_counts == [2, 4]
     assert pipeline.published_versions == [10]

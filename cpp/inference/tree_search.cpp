@@ -108,10 +108,18 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
     const torch::Tensor& root_states,
     const torch::Tensor& root_values,
     const torch::Tensor& root_policy_logits,
-    bool exploration_mode,
+    double root_noise_temperature,
+    bool gumbel_sampling,
     bool deterministic_ties
 ) {
     c10::InferenceMode inference_guard;
+    if (!std::isfinite(root_noise_temperature)
+        || root_noise_temperature < 0.0
+        || root_noise_temperature > 1.0) {
+        throw std::invalid_argument(
+            "root_noise_temperature must be in [0, 1]"
+        );
+    }
     if (root_states.dim() < 2) {
         throw std::invalid_argument(
             "root_states must contain a batch dimension"
@@ -162,8 +170,8 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
         for (std::int64_t action = 0; action < action_count; ++action) {
             priors[action] = prior_data[root][action];
         }
-        if (exploration_mode && !uses_gumbel()) {
-            add_root_noise(priors);
+        if (root_noise_temperature > 0.0 && !uses_gumbel()) {
+            add_root_noise(priors, root_noise_temperature);
         }
         trees.emplace_back(
             priors,
@@ -179,7 +187,7 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
             static_cast<int>(num_top_actions_),
             static_cast<float>(c_visit_),
             static_cast<float>(c_scale_),
-            exploration_mode
+            gumbel_sampling
         );
     }
 
@@ -314,7 +322,10 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
     return {policies, values};
 }
 
-void TreeSearch::add_root_noise(std::vector<float>& priors) {
+void TreeSearch::add_root_noise(
+    std::vector<float>& priors,
+    double temperature
+) {
     std::gamma_distribution<double> distribution(dirichlet_alpha_, 1.0);
     std::vector<double> samples(priors.size());
     double total = 0.0;
@@ -329,10 +340,11 @@ void TreeSearch::add_root_noise(std::vector<float>& priors) {
             sample /= total;
         }
     }
+    const double fraction = root_exploration_fraction_ * temperature;
     for (std::size_t action = 0; action < priors.size(); ++action) {
         priors[action] = static_cast<float>(
-            (1.0 - root_exploration_fraction_) * priors[action]
-            + root_exploration_fraction_ * samples[action]
+            (1.0 - fraction) * priors[action]
+            + fraction * samples[action]
         );
     }
 }

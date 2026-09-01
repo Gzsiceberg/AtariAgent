@@ -202,10 +202,15 @@ class TreeSearch:
         root_values: Tensor,
         root_policy_logits: Tensor,
         *,
-        exploration_mode: bool = False,
+        root_noise_temperature: float = 0.0,
+        gumbel_sampling: bool = False,
         _deterministic_ties: bool = False,
     ) -> SearchBatchResult:
-        """Search packed roots and return contiguous native arrays."""
+        """Search packed roots with temperature-scaled prior noise."""
+        self._validate_root_noise_temperature(root_noise_temperature)
+        if not isinstance(gumbel_sampling, bool):
+            raise TypeError("gumbel_sampling must be a boolean")
+        add_root_noise = root_noise_temperature > 0.0
         if root_states.ndim < 2:
             raise ValueError("root_states must contain a batch dimension")
         root_count = root_states.shape[0]
@@ -250,9 +255,9 @@ class TreeSearch:
         root_priors = np.exp(root_logits)
         root_priors /= root_priors.sum(axis=1, keepdims=True)
         root_priors = np.ascontiguousarray(root_priors, dtype=np.float32)
-        if exploration_mode and self.config.search_algorithm == "puct":
+        if add_root_noise and self.config.search_algorithm == "puct":
             for priors in root_priors:
-                self._add_root_noise(priors)
+                self._add_root_noise(priors, root_noise_temperature)
 
         tree = NativeBatchTree(
             root_priors,
@@ -268,7 +273,7 @@ class TreeSearch:
             self.config.num_top_actions,
             self.config.c_visit,
             self.config.c_scale,
-            exploration_mode,
+            gumbel_sampling,
         )
         device = root_states.device
         initial_hidden = evaluator.initial_hidden(
@@ -408,7 +413,16 @@ class TreeSearch:
         if not math.isfinite(temperature) or temperature < 0.0:
             raise ValueError("temperature must be finite and non-negative")
 
-    def _add_root_noise(self, priors: np.ndarray) -> None:
+    @staticmethod
+    def _validate_root_noise_temperature(temperature: float) -> None:
+        if not math.isfinite(temperature) or not 0.0 <= temperature <= 1.0:
+            raise ValueError("root_noise_temperature must be in [0, 1]")
+
+    def _add_root_noise(
+        self,
+        priors: np.ndarray,
+        temperature: float,
+    ) -> None:
         samples = np.fromiter(
             (
                 self.rng.gammavariate(
@@ -425,7 +439,7 @@ class TreeSearch:
             samples /= total
         else:
             samples.fill(1.0 / priors.shape[0])
-        fraction = self.config.root_exploration_fraction
+        fraction = self.config.root_exploration_fraction * temperature
         priors *= 1.0 - fraction
         priors += fraction * samples
 

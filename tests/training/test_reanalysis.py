@@ -44,7 +44,6 @@ def _pipeline(
     timeout_seconds: float = 60.0,
     target_update_interval: int = 200,
     search_algorithm: str = "puct",
-    exploration_mode: bool = False,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -55,7 +54,6 @@ def _pipeline(
             num_top_actions=2,
         ),
         policy_chunk_size=4,
-        exploration_mode=exploration_mode,
         cache_targets=True,
         rng_seed=3,
         support_min=-300,
@@ -65,6 +63,7 @@ def _pipeline(
         prefetch_batches=prefetch_batches,
         timeout_seconds=timeout_seconds,
         target_update_interval=target_update_interval,
+        root_noise_total_steps=100,
         device="cpu",
     )
     representation = RepresentationNetwork(4)
@@ -97,28 +96,25 @@ def test_native_pipeline_enforces_prefetch_bound_and_matches_requests() -> None:
         pipeline.close()
 
 
-@pytest.mark.parametrize(
-    ("search_algorithm", "exploration_mode", "expected_exploration_mode"),
-    [
-        ("puct", False, False),
-        ("puct", True, True),
-        ("gumbel", False, True),
-        ("gumbel", True, True),
-    ],
-)
-def test_native_pipeline_applies_reanalysis_exploration_mode(
+@pytest.mark.parametrize("search_algorithm", ["puct", "gumbel"])
+def test_native_pipeline_configures_search_noise_from_algorithm(
     search_algorithm: str,
-    exploration_mode: bool,
-    expected_exploration_mode: bool,
 ) -> None:
     pipeline = _pipeline(
         prefetch_batches=1,
         search_algorithm=search_algorithm,
-        exploration_mode=exploration_mode,
     )
     try:
-        assert pipeline.exploration_mode is expected_exploration_mode
-        pipeline.submit(_batch())
+        expected_temperatures = (
+            (0.0, 0.0, 0.0)
+            if search_algorithm == "gumbel"
+            else (1.0, 0.5, 0.0)
+        )
+        assert tuple(
+            pipeline.root_noise_temperature(step)
+            for step in (0, 50, 100)
+        ) == expected_temperatures
+        pipeline.submit(_batch(), trained_steps=50)
         assert pipeline.wait_next().policy_roots_searched == 3
     finally:
         pipeline.close()
@@ -232,7 +228,6 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             action_space_size=2,
             search_config=SearchConfig(num_simulations=1),
             policy_chunk_size=4,
-            exploration_mode=False,
             cache_targets=True,
             rng_seed=0,
             support_min=-300,
@@ -242,6 +237,7 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             prefetch_batches=0,
             timeout_seconds=1.0,
             target_update_interval=200,
+            root_noise_total_steps=100,
             device="cpu",
         )
 

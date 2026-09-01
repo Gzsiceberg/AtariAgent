@@ -164,7 +164,15 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     first_run = worker.run(3)
 
     assert agent.calls == 3
-    assert all(kwargs["exploration_mode"] is True for kwargs in agent.kwargs)
+    assert all(
+        kwargs
+        == {
+            "temperature": 1.0,
+            "root_noise_temperature": 1.0,
+            "gumbel_sampling": True,
+        }
+        for kwargs in agent.kwargs
+    )
     assert all(len(batch) == 2 for batch in agent.observation_batches)
     assert all(obs.shape == (4, 2, 2, 3) for obs in agent.observation_batches[0])
     assert [len(block) for block in first_run[0]] == [2]
@@ -192,9 +200,22 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     assert first_environment.reset_seeds == [10, None]
     assert second_environment.reset_seeds == [11]
 
-    second_run = worker.run(2)
+    second_run = worker.run(
+        2,
+        temperature=0.5,
+        root_noise_temperature=0.25,
+    )
 
     assert agent.calls == 5
+    assert all(
+        kwargs
+        == {
+            "temperature": 0.5,
+            "root_noise_temperature": 0.25,
+            "gumbel_sampling": True,
+        }
+        for kwargs in agent.kwargs[-2:]
+    )
     assert [len(block) for block in second_run[0]] == [2]
     assert second_run[0][0].terminated
     assert second_run[0][0].episode_id == 1

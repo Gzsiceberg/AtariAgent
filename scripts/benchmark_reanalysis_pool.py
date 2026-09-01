@@ -79,7 +79,6 @@ def benchmark_depth(depth: int, args: argparse.Namespace, batch: ReplayBatch):
             value_prefix_horizon=5,
         ),
         policy_chunk_size=args.chunk_size,
-        exploration_mode=False,
         cache_targets=False,
         rng_seed=0,
         support_min=-300,
@@ -89,6 +88,7 @@ def benchmark_depth(depth: int, args: argparse.Namespace, batch: ReplayBatch):
         prefetch_batches=depth,
         timeout_seconds=600.0,
         target_update_interval=200,
+        root_noise_total_steps=100_000,
     )
     try:
         pipeline.publish_weights(

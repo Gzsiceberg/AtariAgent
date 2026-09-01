@@ -204,7 +204,8 @@ ValueTargetNetwork::policy_reanalysis_outputs(
     const torch::Tensor& frames,
     const torch::Tensor& policy_mask,
     std::int64_t stack_size,
-    bool exploration_mode,
+    double root_noise_temperature,
+    bool gumbel_sampling,
     bool deterministic_ties
 ) {
     c10::InferenceMode inference_guard;
@@ -243,7 +244,8 @@ ValueTargetNetwork::policy_reanalysis_outputs(
             states,
             values,
             policy_logits,
-            exploration_mode,
+            root_noise_temperature,
+            gumbel_sampling,
             deterministic_ties
         );
         policy_chunks.push_back(std::move(search_output));

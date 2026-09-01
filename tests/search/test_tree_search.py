@@ -148,7 +148,7 @@ def _reference_batch(
     roots: list[_Evaluation],
     *,
     seed: int,
-    exploration_mode: bool,
+    root_noise_temperature: float,
 ) -> tuple[list[tuple[int, ...]], list[float]]:
     """Independent Python PUCT retained only for native differential tests."""
     rng = random.Random(seed)
@@ -159,15 +159,19 @@ def _reference_batch(
         _expand(root, evaluation)
         root.visits = 1
         root.value_sum = evaluation.value
-        if exploration_mode:
+        if root_noise_temperature > 0.0:
             samples = [
                 rng.gammavariate(config.dirichlet_alpha, 1.0) for _ in root.children
             ]
             total = sum(samples)
+            fraction = (
+                config.root_exploration_fraction * root_noise_temperature
+            )
             for child, sample in zip(root.children, samples, strict=True):
                 child.prior = (
-                    1.0 - config.root_exploration_fraction
-                ) * child.prior + config.root_exploration_fraction * sample / total
+                    (1.0 - fraction) * child.prior
+                    + fraction * sample / total
+                )
         nodes.append(root)
         stats.append(_Stats(config.value_delta_max))
 
@@ -304,7 +308,11 @@ def test_search_batch_evaluates_all_roots_once_per_simulation() -> None:
 
 
 @pytest.mark.parametrize("seed", [0, 1, 4, 17])
-def test_native_batch_search_matches_python_reference(seed: int) -> None:
+@pytest.mark.parametrize("root_noise_temperature", [0.0, 0.5, 1.0])
+def test_native_batch_search_matches_python_reference(
+    seed: int,
+    root_noise_temperature: float,
+) -> None:
     config = SearchConfig(
         num_simulations=20,
         discount=0.9,
@@ -318,14 +326,14 @@ def test_native_batch_search_matches_python_reference(seed: int) -> None:
         states,
         root_values,
         root_logits,
-        exploration_mode=True,
+        root_noise_temperature=root_noise_temperature,
         _deterministic_ties=True,
     )
     counts, values = _reference_batch(
         config,
         [_Evaluation(index, 0.0, float(index), [1.0, 0.2, -0.7]) for index in range(3)],
         seed=seed,
-        exploration_mode=True,
+        root_noise_temperature=root_noise_temperature,
     )
 
     expected_policies = np.asarray(counts, dtype=np.float32)
@@ -395,6 +403,19 @@ def test_gumbel_root_value_uses_improved_policy_completed_q() -> None:
 
     assert batch.root_values[0] == pytest.approx(expected)
     assert batch.root_values[0] != pytest.approx(simulation_average)
+
+
+@pytest.mark.parametrize("temperature", [-0.1, 1.1, math.nan])
+def test_root_noise_temperature_must_be_in_unit_interval(
+    temperature: float,
+) -> None:
+    with pytest.raises(ValueError, match="root_noise_temperature"):
+        _make_search(SearchConfig(num_simulations=1)).search_batch(
+            torch.zeros(1, 1),
+            torch.zeros(1),
+            torch.zeros(1, 3),
+            root_noise_temperature=temperature,
+        )
 
 
 def test_temperature_zero_returns_greedy_action() -> None:

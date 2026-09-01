@@ -333,7 +333,10 @@ class BatchWorker:
                     pipeline.clear_cache()
                 token, batch, sample_ms = self._sample(True)
                 try:
-                    request_id = pipeline.submit(batch)
+                    request_id = pipeline.submit(
+                        batch,
+                        trained_steps=submitted_step,
+                    )
                 except BaseException:
                     self._discard_token(token)
                     raise

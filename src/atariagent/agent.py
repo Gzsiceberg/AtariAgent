@@ -290,10 +290,11 @@ class AtariAgent(nn.Module):
         self,
         observations: Tensor | Sequence[AtariObservation],
         *,
-        exploration_mode: bool = False,
         temperature: float = 0.0,
+        root_noise_temperature: float = 0.0,
+        gumbel_sampling: bool = False,
     ) -> AgentOutput:
-        """Evaluate raw Atari observations or a prepared tensor batch."""
+        """Evaluate observations with separate action and root-noise temperatures."""
         observations = self._prepare_observations(observations)
 
         was_training = self.training
@@ -313,7 +314,8 @@ class AtariAgent(nn.Module):
                 states,
                 values,
                 policy_logits,
-                exploration_mode=exploration_mode,
+                root_noise_temperature=root_noise_temperature,
+                gumbel_sampling=gumbel_sampling,
             )
             search_results = self.search.materialize_results(
                 search_batch,
