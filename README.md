@@ -33,17 +33,7 @@ On `ALE/Alien-v5`, the optimized Gumbel configuration completed **100,000 enviro
 | --- | --- | --- | --- | --- |
 | NVIDIA GeForce RTX 3060 Ti (8 GB), Intel Core i9-13900KF | Gumbel, 16 simulations | No periodic clearing | BF16 | 2:55:39 |
 
-This is one measured systems result, not a throughput guarantee. Wall-clock time varies by game, search budget, cache-clearing interval, CPU, and software version. For example, a measured 50-simulation PUCT run on the same machine took approximately 4 hours 6 minutes.
-
-Reproduce the measured Alien configuration with:
-
-```bash
-uv run python scripts/train_agent.py \
-    search=gumbel \
-    reanalysis.cache_clear_interval=0
-```
-
-The standard Gumbel preset clears the cache every 400 updates to favor fresher targets, so it may take longer than the result above.
+This is one historical systems result, not a throughput guarantee. Wall-clock time varies by game, search budget, cache freshness, CPU, and software version. The measured run disabled periodic cache clearing; current training instead ramps full-cache clearing from 100 to 1,000 learner updates over the first half of collection. For comparison, a measured 50-simulation PUCT run on the same machine took approximately 4 hours 6 minutes.
 
 ## Why AtariAgent?
 
@@ -109,7 +99,7 @@ uv run python scripts/train_agent.py \
 
 ### Train an agent
 
-The default preset uses **PUCT**, keeps cached reanalysis targets for the complete run, and trains on Alien:
+The default preset uses **PUCT**, bounds cached reanalysis targets to 200 learner updates, and trains on Alien:
 
 ```bash
 uv run python scripts/train_agent.py
@@ -131,10 +121,10 @@ uv run python scripts/train_agent.py \
 
 The two search presets are:
 
-| Preset | Search | Cache clearing | Select with |
-| --- | --- | --- | --- |
-| PUCT (default) | Conventional PUCT MCTS | Disabled (`0`) | `search=puct` |
-| Gumbel | Top-*m* sequential halving | Every 400 learner updates | `search=gumbel` |
+| Preset | Search | Periodic cache clearing | Target TTL | Select with |
+| --- | --- | --- | --- | --- |
+| PUCT (default) | Conventional PUCT MCTS | Disabled (`0`) | 200 updates | `search=puct` |
+| Gumbel | Top-*m* sequential halving | Every 400 learner updates | 200 updates | `search=gumbel` |
 
 All settings can be overridden from the command line. Inspect the resolved default configuration with:
 
@@ -183,7 +173,7 @@ uv run python scripts/train_agent.py \
     wandb.project=AtariAgent
 ```
 
-The W&B entity, project, and tags can also be set through overrides such as `wandb.entity=<entity>` and `wandb.tags=[atari,baseline]`.
+The W&B entity, project, and tags can also be set through overrides such as `wandb.entity=<entity>` and `wandb.tags=[atari,baseline]`. Policy diagnostics include search-target entropy, network-policy entropy, target-to-network KL divergence, maximum action probability, and effective action count `exp(H)`. Reanalysis diagnostics include exact cache hit rate and cached-target mean/maximum age in learner updates. PUCT also reports behavior-policy entropy after action temperature; Gumbel omits that metric because one sampled Gumbel search does not define a categorical per-state behavior distribution.
 
 ## Using AtariAgent as a research base
 
@@ -219,7 +209,7 @@ AtariAgent retains the central EfficientZero learning ideas while redesigning th
 | Hardware objective | Official README recommends four RTX 3090 GPUs for high-throughput training | Official example launches with two GPUs and supports broader workloads | Consumer single-GPU experiments |
 | License | GPL-3.0 | GPL-3.0 | MIT |
 
-A cache interval of `0` maximizes reuse but allows cached targets to outlive target-network updates. Use a positive `reanalysis.cache_clear_interval` when target freshness is more important than maximum throughput.
+Target-network publication always clears the cache on its fixed 1,000-update schedule. Independently, `reanalysis.cache_target_ttl` expires individual entries after a bounded number of learner updates (200 by default). Full-cache clearing starts every `reanalysis.initial_cache_clear_interval` updates (100 by default), then linearly ramps to the target-update interval over the first half of collection-phase training.
 
 ## Scope and limitations
 

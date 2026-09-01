@@ -125,12 +125,26 @@ class AgentOutput:
     actions: tuple[int, ...]
     search_results: tuple[SearchResult, ...]
     predicted_values: tuple[float, ...]
+    behavior_policies: NDArray[np.float64] | None = None
 
     def __post_init__(self) -> None:
         if len(self.actions) != len(self.search_results):
             raise ValueError("actions and search_results must have equal lengths")
         if len(self.predicted_values) != len(self.actions):
             raise ValueError("predicted_values and actions must have equal lengths")
+        policies = self.behavior_policies
+        if policies is None:
+            return
+        if policies.ndim != 2 or policies.shape[0] != len(self.actions):
+            raise ValueError("behavior policies have an invalid shape")
+        if self.search_results and policies.shape[1] != (
+            self.search_results[0].policy_target.shape[0]
+        ):
+            raise ValueError("behavior policies have an invalid shape")
+        if not np.isfinite(policies).all() or np.any(policies < 0.0):
+            raise ValueError("behavior policies must be finite and non-negative")
+        if not np.allclose(policies.sum(axis=-1), 1.0):
+            raise ValueError("behavior policies must sum to one")
 
 
 class BatchedNetworkEvaluator:
@@ -317,9 +331,11 @@ class AtariAgent(nn.Module):
                 root_noise_temperature=root_noise_temperature,
                 gumbel_sampling=gumbel_sampling,
             )
-            search_results = self.search.materialize_results(
-                search_batch,
-                temperature=temperature,
+            search_results, behavior_policies = (
+                self.search.materialize_results_with_behavior(
+                    search_batch,
+                    temperature=temperature,
+                )
             )
             return AgentOutput(
                 actions=tuple(result.action for result in search_results),
@@ -327,6 +343,7 @@ class AtariAgent(nn.Module):
                 predicted_values=tuple(
                     float(value) for value in values.detach().cpu().tolist()
                 ),
+                behavior_policies=behavior_policies,
             )
         finally:
             if was_training:

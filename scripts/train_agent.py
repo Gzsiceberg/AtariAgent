@@ -222,40 +222,35 @@ def main(config: TrainAgentConfig) -> None:
         and not config.reanalysis.enabled
     ):
         raise ValueError("search value targets require target reanalysis")
-    if isinstance(config.reanalysis.cache_clear_interval, bool) or not isinstance(
-        config.reanalysis.cache_clear_interval, int
-    ):
-        raise TypeError("reanalysis.cache_clear_interval must be an integer")
-    if config.reanalysis.cache_clear_interval < 0:
-        raise ValueError("reanalysis.cache_clear_interval must be non-negative")
     for value, name in (
-        (config.reanalysis.target_update_interval, "target_update_interval"),
         (
-            config.reanalysis.initial_target_update_interval,
-            "initial_target_update_interval",
+            config.reanalysis.initial_cache_clear_interval,
+            "initial_cache_clear_interval",
         ),
+        (config.reanalysis.target_update_interval, "target_update_interval"),
     ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"reanalysis.{name} must be an integer")
         if value <= 0:
             raise ValueError(f"reanalysis.{name} must be positive")
     if (
-        config.reanalysis.initial_target_update_interval
+        config.reanalysis.initial_cache_clear_interval
         > config.reanalysis.target_update_interval
     ):
         raise ValueError(
-            "reanalysis.initial_target_update_interval must not exceed "
+            "reanalysis.initial_cache_clear_interval must not exceed "
             "reanalysis.target_update_interval"
         )
     if config.reanalysis.policy_chunk_size <= 0:
         raise ValueError("reanalysis.policy_chunk_size must be positive")
     if not isinstance(config.reanalysis.cache_targets, bool):
         raise TypeError("reanalysis.cache_targets must be a boolean")
-    if (
-        not math.isfinite(config.reanalysis.cache_refresh_probability)
-        or not 0.0 <= config.reanalysis.cache_refresh_probability <= 1.0
+    if isinstance(config.reanalysis.cache_target_ttl, bool) or not isinstance(
+        config.reanalysis.cache_target_ttl, int
     ):
-        raise ValueError(
-            "reanalysis.cache_refresh_probability must be in [0, 1]"
-        )
+        raise TypeError("reanalysis.cache_target_ttl must be an integer")
+    if config.reanalysis.cache_target_ttl < 0:
+        raise ValueError("reanalysis.cache_target_ttl must be non-negative")
     if config.reanalysis.worker_num_threads <= 0:
         raise ValueError("reanalysis.worker_num_threads must be positive")
     if config.reanalysis.prefetch_batches <= 0:
@@ -441,9 +436,7 @@ def main(config: TrainAgentConfig) -> None:
                 search_config=agent.search.config,
                 policy_chunk_size=config.reanalysis.policy_chunk_size,
                 cache_targets=config.reanalysis.cache_targets,
-                cache_refresh_probability=(
-                    config.reanalysis.cache_refresh_probability
-                ),
+                cache_target_ttl=config.reanalysis.cache_target_ttl,
                 rng_seed=config.seed,
                 support_min=-300,
                 support_max=300,
@@ -451,9 +444,8 @@ def main(config: TrainAgentConfig) -> None:
                 search_threads=config.reanalysis.worker_num_threads,
                 prefetch_batches=config.reanalysis.prefetch_batches,
                 timeout_seconds=config.reanalysis.timeout_seconds,
-                target_update_interval=max(
-                    config.reanalysis.target_update_interval,
-                    config.reanalysis.initial_target_update_interval,
+                target_update_interval=(
+                    config.reanalysis.target_update_interval
                 ),
                 root_noise_total_steps=config.training.steps,
                 device=device,
@@ -570,8 +562,15 @@ def main(config: TrainAgentConfig) -> None:
                 config.training.mixed_value_start_step
             ),
             mixed_value_threshold=config.training.mixed_value_threshold,
-            reanalysis_cache_clear_interval=(
-                config.reanalysis.cache_clear_interval
+            reanalysis_initial_cache_clear_interval=(
+                config.reanalysis.initial_cache_clear_interval
+            ),
+            reanalysis_final_cache_clear_interval=(
+                config.reanalysis.target_update_interval
+            ),
+            reanalysis_cache_clear_ramp_steps=max(
+                config.training.steps // 2,
+                1,
             ),
             max_in_flight=config.training.batch_max_in_flight,
             ready_prefetch=config.training.batch_ready_prefetch,
@@ -589,11 +588,7 @@ def main(config: TrainAgentConfig) -> None:
             if target_network_update_due(
                 update,
                 last_update=target_version,
-                total_steps=config.training.steps,
                 interval=config.reanalysis.target_update_interval,
-                initial_interval=(
-                    config.reanalysis.initial_target_update_interval
-                ),
             ):
                 target_state = make_target_state(
                     agent.representation_network,
@@ -608,7 +603,15 @@ def main(config: TrainAgentConfig) -> None:
                 batch_worker.publish_weights(update, target_state)
 
             if update == 1 or update % config.training.log_every == 0:
-                wandb_logger.log_training(metrics, update=update)
+                wandb_logger.log_training(
+                    metrics,
+                    update=update,
+                    policy_roots_requested=ready.policy_roots_requested,
+                    policy_roots_searched=ready.policy_roots_searched,
+                    cache_hits=ready.cache_hits,
+                    cache_target_age_mean=ready.cache_target_age_mean,
+                    cache_target_age_max=ready.cache_target_age_max,
+                )
                 progress_stats: dict[str, str] = {
                     # "loss": f"{metrics.loss:.3f}",
                     # "policy": f"{metrics.policy_loss:.3f}",
@@ -634,6 +637,13 @@ def main(config: TrainAgentConfig) -> None:
                                 "roots": (
                                     f"{ready.policy_roots_searched}/"
                                     f"{ready.policy_roots_requested}"
+                                ),
+                                "hit": (
+                                    f"{ready.cache_hits / ready.policy_roots_requested:.0%}"
+                                ),
+                                "age": (
+                                    f"{ready.cache_target_age_mean:.0f}/"
+                                    f"{ready.cache_target_age_max}"
                                 ),
                                 "cache": str(batch_worker.cache_size),
                             }
@@ -706,6 +716,11 @@ def main(config: TrainAgentConfig) -> None:
                 self_play_progress.update(
                     worker.total_transitions - previous_transitions
                 )
+                if worker.last_behavior_metrics is not None:
+                    wandb_logger.log_behavior_policy(
+                        worker.last_behavior_metrics,
+                        total_transitions=worker.total_transitions,
+                    )
                 trajectories = tuple(flatten_trajectories(grouped))
                 completed_rewards = reward_tracker.add(trajectories)
                 self_play_episode_rewards.extend(completed_rewards)

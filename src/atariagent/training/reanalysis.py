@@ -40,6 +40,9 @@ class ReadyReanalysis:
     peak_memory_bytes: int
     policy_roots_requested: int = 0
     policy_roots_searched: int = 0
+    cache_hits: int = 0
+    cache_target_age_mean: float = 0.0
+    cache_target_age_max: int = 0
 
 
 def replay_batch_nbytes(batch: ReplayBatch) -> int:
@@ -95,7 +98,7 @@ class ReanalysisPipeline:
         search_config: SearchConfig,
         policy_chunk_size: int,
         cache_targets: bool,
-        cache_refresh_probability: float,
+        cache_target_ttl: int,
         rng_seed: int,
         support_min: int,
         support_max: int,
@@ -109,15 +112,12 @@ class ReanalysisPipeline:
     ) -> None:
         if not isinstance(cache_targets, bool):
             raise TypeError("cache_targets must be a boolean")
-        if isinstance(cache_refresh_probability, bool) or not isinstance(
-            cache_refresh_probability, int | float
+        if isinstance(cache_target_ttl, bool) or not isinstance(
+            cache_target_ttl, int
         ):
-            raise TypeError("cache_refresh_probability must be numeric")
-        if (
-            not math.isfinite(cache_refresh_probability)
-            or not 0.0 <= cache_refresh_probability <= 1.0
-        ):
-            raise ValueError("cache_refresh_probability must be in [0, 1]")
+            raise TypeError("cache_target_ttl must be an integer")
+        if cache_target_ttl < 0:
+            raise ValueError("cache_target_ttl must be non-negative")
         if isinstance(search_threads, bool) or not isinstance(search_threads, int):
             raise TypeError("search_threads must be an integer")
         if search_threads <= 0:
@@ -180,7 +180,7 @@ class ReanalysisPipeline:
             timeout_seconds,
             target_update_interval,
             cache_targets,
-            cache_refresh_probability,
+            cache_target_ttl,
         )
         self._latest_target_state: TargetState | None = None
         self._closed = False
@@ -257,6 +257,7 @@ class ReanalysisPipeline:
                 batch,
                 root_noise_temperature,
                 self.search_algorithm == "gumbel",
+                trained_steps,
             )
         )
         self._pending_bytes[request_id] = replay_batch_nbytes(batch)
@@ -286,6 +287,9 @@ class ReanalysisPipeline:
             peak_memory_bytes=int(result["peak_memory_bytes"]),
             policy_roots_requested=int(result["policy_roots_requested"]),
             policy_roots_searched=int(result["policy_roots_searched"]),
+            cache_hits=int(result["cache_hits"]),
+            cache_target_age_mean=float(result["cache_target_age_mean"]),
+            cache_target_age_max=int(result["cache_target_age_max"]),
         )
 
     def close(self) -> None:

@@ -306,6 +306,13 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         "reward_loss",
         "consistency_loss",
         "gradient_norm",
+        "search_target_entropy",
+        "network_policy_entropy",
+        "policy_kl_divergence",
+        "search_target_max_probability",
+        "network_policy_max_probability",
+        "search_target_effective_actions",
+        "network_policy_effective_actions",
         "priorities",
     ):
         torch.testing.assert_close(
@@ -397,6 +404,15 @@ def test_agent_scales_root_and_recurrent_losses_together() -> None:
     )
     assert metrics.reward_loss == pytest.approx(torch.log(torch.tensor(601.0)).item())
     assert metrics.consistency_loss == 0.0
+    assert metrics.search_target_entropy == pytest.approx(
+        torch.log(torch.tensor(3.0)).item()
+    )
+    assert metrics.search_target_max_probability == pytest.approx(1.0 / 3.0)
+    assert metrics.search_target_effective_actions == pytest.approx(3.0)
+    assert metrics.network_policy_entropy >= 0.0
+    assert metrics.policy_kl_divergence >= -1.0e-6
+    assert 0.0 <= metrics.network_policy_max_probability <= 1.0
+    assert 1.0 <= metrics.network_policy_effective_actions <= 3.0
 
 
 def test_fp16_precision_is_not_supported() -> None:

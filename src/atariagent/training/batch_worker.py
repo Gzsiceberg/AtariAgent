@@ -15,6 +15,7 @@ from torch import Tensor
 from atariagent.replay import FIFOReplayBuffer
 from atariagent.replay_batch import ReplayBatch
 
+from .config import scheduled_cache_clear_interval
 from .reanalysis import ReanalysisPipeline, TargetState
 
 
@@ -33,6 +34,9 @@ class ReadyBatch:
     worker_duration_ms: float | None = None
     policy_roots_requested: int = 0
     policy_roots_searched: int = 0
+    cache_hits: int = 0
+    cache_target_age_mean: float = 0.0
+    cache_target_age_max: int = 0
 
     def wait_for_current_stream(self, device: torch.device | str) -> None:
         """Make the current training stream wait for this batch's transfer."""
@@ -81,7 +85,9 @@ class BatchWorker:
         value_target: str = "td",
         mixed_value_start_step: int = 30_000,
         mixed_value_threshold: int = 5_000,
-        reanalysis_cache_clear_interval: int = 0,
+        reanalysis_initial_cache_clear_interval: int = 100,
+        reanalysis_final_cache_clear_interval: int = 1_000,
+        reanalysis_cache_clear_ramp_steps: int = 50_000,
         max_in_flight: int = 3,
         ready_prefetch: int = 1,
         timeout_seconds: float = 600.0,
@@ -91,8 +97,16 @@ class BatchWorker:
             (mixed_value_start_step, "mixed_value_start_step"),
             (mixed_value_threshold, "mixed_value_threshold"),
             (
-                reanalysis_cache_clear_interval,
-                "reanalysis_cache_clear_interval",
+                reanalysis_initial_cache_clear_interval,
+                "reanalysis_initial_cache_clear_interval",
+            ),
+            (
+                reanalysis_final_cache_clear_interval,
+                "reanalysis_final_cache_clear_interval",
+            ),
+            (
+                reanalysis_cache_clear_ramp_steps,
+                "reanalysis_cache_clear_ramp_steps",
             ),
             (max_in_flight, "max_in_flight"),
             (ready_prefetch, "ready_prefetch"),
@@ -105,9 +119,18 @@ class BatchWorker:
             raise ValueError("value_target must be td, search, or mixed")
         if mixed_value_start_step < 0 or mixed_value_threshold < 0:
             raise ValueError("mixed value thresholds must be non-negative")
-        if reanalysis_cache_clear_interval < 0:
+        if (
+            reanalysis_initial_cache_clear_interval <= 0
+            or reanalysis_final_cache_clear_interval <= 0
+            or reanalysis_cache_clear_ramp_steps <= 0
+        ):
+            raise ValueError("cache clear intervals and ramp must be positive")
+        if (
+            reanalysis_initial_cache_clear_interval
+            > reanalysis_final_cache_clear_interval
+        ):
             raise ValueError(
-                "reanalysis_cache_clear_interval must be non-negative"
+                "initial cache clear interval must not exceed final interval"
             )
         if max_in_flight <= 0:
             raise ValueError("max_in_flight must be positive")
@@ -125,9 +148,16 @@ class BatchWorker:
         self.value_target = value_target
         self.mixed_value_start_step = mixed_value_start_step
         self.mixed_value_threshold = mixed_value_threshold
-        self.reanalysis_cache_clear_interval = (
-            reanalysis_cache_clear_interval
+        self.reanalysis_initial_cache_clear_interval = (
+            reanalysis_initial_cache_clear_interval
         )
+        self.reanalysis_final_cache_clear_interval = (
+            reanalysis_final_cache_clear_interval
+        )
+        self.reanalysis_cache_clear_ramp_steps = (
+            reanalysis_cache_clear_ramp_steps
+        )
+        self._last_reanalysis_cache_clear_step = 0
         self.max_in_flight = max_in_flight
         self.ready_prefetch = ready_prefetch
         self.timeout_seconds = timeout_seconds
@@ -324,13 +354,20 @@ class BatchWorker:
                 and self.outstanding_count < self.max_in_flight
             ):
                 self._drain_controls()
-                cache_clear_interval = self.reanalysis_cache_clear_interval
+                cache_clear_interval = scheduled_cache_clear_interval(
+                    self._last_reanalysis_cache_clear_step,
+                    ramp_steps=self.reanalysis_cache_clear_ramp_steps,
+                    initial_interval=(
+                        self.reanalysis_initial_cache_clear_interval
+                    ),
+                    final_interval=self.reanalysis_final_cache_clear_interval,
+                )
                 if (
-                    submitted_step > 0
-                    and cache_clear_interval > 0
-                    and submitted_step % cache_clear_interval == 0
+                    submitted_step - self._last_reanalysis_cache_clear_step
+                    >= cache_clear_interval
                 ):
                     pipeline.clear_cache()
+                    self._last_reanalysis_cache_clear_step = submitted_step
                 token, batch, sample_ms = self._sample(True)
                 try:
                     request_id = pipeline.submit(
@@ -363,6 +400,9 @@ class BatchWorker:
                     worker_duration_ms=result.worker_duration_ms,
                     policy_roots_requested=result.policy_roots_requested,
                     policy_roots_searched=result.policy_roots_searched,
+                    cache_hits=result.cache_hits,
+                    cache_target_age_mean=result.cache_target_age_mean,
+                    cache_target_age_max=result.cache_target_age_max,
                 )
             except BaseException:
                 self._discard_token(token)
@@ -411,6 +451,9 @@ class BatchWorker:
         worker_duration_ms: float | None = None,
         policy_roots_requested: int = 0,
         policy_roots_searched: int = 0,
+        cache_hits: int = 0,
+        cache_target_age_mean: float = 0.0,
+        cache_target_age_max: int = 0,
     ) -> ReadyBatch:
         started = perf_counter()
         cpu_batch = cpu_batch.with_selected_value_targets(
@@ -446,6 +489,9 @@ class BatchWorker:
             worker_duration_ms=worker_duration_ms,
             policy_roots_requested=policy_roots_requested,
             policy_roots_searched=policy_roots_searched,
+            cache_hits=cache_hits,
+            cache_target_age_mean=cache_target_age_mean,
+            cache_target_age_max=cache_target_age_max,
         )
 
     def _put_ready(self, ready: ReadyBatch) -> None:
@@ -487,6 +533,7 @@ class BatchWorker:
                 if pipeline is None:
                     raise RuntimeError("reanalysis pipeline is unavailable")
                 pipeline.publish_weights(command.version, command.state)
+                self._last_reanalysis_cache_clear_step = command.version
             except BaseException as error:
                 command.error = error
             finally:

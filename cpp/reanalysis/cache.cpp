@@ -1,8 +1,7 @@
 #include "reanalysis/cache.h"
 
-#include <cmath>
+#include <algorithm>
 #include <cstdint>
-#include <random>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -27,6 +26,7 @@ struct CacheEntry {
     float value = 0.0F;
     float search_value = 0.0F;
     std::vector<float> policy;
+    std::int64_t created_step = 0;
 };
 
 }  // namespace
@@ -38,17 +38,15 @@ public:
         const torch::Tensor& policy_targets,
         const torch::Tensor& value_targets,
         const torch::Tensor& indices,
-        double refresh_probability
+        std::int64_t current_step,
+        std::int64_t target_ttl
     ) {
-        if (!std::isfinite(refresh_probability)
-            || refresh_probability < 0.0
-            || refresh_probability > 1.0) {
-            throw std::invalid_argument(
-                "refresh_probability must be in [0, 1]"
-            );
+        if (current_step < 0) {
+            throw std::invalid_argument("current_step must be non-negative");
         }
-        std::bernoulli_distribution should_refresh(refresh_probability);
-        const bool refresh_cached = should_refresh(rng_);
+        if (target_ttl < 0) {
+            throw std::invalid_argument("target_ttl must be non-negative");
+        }
         const torch::Tensor positions = torch::nonzero(policy_mask).contiguous();
         const torch::Tensor contiguous_indices = indices.contiguous();
         const auto* position_data = positions.data_ptr<std::int64_t>();
@@ -71,9 +69,23 @@ public:
                 continue;
             }
             auto cached = entries_.find(state_id);
-            if (cached != entries_.end() && !refresh_cached) {
-                hits.emplace_back(flat, &cached->second);
-                continue;
+            if (cached != entries_.end()) {
+                const auto age = current_step - cached->second.created_step;
+                if (age < 0) {
+                    throw std::runtime_error(
+                        "cache entry was created after the current step"
+                    );
+                }
+                const bool expired = target_ttl > 0 && age >= target_ttl;
+                if (!expired) {
+                    hits.emplace_back(flat, &cached->second);
+                    ++result.cache_hits;
+                    result.cache_target_age_sum += static_cast<double>(age);
+                    result.cache_target_age_max = std::max(
+                        result.cache_target_age_max, age
+                    );
+                    continue;
+                }
             }
             const auto index = result.misses.size();
             miss_lookup[state_id] = index;
@@ -98,8 +110,12 @@ public:
         const std::vector<CacheMiss>& misses,
         torch::Tensor& value_targets,
         torch::Tensor& search_value_targets,
-        torch::Tensor& policy_targets
+        torch::Tensor& policy_targets,
+        std::int64_t current_step
     ) {
+        if (current_step < 0) {
+            throw std::invalid_argument("current_step must be non-negative");
+        }
         const auto action_count = policy_targets.size(2);
         std::vector<std::int64_t> source_indices;
         source_indices.reserve(misses.size());
@@ -133,6 +149,7 @@ public:
                 policy_data + index * action_count,
                 policy_data + (index + 1) * action_count
             );
+            entry.created_step = current_step;
             append_duplicates(
                 misses[index],
                 entry,
@@ -277,7 +294,6 @@ private:
     }
 
     std::unordered_map<std::int64_t, CacheEntry> entries_;
-    std::mt19937 rng_{0};
 };
 
 ReanalysisCache::ReanalysisCache() : impl_(std::make_unique<Impl>()) {}
@@ -288,14 +304,16 @@ CachePreparation ReanalysisCache::prepare(
     const torch::Tensor& policy_targets,
     const torch::Tensor& value_targets,
     const torch::Tensor& indices,
-    double refresh_probability
+    std::int64_t current_step,
+    std::int64_t target_ttl
 ) {
     return impl_->prepare(
         policy_mask,
         policy_targets,
         value_targets,
         indices,
-        refresh_probability
+        current_step,
+        target_ttl
     );
 }
 
@@ -303,10 +321,15 @@ void ReanalysisCache::resolve(
     const std::vector<CacheMiss>& misses,
     torch::Tensor& value_targets,
     torch::Tensor& search_value_targets,
-    torch::Tensor& policy_targets
+    torch::Tensor& policy_targets,
+    std::int64_t current_step
 ) {
     impl_->resolve(
-        misses, value_targets, search_value_targets, policy_targets
+        misses,
+        value_targets,
+        search_value_targets,
+        policy_targets,
+        current_step
     );
 }
 

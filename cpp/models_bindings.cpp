@@ -370,7 +370,7 @@ PYBIND11_MODULE(_models_native, module) {
                 double,
                 int,
                 bool,
-                double
+                std::int64_t
             >(),
             py::arg("target"),
             py::arg("device"),
@@ -378,7 +378,7 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("timeout_seconds"),
             py::arg("target_update_interval"),
             py::arg("cache_targets"),
-            py::arg("cache_refresh_probability")
+            py::arg("cache_target_ttl")
         )
         .def(
             "publish_weights",
@@ -393,7 +393,8 @@ PYBIND11_MODULE(_models_native, module) {
             &NativeReanalysisEngine::submit,
             py::arg("batch"),
             py::arg("root_noise_temperature"),
-            py::arg("gumbel_sampling")
+            py::arg("gumbel_sampling"),
+            py::arg("trained_step")
         )
         .def("wait_next", &NativeReanalysisEngine::wait_next)
         .def("clear_cache", &NativeReanalysisEngine::clear_cache)

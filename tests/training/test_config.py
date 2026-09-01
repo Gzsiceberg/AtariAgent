@@ -16,7 +16,7 @@ from atariagent.training.config import (
     next_collection_vector_steps,
     puct_root_noise_temperature,
     register_train_agent_config,
-    scheduled_target_update_interval,
+    scheduled_cache_clear_interval,
     target_network_update_due,
     visit_softmax_temperature,
 )
@@ -59,10 +59,10 @@ def test_search_presets_select_their_simulation_budgets() -> None:
 
     assert puct.self_play.search_algorithm == "puct"
     assert puct.self_play.num_simulations == 50
-    assert puct.reanalysis.cache_clear_interval == 0
+    assert puct.reanalysis.initial_cache_clear_interval == 100
     assert gumbel.self_play.search_algorithm == "gumbel"
     assert gumbel.self_play.num_simulations == 16
-    assert gumbel.reanalysis.cache_clear_interval == 400
+    assert gumbel.reanalysis.initial_cache_clear_interval == 100
 
 
 def test_wandb_is_disabled_by_default() -> None:
@@ -105,57 +105,40 @@ def test_reanalysis_uses_target_network_defaults() -> None:
     assert config.enabled
     assert config.policy_chunk_size == 768
     assert config.cache_targets
-    assert config.cache_clear_interval == 0
-    assert config.cache_refresh_probability == pytest.approx(0.05)
+    assert config.initial_cache_clear_interval == 100
+    assert config.cache_target_ttl == 200
     assert config.prefetch_batches == 2
     assert config.timeout_seconds == pytest.approx(600.0)
     assert config.worker_num_threads == 4
     assert config.target_update_interval == 1_000
-    assert config.initial_target_update_interval == 200
 
 
-def test_target_network_interval_ramps_over_first_half_of_training() -> None:
+def test_cache_clear_interval_ramps_over_first_half_of_training() -> None:
     intervals = [
-        scheduled_target_update_interval(
+        scheduled_cache_clear_interval(
             update,
-            total_steps=10_000,
-            initial_interval=200,
+            ramp_steps=5_000,
+            initial_interval=100,
             final_interval=1_000,
         )
         for update in (0, 2_500, 5_000, 10_000)
     ]
-    assert intervals == [200, 600, 1_000, 1_000]
+    assert intervals == [100, 550, 1_000, 1_000]
 
+
+def test_target_network_uses_fixed_update_interval() -> None:
     last_update = 0
     due_updates = []
-    for update in range(1, 10_001):
+    for update in range(1, 5_001):
         if target_network_update_due(
             update,
             last_update=last_update,
-            total_steps=10_000,
             interval=1_000,
-            initial_interval=200,
         ):
             due_updates.append(update)
             last_update = update
 
-    assert due_updates == [
-        200,
-        432,
-        701,
-        1_013,
-        1_375,
-        1_795,
-        2_282,
-        2_847,
-        3_503,
-        4_263,
-        5_145,
-        6_145,
-        7_145,
-        8_145,
-        9_145,
-    ]
+    assert due_updates == [1_000, 2_000, 3_000, 4_000, 5_000]
 
 
 def test_final_evaluation_uses_efficientzero_v1_raw_frame_horizon() -> None:

@@ -87,13 +87,12 @@ class ReanalysisConfig:
     enabled: bool = True
     policy_chunk_size: int = 768
     cache_targets: bool = True
-    cache_clear_interval: int = 0
-    cache_refresh_probability: float = 0.05
+    initial_cache_clear_interval: int = 100
+    cache_target_ttl: int = 200
     prefetch_batches: int = 2
     timeout_seconds: float = 600.0
     worker_num_threads: int = 4
     target_update_interval: int = 1_000
-    initial_target_update_interval: int = 200
 
 
 @dataclass
@@ -194,17 +193,17 @@ def final_evaluation_max_episode_steps(frame_skip: int) -> int:
     return FINAL_EVALUATION_RAW_FRAMES // frame_skip
 
 
-def scheduled_target_update_interval(
+def scheduled_cache_clear_interval(
     update: int,
     *,
-    total_steps: int,
+    ramp_steps: int,
     initial_interval: int,
     final_interval: int,
 ) -> int:
-    """Ramp the target-copy interval over the first half of training."""
+    """Ramp full-cache clearing from ``initial`` to ``final`` spacing."""
     for value, name in (
         (update, "update"),
-        (total_steps, "total_steps"),
+        (ramp_steps, "ramp_steps"),
         (initial_interval, "initial_interval"),
         (final_interval, "final_interval"),
     ):
@@ -212,14 +211,14 @@ def scheduled_target_update_interval(
             raise TypeError(f"{name} must be an integer")
     if update < 0:
         raise ValueError("update must be non-negative")
-    if total_steps <= 0:
-        raise ValueError("total_steps must be positive")
+    if ramp_steps <= 0:
+        raise ValueError("ramp_steps must be positive")
     if initial_interval <= 0 or final_interval <= 0:
-        raise ValueError("target update intervals must be positive")
+        raise ValueError("cache clear intervals must be positive")
     if initial_interval > final_interval:
         raise ValueError("initial_interval must not exceed final_interval")
 
-    ramp_progress = min(update / (0.5 * total_steps), 1.0)
+    ramp_progress = min(update / ramp_steps, 1.0)
     return round(
         initial_interval
         + ramp_progress * (final_interval - initial_interval)
@@ -230,28 +229,23 @@ def target_network_update_due(
     update: int,
     *,
     last_update: int,
-    total_steps: int,
     interval: int,
-    initial_interval: int,
 ) -> bool:
-    """Return whether the delayed target network should be hard-copied."""
-    if isinstance(update, bool) or not isinstance(update, int):
-        raise TypeError("update must be an integer")
-    if isinstance(last_update, bool) or not isinstance(last_update, int):
-        raise TypeError("last_update must be an integer")
-    if update < 0:
-        raise ValueError("update must be non-negative")
-    if last_update < 0:
-        raise ValueError("last_update must be non-negative")
+    """Return whether the fixed-interval target hard copy is due."""
+    for value, name in (
+        (update, "update"),
+        (last_update, "last_update"),
+        (interval, "interval"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+    if update < 0 or last_update < 0:
+        raise ValueError("updates must be non-negative")
     if last_update > update:
         raise ValueError("last_update must not exceed update")
-    active_interval = scheduled_target_update_interval(
-        last_update,
-        total_steps=total_steps,
-        initial_interval=initial_interval,
-        final_interval=interval,
-    )
-    return update > last_update and update - last_update >= active_interval
+    if interval <= 0:
+        raise ValueError("interval must be positive")
+    return update > last_update and update - last_update >= interval
 
 
 def next_collection_vector_steps(
@@ -329,7 +323,7 @@ __all__ = [
     "next_collection_vector_steps",
     "puct_root_noise_temperature",
     "register_train_agent_config",
-    "scheduled_target_update_interval",
+    "scheduled_cache_clear_interval",
     "target_network_update_due",
     "visit_softmax_temperature",
 ]

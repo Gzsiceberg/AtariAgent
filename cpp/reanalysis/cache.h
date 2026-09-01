@@ -22,6 +22,9 @@ struct CachePreparation {
     torch::Tensor policy_targets;
     std::vector<CacheMiss> misses;
     std::int64_t roots_searched = 0;
+    std::int64_t cache_hits = 0;
+    double cache_target_age_sum = 0.0;
+    std::int64_t cache_target_age_max = 0;
 };
 
 class ReanalysisCache {
@@ -37,13 +40,15 @@ public:
         const torch::Tensor& policy_targets,
         const torch::Tensor& value_targets,
         const torch::Tensor& indices,
-        double refresh_probability
+        std::int64_t current_step,
+        std::int64_t target_ttl
     );
     void resolve(
         const std::vector<CacheMiss>& misses,
         torch::Tensor& value_targets,
         torch::Tensor& search_value_targets,
-        torch::Tensor& policy_targets
+        torch::Tensor& policy_targets,
+        std::int64_t current_step
     );
     void clear();
     std::size_t size() const;

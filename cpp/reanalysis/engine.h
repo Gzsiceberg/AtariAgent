@@ -20,7 +20,7 @@ public:
         double timeout_seconds,
         int target_update_interval,
         bool cache_targets,
-        double cache_refresh_probability
+        std::int64_t cache_target_ttl
     );
     ~NativeReanalysisEngine();
 
@@ -36,7 +36,8 @@ public:
     std::int64_t submit(
         pybind11::object batch,
         double root_noise_temperature,
-        bool gumbel_sampling
+        bool gumbel_sampling,
+        std::int64_t trained_step
     );
     pybind11::dict wait_next();
     void clear_cache();

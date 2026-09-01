@@ -42,7 +42,7 @@ public:
         double timeout_seconds,
         int target_update_interval,
         bool cache_targets,
-        double cache_refresh_probability
+        std::int64_t cache_target_ttl
     )
         : target_(std::move(target)),
           device_(device),
@@ -50,7 +50,7 @@ public:
           timeout_seconds_(timeout_seconds),
           target_update_interval_(target_update_interval),
           cache_targets_(cache_targets),
-          cache_refresh_probability_(cache_refresh_probability) {
+          cache_target_ttl_(cache_target_ttl) {
         if (!target_) {
             throw std::invalid_argument("target must not be null");
         }
@@ -65,11 +65,9 @@ public:
                 "target_update_interval must be positive"
             );
         }
-        if (!std::isfinite(cache_refresh_probability_)
-            || cache_refresh_probability_ < 0.0
-            || cache_refresh_probability_ > 1.0) {
+        if (cache_target_ttl_ < 0) {
             throw std::invalid_argument(
-                "cache_refresh_probability must be in [0, 1]"
+                "cache_target_ttl must be non-negative"
             );
         }
 #ifdef ATARIAGENT_HAS_CUDA
@@ -115,7 +113,8 @@ public:
     std::int64_t submit(
         py::object batch,
         double root_noise_temperature,
-        bool gumbel_sampling
+        bool gumbel_sampling,
+        std::int64_t trained_step
     ) {
         if (!std::isfinite(root_noise_temperature)
             || root_noise_temperature < 0.0
@@ -124,9 +123,13 @@ public:
                 "root_noise_temperature must be in [0, 1]"
             );
         }
+        if (trained_step < 0) {
+            throw std::invalid_argument("trained_step must be non-negative");
+        }
         auto job = std::make_shared<Job>();
         job->root_noise_temperature = root_noise_temperature;
         job->gumbel_sampling = gumbel_sampling;
+        job->trained_step = trained_step;
         job->kind = Kind::Request;
         job->original_batch = std::move(batch);
         job->frames = tensor_attribute(job->original_batch, "frames");
@@ -247,6 +250,12 @@ public:
         result["peak_memory_bytes"] = job->peak_memory_bytes;
         result["policy_roots_requested"] = job->roots_requested;
         result["policy_roots_searched"] = job->roots_searched;
+        result["cache_hits"] = job->cache_hits;
+        result["cache_target_age_mean"] = job->cache_hits > 0
+            ? job->cache_target_age_sum
+                / static_cast<double>(job->cache_hits)
+            : 0.0;
+        result["cache_target_age_max"] = job->cache_target_age_max;
         result["cache_size"] = cache_size_;
         job->original_batch = py::none();
         return result;
@@ -328,6 +337,10 @@ private:
         std::int64_t peak_memory_bytes = 0;
         std::int64_t roots_requested = 0;
         std::int64_t roots_searched = 0;
+        std::int64_t cache_hits = 0;
+        double cache_target_age_sum = 0.0;
+        std::int64_t cache_target_age_max = 0;
+        std::int64_t trained_step = 0;
         double root_noise_temperature = 0.0;
         bool gumbel_sampling = false;
         std::exception_ptr error;
@@ -563,10 +576,14 @@ private:
                 job->policy_targets,
                 job->value_targets,
                 job->indices,
-                cache_refresh_probability_
+                job->trained_step,
+                cache_target_ttl_
             );
             job->cache_misses = std::move(prepared.misses);
             job->roots_searched = prepared.roots_searched;
+            job->cache_hits = prepared.cache_hits;
+            job->cache_target_age_sum = prepared.cache_target_age_sum;
+            job->cache_target_age_max = prepared.cache_target_age_max;
             job->value_targets = std::move(prepared.value_targets);
             job->search_value_targets = std::move(
                 prepared.search_value_targets
@@ -595,7 +612,8 @@ private:
                     job->cache_misses,
                     job->value_targets,
                     job->search_value_targets,
-                    job->policy_targets
+                    job->policy_targets,
+                    job->trained_step
                 );
                 std::lock_guard<std::mutex> lock(mutex_);
                 cache_size_ = cache_.size();
@@ -757,7 +775,7 @@ private:
     double timeout_seconds_;
     int target_update_interval_;
     bool cache_targets_;
-    double cache_refresh_probability_;
+    std::int64_t cache_target_ttl_;
     mutable std::mutex mutex_;
     std::condition_variable work_ready_;
     std::condition_variable result_ready_;
@@ -782,7 +800,7 @@ NativeReanalysisEngine::NativeReanalysisEngine(
     double timeout_seconds,
     int target_update_interval,
     bool cache_targets,
-    double cache_refresh_probability
+    std::int64_t cache_target_ttl
 )
     : impl_(std::make_unique<Impl>(
           std::move(target),
@@ -791,7 +809,7 @@ NativeReanalysisEngine::NativeReanalysisEngine(
           timeout_seconds,
           target_update_interval,
           cache_targets,
-          cache_refresh_probability
+          cache_target_ttl
       )) {}
 
 NativeReanalysisEngine::~NativeReanalysisEngine() = default;
@@ -813,10 +831,14 @@ void NativeReanalysisEngine::publish_weights(
 std::int64_t NativeReanalysisEngine::submit(
     py::object batch,
     double root_noise_temperature,
-    bool gumbel_sampling
+    bool gumbel_sampling,
+    std::int64_t trained_step
 ) {
     return impl_->submit(
-        std::move(batch), root_noise_temperature, gumbel_sampling
+        std::move(batch),
+        root_noise_temperature,
+        gumbel_sampling,
+        trained_step
     );
 }
 

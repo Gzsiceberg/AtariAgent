@@ -4,7 +4,3 @@
 self_play:
   search_algorithm: puct
   num_simulations: 50
-
-reanalysis:
-  # Zero disables periodic cache clearing.
-  cache_clear_interval: 0

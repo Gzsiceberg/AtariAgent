@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from atariagent.evaluation import EvaluationStats
+from atariagent.selfplay import BehaviorPolicyMetrics
 
 from .config import WandbConfig, environment_slug
 from .learner import TrainMetrics
@@ -38,9 +39,11 @@ class WandbLogger:
             for namespace, step_name in (
                 ("train", "train/update"),
                 ("self_play", "self_play/total_episodes"),
+                ("behavior", "behavior/total_transitions"),
             ):
                 run.define_metric(step_name)
                 run.define_metric(f"{namespace}/*", step_metric=step_name)
+            run.define_metric("reanalysis/*", step_metric="train/update")
 
     @classmethod
     def initialize(
@@ -83,19 +86,83 @@ class WandbLogger:
     def enabled(self) -> bool:
         return self._run is not None
 
-    def log_training(self, metrics: TrainMetrics, *, update: int) -> None:
-        """Log optimizer loss and gradient metrics for one update."""
+    def log_training(
+        self,
+        metrics: TrainMetrics,
+        *,
+        update: int,
+        policy_roots_requested: int = 0,
+        policy_roots_searched: int = 0,
+        cache_hits: int = 0,
+        cache_target_age_mean: float = 0.0,
+        cache_target_age_max: int = 0,
+    ) -> None:
+        """Log optimizer, policy, and optional reanalysis diagnostics."""
+        if self._run is None:
+            return
+        data: dict[str, object] = {
+            "train/update": update,
+            "train/loss": metrics.loss.item(),
+            "train/policy_loss": metrics.policy_loss.item(),
+            "train/value_loss": metrics.value_loss.item(),
+            "train/reward_loss": metrics.reward_loss.item(),
+            "train/consistency_loss": metrics.consistency_loss.item(),
+            "train/gradient_norm": metrics.gradient_norm.item(),
+            "train/search_target_entropy": metrics.search_target_entropy.item(),
+            "train/network_policy_entropy": metrics.network_policy_entropy.item(),
+            "train/policy_kl_divergence": metrics.policy_kl_divergence.item(),
+            "train/search_target_max_probability": (
+                metrics.search_target_max_probability.item()
+            ),
+            "train/network_policy_max_probability": (
+                metrics.network_policy_max_probability.item()
+            ),
+            "train/search_target_effective_actions": (
+                metrics.search_target_effective_actions.item()
+            ),
+            "train/network_policy_effective_actions": (
+                metrics.network_policy_effective_actions.item()
+            ),
+        }
+        if policy_roots_requested > 0:
+            data.update(
+                {
+                    "reanalysis/cache_hit_rate": (
+                        cache_hits / policy_roots_requested
+                    ),
+                    "reanalysis/cache_target_age_mean_updates": (
+                        cache_target_age_mean
+                    ),
+                    "reanalysis/cache_target_age_max_updates": (
+                        cache_target_age_max
+                    ),
+                    "reanalysis/policy_roots_requested": (
+                        policy_roots_requested
+                    ),
+                    "reanalysis/policy_roots_searched": (
+                        policy_roots_searched
+                    ),
+                }
+            )
+        self._run.log(data)
+
+    def log_behavior_policy(
+        self,
+        metrics: BehaviorPolicyMetrics,
+        *,
+        total_transitions: int,
+    ) -> None:
+        """Log PUCT's categorical behavior policy after action temperature."""
         if self._run is None:
             return
         self._run.log(
             {
-                "train/update": update,
-                "train/loss": metrics.loss.item(),
-                "train/policy_loss": metrics.policy_loss.item(),
-                "train/value_loss": metrics.value_loss.item(),
-                "train/reward_loss": metrics.reward_loss.item(),
-                "train/consistency_loss": metrics.consistency_loss.item(),
-                "train/gradient_norm": metrics.gradient_norm.item(),
+                "behavior/total_transitions": total_transitions,
+                "behavior/policy_entropy": metrics.entropy,
+                "behavior/max_action_probability": metrics.max_probability,
+                "behavior/effective_action_count": (
+                    metrics.effective_action_count
+                ),
             }
         )
 

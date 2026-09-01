@@ -61,22 +61,25 @@ class _FakeReplay:
 
 @pytest.mark.parametrize("interval", [True, 2.0])
 def test_worker_rejects_non_integer_cache_clear_interval(interval: object) -> None:
-    with pytest.raises(TypeError, match="reanalysis_cache_clear_interval"):
+    with pytest.raises(
+        TypeError,
+        match="reanalysis_initial_cache_clear_interval",
+    ):
         BatchWorker(
             _FakeReplay(lambda _: _batch()),  # type: ignore[arg-type]
             batch_size=2,
             device="cpu",
-            reanalysis_cache_clear_interval=interval,  # type: ignore[arg-type]
+            reanalysis_initial_cache_clear_interval=interval,  # type: ignore[arg-type]
         )
 
 
-def test_worker_rejects_negative_cache_clear_interval() -> None:
-    with pytest.raises(ValueError, match="reanalysis_cache_clear_interval"):
+def test_worker_rejects_non_positive_cache_clear_interval() -> None:
+    with pytest.raises(ValueError, match="cache clear intervals"):
         BatchWorker(
             _FakeReplay(lambda _: _batch()),  # type: ignore[arg-type]
             batch_size=2,
             device="cpu",
-            reanalysis_cache_clear_interval=-1,
+            reanalysis_initial_cache_clear_interval=0,
         )
 
 
@@ -237,7 +240,7 @@ def test_worker_applies_mixed_values_before_learner_transfer() -> None:
         worker.wait_idle()
 
 
-def test_worker_reanalyzes_all_batches_in_order() -> None:
+def test_worker_reanalyzes_in_order_and_ramps_cache_clearing() -> None:
     includes: list[bool] = []
     pipeline = _FakeReanalysisPipeline()
 
@@ -252,14 +255,16 @@ def test_worker_reanalyzes_all_batches_in_order() -> None:
         batch_size=2,
         device="cpu",
         reanalysis_pipeline=pipeline,  # type: ignore[arg-type]
-        reanalysis_cache_clear_interval=2,
+        reanalysis_initial_cache_clear_interval=2,
+        reanalysis_final_cache_clear_interval=4,
+        reanalysis_cache_clear_ramp_steps=4,
         max_in_flight=3,
         ready_prefetch=1,
         timeout_seconds=2.0,
     ) as worker:
-        worker.start(0, 5)
+        worker.start(0, 10)
         steps = []
-        for _ in range(5):
+        for _ in range(10):
             ready = worker.next_ready()
             steps.append(ready.sample_step)
             assert ready.worker_duration_ms == pytest.approx(2.0)
@@ -268,8 +273,8 @@ def test_worker_reanalyzes_all_batches_in_order() -> None:
         worker.wait_idle()
         worker.publish_weights(10, {})
 
-    assert steps == [0, 1, 2, 3, 4]
-    assert includes == [True, True, True, True, True]
-    assert pipeline.submitted_steps == [0, 1, 2, 3, 4]
-    assert pipeline.cache_clear_request_counts == [2, 4]
+    assert steps == list(range(10))
+    assert includes == [True] * 10
+    assert pipeline.submitted_steps == list(range(10))
+    assert pipeline.cache_clear_request_counts == [2, 5, 9]
     assert pipeline.published_versions == [10]

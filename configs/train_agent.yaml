@@ -37,19 +37,19 @@ reanalysis:
   policy_chunk_size: 768
   # Cache corrected TD values, MCTS root values, and policies by replay state.
   cache_targets: true
-  # Search presets override this to select their target-freshness policy.
-  cache_clear_interval: 0
-  # Re-search cached targets for this fraction of sampled requests.
-  cache_refresh_probability: 0.05
+  # Ramp full-cache clearing from 100 updates to target_update_interval over
+  # the first half of collection-phase training.
+  initial_cache_clear_interval: 100
+  # Re-search an entry once it is this many learner updates old. Zero disables
+  # age-based expiration; cache clearing and target publication still refresh it.
+  cache_target_ttl: 200
   # Hard limit for queued native reanalysis requests.
   prefetch_batches: 2
   timeout_seconds: 600.0
   # Cap native OpenMP tree traversal to avoid CPU oversubscription.
   worker_num_threads: 4
-  # Ramp hard-copy spacing from 200 to 1,000 learner updates over the first
-  # half of collection-phase training.
+  # Keep delayed-target hard copies on a fixed learner-update interval.
   target_update_interval: 1000
-  initial_target_update_interval: 200
 
 training:
   device: auto
@@ -95,7 +95,7 @@ training:
   # Compile the complete learner unroll/loss graph and autotune its kernels.
   compile_model: true
   compile_mode: default
-  log_every: 10
+  log_every: 50
 
 # Apply independent draws to the root stack and the packed sequence of
 # consistency targets, matching the released EfficientZero Atari learner.

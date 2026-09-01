@@ -77,7 +77,7 @@ def main() -> None:
         ),
         policy_chunk_size=768,
         cache_targets=False,
-        cache_refresh_probability=0.0,
+        cache_target_ttl=0,
         rng_seed=0,
         support_min=-300,
         support_max=300,

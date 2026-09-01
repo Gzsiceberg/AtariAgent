@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from atariagent.evaluation import EvaluationStats
+from atariagent.selfplay import BehaviorPolicyMetrics
 from atariagent.training import TrainMetrics, WandbLogger, wandb_run_name
 from atariagent.training.config import WandbConfig
 
@@ -34,6 +35,13 @@ def make_train_metrics() -> TrainMetrics:
         reward_loss=torch.tensor(3.0),
         consistency_loss=torch.tensor(4.0),
         gradient_norm=torch.tensor(5.0),
+        search_target_entropy=torch.tensor(0.1),
+        network_policy_entropy=torch.tensor(0.2),
+        policy_kl_divergence=torch.tensor(0.3),
+        search_target_max_probability=torch.tensor(0.4),
+        network_policy_max_probability=torch.tensor(0.5),
+        search_target_effective_actions=torch.tensor(1.1),
+        network_policy_effective_actions=torch.tensor(1.2),
         learning_rate=0.2,
         priorities=torch.ones(2),
     )
@@ -76,8 +84,35 @@ def test_wandb_logger_emits_training_metrics() -> None:
             "train/reward_loss": 3.0,
             "train/consistency_loss": 4.0,
             "train/gradient_norm": 5.0,
+            "train/search_target_entropy": pytest.approx(0.1),
+            "train/network_policy_entropy": pytest.approx(0.2),
+            "train/policy_kl_divergence": pytest.approx(0.3),
+            "train/search_target_max_probability": pytest.approx(0.4),
+            "train/network_policy_max_probability": pytest.approx(0.5),
+            "train/search_target_effective_actions": pytest.approx(1.1),
+            "train/network_policy_effective_actions": pytest.approx(1.2),
         }
     ]
+
+
+def test_wandb_logger_emits_reanalysis_metrics() -> None:
+    run = FakeRun()
+    logger = WandbLogger(run)
+
+    logger.log_training(
+        make_train_metrics(),
+        update=10,
+        policy_roots_requested=100,
+        policy_roots_searched=25,
+        cache_hits=75,
+        cache_target_age_mean=12.5,
+        cache_target_age_max=30,
+    )
+
+    assert ("reanalysis/*", "train/update") in run.defined_metrics
+    assert run.logged[0]["reanalysis/cache_hit_rate"] == pytest.approx(0.75)
+    assert run.logged[0]["reanalysis/cache_target_age_mean_updates"] == 12.5
+    assert run.logged[0]["reanalysis/cache_target_age_max_updates"] == 30
 
 
 def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
@@ -85,6 +120,15 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
     logger = WandbLogger(run)
     stats = EvaluationStats.from_rewards((1.0, 2.0, 6.0))
 
+    logger.log_behavior_policy(
+        BehaviorPolicyMetrics(
+            entropy=0.5,
+            max_probability=0.75,
+            effective_action_count=1.5,
+            root_count=8,
+        ),
+        total_transitions=400,
+    )
     logger.log_self_play(
         stats,
         recent_rewards=stats.rewards,
@@ -93,7 +137,11 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
     logger.log_evaluation(stats)
     logger.finish(exit_code=0)
 
-    self_play, evaluation = run.logged
+    behavior, self_play, evaluation = run.logged
+    assert ("behavior/*", "behavior/total_transitions") in run.defined_metrics
+    assert behavior["behavior/policy_entropy"] == pytest.approx(0.5)
+    assert behavior["behavior/max_action_probability"] == pytest.approx(0.75)
+    assert behavior["behavior/effective_action_count"] == pytest.approx(1.5)
     assert ("self_play/*", "self_play/total_episodes") in run.defined_metrics
     assert self_play["self_play/reward_mean_10"] == pytest.approx(3.0)
     assert self_play["self_play/reward_min_10"] == 1.0

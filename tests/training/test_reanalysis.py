@@ -44,7 +44,7 @@ def _pipeline(
     timeout_seconds: float = 60.0,
     target_update_interval: int = 200,
     search_algorithm: str = "puct",
-    cache_refresh_probability: float = 0.0,
+    cache_target_ttl: int = 200,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -56,7 +56,7 @@ def _pipeline(
         ),
         policy_chunk_size=4,
         cache_targets=True,
-        cache_refresh_probability=cache_refresh_probability,
+        cache_target_ttl=cache_target_ttl,
         rng_seed=3,
         support_min=-300,
         support_max=300,
@@ -154,6 +154,9 @@ def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
         assert first.policy_roots_requested == 4
         assert first.policy_roots_searched == 3
         assert cached.policy_roots_searched == 0
+        assert cached.cache_hits == 4
+        assert cached.cache_target_age_mean == pytest.approx(0.0)
+        assert cached.cache_target_age_max == 0
         assert pipeline.cache_size == 3
         torch.testing.assert_close(
             cached.batch.value_targets,
@@ -189,21 +192,26 @@ def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
         pipeline.close()
 
 
-def test_native_pipeline_probabilistically_refreshes_cached_targets() -> None:
+def test_native_pipeline_expires_cached_targets_at_ttl() -> None:
     pipeline = _pipeline(
         prefetch_batches=1,
-        cache_refresh_probability=1.0,
+        cache_target_ttl=200,
     )
     batch = _batch()
     try:
-        pipeline.submit(batch)
-        first = pipeline.wait_next()
-        pipeline.submit(batch)
-        refreshed = pipeline.wait_next()
+        pipeline.submit(batch, trained_steps=0)
+        pipeline.wait_next()
+        pipeline.submit(batch, trained_steps=199)
+        cached = pipeline.wait_next()
+        pipeline.submit(batch, trained_steps=200)
+        expired = pipeline.wait_next()
 
-        assert first.policy_roots_searched == 3
-        assert refreshed.policy_roots_searched == 3
-        assert pipeline.cache_size == 3
+        assert cached.policy_roots_searched == 0
+        assert cached.cache_hits == 4
+        assert cached.cache_target_age_mean == pytest.approx(199.0)
+        assert cached.cache_target_age_max == 199
+        assert expired.policy_roots_searched == 3
+        assert expired.cache_hits == 0
     finally:
         pipeline.close()
 
@@ -242,6 +250,8 @@ def test_native_pipeline_retains_tensor_storage_without_transport_copy() -> None
 def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
     with pytest.raises(ValueError, match="target_update_interval"):
         _pipeline(target_update_interval=0)
+    with pytest.raises(ValueError, match="cache_target_ttl"):
+        _pipeline(cache_target_ttl=-1)
 
     with pytest.raises(ValueError, match="prefetch_batches"):
         ReanalysisPipeline(
@@ -250,7 +260,7 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             search_config=SearchConfig(num_simulations=1),
             policy_chunk_size=4,
             cache_targets=True,
-            cache_refresh_probability=0.0,
+            cache_target_ttl=200,
             rng_seed=0,
             support_min=-300,
             support_max=300,
