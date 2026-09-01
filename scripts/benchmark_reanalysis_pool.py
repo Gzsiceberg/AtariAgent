@@ -64,6 +64,7 @@ def make_batch(args: argparse.Namespace) -> ReplayBatch:
         value_bootstrap_values=torch.zeros(args.batch_size, states),
         value_bootstrap_discounts=torch.ones(args.batch_size, states),
         value_bootstrap_mask=torch.ones(args.batch_size, states, dtype=torch.bool),
+        transition_ages=torch.zeros(args.batch_size, dtype=torch.long),
     )
 
 
@@ -81,7 +82,7 @@ def benchmark_depth(depth: int, args: argparse.Namespace, batch: ReplayBatch):
         policy_chunk_size=args.chunk_size,
         cache_targets=False,
         cache_target_ttl=0,
-        policy_reanalysis_ramp_steps=10_000,
+        policy_reanalysis_ramp_transitions=2_000,
         rng_seed=0,
         support_min=-300,
         support_max=300,

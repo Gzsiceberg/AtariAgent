@@ -243,8 +243,8 @@ def main(config: TrainAgentConfig) -> None:
         ),
         (config.reanalysis.target_update_stages, "target_update_stages"),
         (
-            config.reanalysis.policy_reanalysis_ramp_steps,
-            "policy_reanalysis_ramp_steps",
+            config.reanalysis.policy_reanalysis_ramp_transitions,
+            "policy_reanalysis_ramp_transitions",
         ),
     ):
         if isinstance(value, bool) or not isinstance(value, int):
@@ -464,8 +464,8 @@ def main(config: TrainAgentConfig) -> None:
                 policy_chunk_size=config.reanalysis.policy_chunk_size,
                 cache_targets=config.reanalysis.cache_targets,
                 cache_target_ttl=config.reanalysis.cache_target_ttl,
-                policy_reanalysis_ramp_steps=(
-                    config.reanalysis.policy_reanalysis_ramp_steps
+                policy_reanalysis_ramp_transitions=(
+                    config.reanalysis.policy_reanalysis_ramp_transitions
                 ),
                 rng_seed=config.seed,
                 support_min=-300,

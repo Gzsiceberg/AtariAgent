@@ -108,7 +108,7 @@ def test_reanalysis_uses_target_network_defaults() -> None:
     assert config.cache_targets
     assert config.initial_cache_clear_interval == 100
     assert config.cache_target_ttl == 200
-    assert config.policy_reanalysis_ramp_steps == 10_000
+    assert config.policy_reanalysis_ramp_transitions == 2_000
     assert config.prefetch_batches == 2
     assert config.timeout_seconds == pytest.approx(600.0)
     assert config.worker_num_threads == 4

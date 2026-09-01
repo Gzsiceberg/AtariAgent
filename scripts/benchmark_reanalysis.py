@@ -53,6 +53,7 @@ def synthetic_batch(batch_size: int) -> ReplayBatch:
         value_bootstrap_values=torch.zeros(batch_size, 2),
         value_bootstrap_discounts=torch.ones(batch_size, 2),
         value_bootstrap_mask=torch.ones(batch_size, 2, dtype=torch.bool),
+        transition_ages=torch.zeros(batch_size, dtype=torch.long),
     )
 
 
@@ -78,7 +79,7 @@ def main() -> None:
         policy_chunk_size=768,
         cache_targets=False,
         cache_target_ttl=0,
-        policy_reanalysis_ramp_steps=10_000,
+        policy_reanalysis_ramp_transitions=2_000,
         rng_seed=0,
         support_min=-300,
         support_max=300,

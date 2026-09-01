@@ -99,7 +99,7 @@ class ReanalysisPipeline:
         policy_chunk_size: int,
         cache_targets: bool,
         cache_target_ttl: int,
-        policy_reanalysis_ramp_steps: int,
+        policy_reanalysis_ramp_transitions: int,
         rng_seed: int,
         support_min: int,
         support_max: int,
@@ -119,12 +119,16 @@ class ReanalysisPipeline:
             raise TypeError("cache_target_ttl must be an integer")
         if cache_target_ttl < 0:
             raise ValueError("cache_target_ttl must be non-negative")
-        if isinstance(policy_reanalysis_ramp_steps, bool) or not isinstance(
-            policy_reanalysis_ramp_steps, int
+        if isinstance(policy_reanalysis_ramp_transitions, bool) or not isinstance(
+            policy_reanalysis_ramp_transitions, int
         ):
-            raise TypeError("policy_reanalysis_ramp_steps must be an integer")
-        if policy_reanalysis_ramp_steps <= 0:
-            raise ValueError("policy_reanalysis_ramp_steps must be positive")
+            raise TypeError(
+                "policy_reanalysis_ramp_transitions must be an integer"
+            )
+        if policy_reanalysis_ramp_transitions <= 0:
+            raise ValueError(
+                "policy_reanalysis_ramp_transitions must be positive"
+            )
         if isinstance(search_threads, bool) or not isinstance(search_threads, int):
             raise TypeError("search_threads must be an integer")
         if search_threads <= 0:
@@ -179,7 +183,9 @@ class ReanalysisPipeline:
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
         self.root_noise_total_steps = root_noise_total_steps
-        self.policy_reanalysis_ramp_steps = policy_reanalysis_ramp_steps
+        self.policy_reanalysis_ramp_transitions = (
+            policy_reanalysis_ramp_transitions
+        )
         self.search_algorithm = search_config.search_algorithm
         self._engine = NativeReanalysisEngine(
             self.target,
@@ -195,7 +201,7 @@ class ReanalysisPipeline:
         self.max_observed_pending = 0
         self.max_observed_pending_bytes = 0
         self._pending_bytes: dict[int, int] = {}
-        self._pending_policy_targets: dict[int, tuple[Tensor, float]] = {}
+        self._pending_policy_targets: dict[int, tuple[Tensor, Tensor]] = {}
 
     @property
     def pending_count(self) -> int:
@@ -257,19 +263,27 @@ class ReanalysisPipeline:
             self.root_noise_total_steps,
         )
 
-    def policy_reanalysis_weight(self, trained_steps: int) -> float:
-        """Return the linearly ramped contribution of search policy targets."""
-        if isinstance(trained_steps, bool) or not isinstance(trained_steps, int):
-            raise TypeError("trained_steps must be an integer")
-        if trained_steps < 0:
-            raise ValueError("trained_steps must be non-negative")
-        return min(trained_steps / self.policy_reanalysis_ramp_steps, 1.0)
+    def policy_reanalysis_weights(self, batch: ReplayBatch) -> Tensor:
+        """Return per-sample search weights from replay-transition ages."""
+        transition_ages = batch.transition_ages
+        if transition_ages is None:
+            raise ValueError("batch has no replay transition ages")
+        if transition_ages.shape != (batch.batch_size,):
+            raise ValueError("batch transition ages have an invalid shape")
+        if torch.any(transition_ages < 0):
+            raise ValueError("batch transition ages must be non-negative")
+        return (
+            transition_ages.to(dtype=batch.policy_targets.dtype)
+            .div(self.policy_reanalysis_ramp_transitions)
+            .clamp(max=1.0)
+            .reshape(batch.batch_size, 1, 1)
+        )
 
     def submit(self, batch: ReplayBatch, *, trained_steps: int = 0) -> int:
-        """Queue one ReplayBatch with schedules evaluated at ``trained_steps``."""
+        """Queue one ReplayBatch with schedules evaluated at submission."""
         self._require_open()
         root_noise_temperature = self.root_noise_temperature(trained_steps)
-        policy_reanalysis_weight = self.policy_reanalysis_weight(trained_steps)
+        policy_reanalysis_weights = self.policy_reanalysis_weights(batch)
         request_id = int(
             self._engine.submit(
                 batch,
@@ -281,7 +295,7 @@ class ReanalysisPipeline:
         self._pending_bytes[request_id] = replay_batch_nbytes(batch)
         self._pending_policy_targets[request_id] = (
             batch.policy_targets,
-            policy_reanalysis_weight,
+            policy_reanalysis_weights,
         )
         self.max_observed_pending = max(
             self.max_observed_pending,
@@ -299,21 +313,20 @@ class ReanalysisPipeline:
         result = self._engine.wait_next()
         request_id = int(result["request_id"])
         self._pending_bytes.pop(request_id, None)
-        original_policy_targets, search_weight = self._pending_policy_targets.pop(
-            request_id
+        original_policy_targets, search_weights = (
+            self._pending_policy_targets.pop(request_id)
         )
         batch = result["batch"]
-        if search_weight < 1.0:
-            blended_policy_targets = torch.lerp(
-                original_policy_targets,
-                batch.policy_targets,
-                search_weight,
-            )
-            batch = batch.with_reanalysis_targets(
-                value_targets=batch.value_targets,
-                policy_targets=blended_policy_targets,
-                search_value_targets=batch.search_value_targets,
-            )
+        blended_policy_targets = torch.lerp(
+            original_policy_targets,
+            batch.policy_targets,
+            search_weights,
+        )
+        batch = batch.with_reanalysis_targets(
+            value_targets=batch.value_targets,
+            policy_targets=blended_policy_targets,
+            search_value_targets=batch.search_value_targets,
+        )
         return ReadyReanalysis(
             request_id=request_id,
             batch=batch,
