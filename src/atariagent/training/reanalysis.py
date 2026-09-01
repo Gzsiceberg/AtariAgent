@@ -100,7 +100,6 @@ class ReanalysisPipeline:
         cache_targets: bool,
         cache_target_ttl: int,
         policy_reanalysis_maturity_steps: int,
-        policy_reanalysis_ramp_transitions: int,
         rng_seed: int,
         support_min: int,
         support_max: int,
@@ -110,7 +109,6 @@ class ReanalysisPipeline:
         timeout_seconds: float,
         target_update_interval: int,
         root_noise_total_steps: int,
-        collection_steps: int,
         device: torch.device | str | None = None,
     ) -> None:
         if not isinstance(cache_targets, bool):
@@ -130,16 +128,6 @@ class ReanalysisPipeline:
         if policy_reanalysis_maturity_steps <= 0:
             raise ValueError(
                 "policy_reanalysis_maturity_steps must be positive"
-            )
-        if isinstance(policy_reanalysis_ramp_transitions, bool) or not isinstance(
-            policy_reanalysis_ramp_transitions, int
-        ):
-            raise TypeError(
-                "policy_reanalysis_ramp_transitions must be an integer"
-            )
-        if policy_reanalysis_ramp_transitions <= 0:
-            raise ValueError(
-                "policy_reanalysis_ramp_transitions must be positive"
             )
         if isinstance(search_threads, bool) or not isinstance(search_threads, int):
             raise TypeError("search_threads must be an integer")
@@ -163,14 +151,6 @@ class ReanalysisPipeline:
             raise TypeError("root_noise_total_steps must be an integer")
         if root_noise_total_steps <= 0:
             raise ValueError("root_noise_total_steps must be positive")
-        if isinstance(collection_steps, bool) or not isinstance(
-            collection_steps, int
-        ):
-            raise TypeError("collection_steps must be an integer")
-        if collection_steps <= 0:
-            raise ValueError("collection_steps must be positive")
-        if collection_steps > root_noise_total_steps:
-            raise ValueError("collection_steps must not exceed total steps")
         set_tree_search_num_threads(search_threads)
 
         self.device = torch.device(
@@ -203,12 +183,8 @@ class ReanalysisPipeline:
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
         self.root_noise_total_steps = root_noise_total_steps
-        self.collection_steps = collection_steps
         self.policy_reanalysis_maturity_steps = (
             policy_reanalysis_maturity_steps
-        )
-        self.policy_reanalysis_ramp_transitions = (
-            policy_reanalysis_ramp_transitions
         )
         self.search_algorithm = search_config.search_algorithm
         self._engine = NativeReanalysisEngine(
@@ -225,7 +201,7 @@ class ReanalysisPipeline:
         self.max_observed_pending = 0
         self.max_observed_pending_bytes = 0
         self._pending_bytes: dict[int, int] = {}
-        self._pending_policy_targets: dict[int, tuple[Tensor, Tensor]] = {}
+        self._pending_policy_targets: dict[int, tuple[Tensor, float]] = {}
 
     @property
     def pending_count(self) -> int:
@@ -287,36 +263,22 @@ class ReanalysisPipeline:
             self.root_noise_total_steps,
         )
 
-    def policy_reanalysis_weights(
-        self,
-        batch: ReplayBatch,
-        *,
-        trained_steps: int,
-    ) -> Tensor:
-        """Gate search weights by model maturity and sample staleness."""
-        effective_ages = batch.effective_transition_ages(
-            learner_step=trained_steps,
-            collection_steps=self.collection_steps,
-        )
-        maturity_weight = min(
+    def policy_reanalysis_weight(self, trained_steps: int) -> float:
+        """Return search-policy weight based on model maturity."""
+        if isinstance(trained_steps, bool) or not isinstance(trained_steps, int):
+            raise TypeError("trained_steps must be an integer")
+        if trained_steps < 0:
+            raise ValueError("trained_steps must be non-negative")
+        return min(
             trained_steps / self.policy_reanalysis_maturity_steps,
             1.0,
-        )
-        return (
-            effective_ages.to(dtype=batch.policy_targets.dtype)
-            .div(self.policy_reanalysis_ramp_transitions)
-            .clamp(max=maturity_weight)
-            .reshape(batch.batch_size, 1, 1)
         )
 
     def submit(self, batch: ReplayBatch, *, trained_steps: int = 0) -> int:
         """Queue one ReplayBatch with schedules evaluated at submission."""
         self._require_open()
         root_noise_temperature = self.root_noise_temperature(trained_steps)
-        policy_reanalysis_weights = self.policy_reanalysis_weights(
-            batch,
-            trained_steps=trained_steps,
-        )
+        policy_reanalysis_weight = self.policy_reanalysis_weight(trained_steps)
         request_id = int(
             self._engine.submit(
                 batch,
@@ -328,7 +290,7 @@ class ReanalysisPipeline:
         self._pending_bytes[request_id] = replay_batch_nbytes(batch)
         self._pending_policy_targets[request_id] = (
             batch.policy_targets,
-            policy_reanalysis_weights,
+            policy_reanalysis_weight,
         )
         self.max_observed_pending = max(
             self.max_observed_pending,
@@ -346,20 +308,21 @@ class ReanalysisPipeline:
         result = self._engine.wait_next()
         request_id = int(result["request_id"])
         self._pending_bytes.pop(request_id, None)
-        original_policy_targets, search_weights = (
+        original_policy_targets, search_weight = (
             self._pending_policy_targets.pop(request_id)
         )
         batch = result["batch"]
-        blended_policy_targets = torch.lerp(
-            original_policy_targets,
-            batch.policy_targets,
-            search_weights,
-        )
-        batch = batch.with_reanalysis_targets(
-            value_targets=batch.value_targets,
-            policy_targets=blended_policy_targets,
-            search_value_targets=batch.search_value_targets,
-        )
+        if search_weight < 1.0:
+            blended_policy_targets = torch.lerp(
+                original_policy_targets,
+                batch.policy_targets,
+                search_weight,
+            )
+            batch = batch.with_reanalysis_targets(
+                value_targets=batch.value_targets,
+                policy_targets=blended_policy_targets,
+                search_value_targets=batch.search_value_targets,
+            )
         return ReadyReanalysis(
             request_id=request_id,
             batch=batch,

@@ -53,7 +53,6 @@ def synthetic_batch(batch_size: int) -> ReplayBatch:
         value_bootstrap_values=torch.zeros(batch_size, 2),
         value_bootstrap_discounts=torch.ones(batch_size, 2),
         value_bootstrap_mask=torch.ones(batch_size, 2, dtype=torch.bool),
-        transition_ages=torch.zeros(batch_size, dtype=torch.long),
     )
 
 
@@ -80,7 +79,6 @@ def main() -> None:
         cache_targets=False,
         cache_target_ttl=0,
         policy_reanalysis_maturity_steps=10_000,
-        policy_reanalysis_ramp_transitions=2_000,
         rng_seed=0,
         support_min=-300,
         support_max=300,
@@ -90,7 +88,6 @@ def main() -> None:
         timeout_seconds=600.0,
         target_update_interval=200,
         root_noise_total_steps=100_000,
-        collection_steps=100_000,
         device=device,
     )
     try:

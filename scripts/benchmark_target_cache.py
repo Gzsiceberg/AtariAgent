@@ -123,7 +123,6 @@ def main() -> None:
         cache_targets=True,
         cache_target_ttl=0,
         policy_reanalysis_maturity_steps=10_000,
-        policy_reanalysis_ramp_transitions=2_000,
         rng_seed=0,
         support_min=-300,
         support_max=300,
@@ -133,7 +132,6 @@ def main() -> None:
         timeout_seconds=600.0,
         target_update_interval=200,
         root_noise_total_steps=100_000,
-        collection_steps=100_000,
         device=device,
     )
     try:

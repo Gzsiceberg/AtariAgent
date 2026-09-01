@@ -35,7 +35,6 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
         value_bootstrap_values=torch.ones(batch_size, 2),
         value_bootstrap_discounts=torch.ones(batch_size, 2),
         value_bootstrap_mask=torch.ones(batch_size, 2, dtype=torch.bool),
-        transition_ages=torch.arange(batch_size) * 1_000,
     )
 
 
@@ -47,8 +46,6 @@ def _pipeline(
     search_algorithm: str = "puct",
     cache_target_ttl: int = 200,
     policy_reanalysis_maturity_steps: int = 100,
-    policy_reanalysis_ramp_transitions: int = 2_000,
-    collection_steps: int = 100,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -62,9 +59,6 @@ def _pipeline(
         cache_targets=True,
         cache_target_ttl=cache_target_ttl,
         policy_reanalysis_maturity_steps=policy_reanalysis_maturity_steps,
-        policy_reanalysis_ramp_transitions=(
-            policy_reanalysis_ramp_transitions
-        ),
         rng_seed=3,
         support_min=-300,
         support_max=300,
@@ -74,7 +68,6 @@ def _pipeline(
         timeout_seconds=timeout_seconds,
         target_update_interval=target_update_interval,
         root_noise_total_steps=100,
-        collection_steps=collection_steps,
         device="cpu",
     )
     representation = RepresentationNetwork(4)
@@ -131,50 +124,24 @@ def test_native_pipeline_configures_search_noise_from_algorithm(
         pipeline.close()
 
 
-def test_policy_weights_combine_maturity_age_and_final_updates() -> None:
+def test_policy_reanalysis_weight_uses_model_maturity() -> None:
     pipeline = _pipeline(
         prefetch_batches=1,
         cache_target_ttl=0,
-        policy_reanalysis_ramp_transitions=2_000,
+        policy_reanalysis_maturity_steps=100,
     )
     batch = _batch()
-    fresh_batch = replace(batch, transition_ages=torch.zeros(2, dtype=torch.long))
-    middle_batch = replace(
-        batch,
-        transition_ages=torch.full((2,), 1_000, dtype=torch.long),
-    )
-    old_batch = replace(
-        batch,
-        transition_ages=torch.full((2,), 2_000, dtype=torch.long),
-    )
     try:
-        torch.testing.assert_close(
-            pipeline.policy_reanalysis_weights(
-                old_batch,
-                trained_steps=50,
-            ).flatten(),
-            torch.tensor([0.5, 0.5]),
-        )
-        torch.testing.assert_close(
-            pipeline.policy_reanalysis_weights(
-                batch,
-                trained_steps=100,
-            ).flatten(),
-            torch.tensor([0.0, 0.5]),
-        )
-        torch.testing.assert_close(
-            pipeline.policy_reanalysis_weights(
-                fresh_batch,
-                trained_steps=1_100,
-            ).flatten(),
-            torch.tensor([0.5, 0.5]),
-        )
+        assert pipeline.policy_reanalysis_weight(0) == 0.0
+        assert pipeline.policy_reanalysis_weight(50) == 0.5
+        assert pipeline.policy_reanalysis_weight(100) == 1.0
+        assert pipeline.policy_reanalysis_weight(200) == 1.0
 
-        pipeline.submit(fresh_batch, trained_steps=100)
+        pipeline.submit(batch, trained_steps=0)
         replay_only = pipeline.wait_next().batch
-        pipeline.submit(middle_batch, trained_steps=100)
+        pipeline.submit(batch, trained_steps=50)
         blended = pipeline.wait_next().batch
-        pipeline.submit(old_batch, trained_steps=100)
+        pipeline.submit(batch, trained_steps=100)
         search_only = pipeline.wait_next().batch
 
         torch.testing.assert_close(
@@ -291,12 +258,6 @@ def test_native_pipeline_expires_cached_targets_at_ttl() -> None:
 def test_native_pipeline_validates_native_batch_tensor_contract() -> None:
     pipeline = _pipeline(prefetch_batches=1)
     try:
-        with pytest.raises(ValueError, match="no replay transition ages"):
-            pipeline.submit(replace(_batch(), transition_ages=None))
-        with pytest.raises(ValueError, match="transition ages must be non-negative"):
-            pipeline.submit(
-                replace(_batch(), transition_ages=torch.tensor([-1, 0]))
-            )
         with pytest.raises(ValueError, match="policy_mask must be a 2D bool"):
             pipeline.submit(
                 replace(_batch(), policy_mask=torch.ones(2, 2))
@@ -332,10 +293,6 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
         _pipeline(cache_target_ttl=-1)
     with pytest.raises(ValueError, match="policy_reanalysis_maturity_steps"):
         _pipeline(policy_reanalysis_maturity_steps=0)
-    with pytest.raises(ValueError, match="policy_reanalysis_ramp_transitions"):
-        _pipeline(policy_reanalysis_ramp_transitions=0)
-    with pytest.raises(ValueError, match="collection_steps"):
-        _pipeline(collection_steps=101)
 
     with pytest.raises(ValueError, match="prefetch_batches"):
         ReanalysisPipeline(
@@ -346,7 +303,6 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             cache_targets=True,
             cache_target_ttl=200,
             policy_reanalysis_maturity_steps=100,
-            policy_reanalysis_ramp_transitions=2_000,
             rng_seed=0,
             support_min=-300,
             support_max=300,
@@ -356,7 +312,6 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             timeout_seconds=1.0,
             target_update_interval=200,
             root_noise_total_steps=100,
-            collection_steps=100,
             device="cpu",
         )
 

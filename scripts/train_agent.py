@@ -246,10 +246,6 @@ def main(config: TrainAgentConfig) -> None:
             config.reanalysis.policy_reanalysis_maturity_steps,
             "policy_reanalysis_maturity_steps",
         ),
-        (
-            config.reanalysis.policy_reanalysis_ramp_transitions,
-            "policy_reanalysis_ramp_transitions",
-        ),
     ):
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"reanalysis.{name} must be an integer")
@@ -471,9 +467,6 @@ def main(config: TrainAgentConfig) -> None:
                 policy_reanalysis_maturity_steps=(
                     config.reanalysis.policy_reanalysis_maturity_steps
                 ),
-                policy_reanalysis_ramp_transitions=(
-                    config.reanalysis.policy_reanalysis_ramp_transitions
-                ),
                 rng_seed=config.seed,
                 support_min=-300,
                 support_max=300,
@@ -487,7 +480,6 @@ def main(config: TrainAgentConfig) -> None:
                 root_noise_total_steps=(
                     config.training.steps + config.training.final_steps
                 ),
-                collection_steps=config.training.steps,
                 device=device,
             )
             reanalysis_pipeline.publish_weights(
