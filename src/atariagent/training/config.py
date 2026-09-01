@@ -92,7 +92,10 @@ class ReanalysisConfig:
     prefetch_batches: int = 2
     timeout_seconds: float = 600.0
     worker_num_threads: int = 4
+    initial_target_update_interval: int = 200
     target_update_interval: int = 1_000
+    target_update_ramp_steps: int = 10_000
+    target_update_stages: int = 5
 
 
 @dataclass
@@ -225,6 +228,44 @@ def scheduled_cache_clear_interval(
     )
 
 
+def scheduled_target_update_interval(
+    update: int,
+    *,
+    ramp_steps: int,
+    initial_interval: int,
+    final_interval: int,
+    stages: int,
+) -> int:
+    """Increase target-copy spacing through evenly timed discrete stages."""
+    for value, name in (
+        (update, "update"),
+        (ramp_steps, "ramp_steps"),
+        (initial_interval, "initial_interval"),
+        (final_interval, "final_interval"),
+        (stages, "stages"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+    if update < 0:
+        raise ValueError("update must be non-negative")
+    if ramp_steps <= 0:
+        raise ValueError("ramp_steps must be positive")
+    if initial_interval <= 0 or final_interval <= 0:
+        raise ValueError("target update intervals must be positive")
+    if initial_interval > final_interval:
+        raise ValueError("initial_interval must not exceed final_interval")
+    if stages < 2:
+        raise ValueError("stages must be at least two")
+
+    final_stage = stages - 1
+    stage = min(update * final_stage // ramp_steps, final_stage)
+    stage_progress = stage / final_stage
+    return round(
+        initial_interval
+        + stage_progress * (final_interval - initial_interval)
+    )
+
+
 def target_network_update_due(
     update: int,
     *,
@@ -324,6 +365,7 @@ __all__ = [
     "puct_root_noise_temperature",
     "register_train_agent_config",
     "scheduled_cache_clear_interval",
+    "scheduled_target_update_interval",
     "target_network_update_due",
     "visit_softmax_temperature",
 ]

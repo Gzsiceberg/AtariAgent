@@ -57,6 +57,7 @@ from atariagent.training.config import (
     next_collection_vector_steps,
     puct_root_noise_temperature,
     register_train_agent_config,
+    scheduled_target_update_interval,
     target_network_update_due,
     visit_softmax_temperature,
 )
@@ -231,20 +232,38 @@ def main(config: TrainAgentConfig) -> None:
             config.reanalysis.initial_cache_clear_interval,
             "initial_cache_clear_interval",
         ),
+        (
+            config.reanalysis.initial_target_update_interval,
+            "initial_target_update_interval",
+        ),
         (config.reanalysis.target_update_interval, "target_update_interval"),
+        (
+            config.reanalysis.target_update_ramp_steps,
+            "target_update_ramp_steps",
+        ),
+        (config.reanalysis.target_update_stages, "target_update_stages"),
     ):
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"reanalysis.{name} must be an integer")
         if value <= 0:
             raise ValueError(f"reanalysis.{name} must be positive")
-    if (
-        config.reanalysis.initial_cache_clear_interval
-        > config.reanalysis.target_update_interval
+    for initial_interval, name in (
+        (
+            config.reanalysis.initial_cache_clear_interval,
+            "initial_cache_clear_interval",
+        ),
+        (
+            config.reanalysis.initial_target_update_interval,
+            "initial_target_update_interval",
+        ),
     ):
-        raise ValueError(
-            "reanalysis.initial_cache_clear_interval must not exceed "
-            "reanalysis.target_update_interval"
-        )
+        if initial_interval > config.reanalysis.target_update_interval:
+            raise ValueError(
+                f"reanalysis.{name} must not exceed "
+                "reanalysis.target_update_interval"
+            )
+    if config.reanalysis.target_update_stages < 2:
+        raise ValueError("reanalysis.target_update_stages must be at least two")
     if config.reanalysis.policy_chunk_size <= 0:
         raise ValueError("reanalysis.policy_chunk_size must be positive")
     if not isinstance(config.reanalysis.cache_targets, bool):
@@ -591,10 +610,19 @@ def main(config: TrainAgentConfig) -> None:
             batch_worker.complete(ready, metrics.priorities)
 
             update += 1
+            target_update_interval = scheduled_target_update_interval(
+                update,
+                ramp_steps=config.reanalysis.target_update_ramp_steps,
+                initial_interval=(
+                    config.reanalysis.initial_target_update_interval
+                ),
+                final_interval=config.reanalysis.target_update_interval,
+                stages=config.reanalysis.target_update_stages,
+            )
             if target_network_update_due(
                 update,
                 last_update=target_version,
-                interval=config.reanalysis.target_update_interval,
+                interval=target_update_interval,
             ):
                 target_state = make_target_state(
                     agent.representation_network,
