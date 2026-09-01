@@ -125,8 +125,13 @@ loss:
 
 checkpoint:
   path: checkpoints/${environment_slug:${environment.id}}/agent_latest.pt
-  # Keep snapshots at twelve evenly spaced points across the complete run.
+  # Keep model-only checkpoints at twelve evenly spaced points.
   keep_representative: 12
+  # Save replay, optimizer, targets, and RNG state immediately before the
+  # learner-only phase. Set to null to disable the (roughly 3 GB) snapshot.
+  pre_final_snapshot_path: checkpoints/${environment_slug:${environment.id}}/agent_pre_final.pt
+  # Set this path to skip self-play and rerun only training.final_steps.
+  resume_pre_final_path: null
 
 evaluation:
   enabled: true

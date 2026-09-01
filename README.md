@@ -94,6 +94,7 @@ uv run python scripts/train_agent.py \
     training.compile_model=false \
     checkpoint.keep_representative=1 \
     checkpoint.path=/tmp/atariagent-smoke/agent_latest.pt \
+    checkpoint.pre_final_snapshot_path=/tmp/atariagent-smoke/agent_pre_final.pt \
     evaluation.enabled=false
 ```
 
@@ -133,6 +134,28 @@ uv run python scripts/train_agent.py --cfg job
 ```
 
 Checkpoints are written under `checkpoints/<game>/`. Evaluation data and plots are written under `evaluations/<game>/`.
+
+### Rerun only the final learner phase
+
+Immediately before `training.final_steps`, training writes
+`checkpoints/<game>/agent_pre_final.pt`. Unlike model-only checkpoints, this
+snapshot includes the replay buffer, optimizer, target network, update counter,
+and RNG states. With the default 100k RGB replay it is roughly 3 GB.
+
+Rerun only the final learner-only phase with:
+
+```bash
+uv run python scripts/train_agent.py \
+    environment.id=ALE/Alien-v5 \
+    checkpoint.resume_pre_final_path=checkpoints/Alien-v5/agent_pre_final.pt
+```
+
+The resumed run skips self-play and starts at update 100,000. Override
+`checkpoint.path` and the `evaluation.*_path` settings if you want to preserve
+outputs from an earlier final-phase run. Set
+`checkpoint.pre_final_snapshot_path=null` to disable snapshot creation. Only
+load snapshots you trust; replay snapshots use Python pickle through
+`torch.load`.
 
 ### Evaluate a checkpoint
 

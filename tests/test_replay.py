@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import numpy as np
 import pytest
@@ -53,6 +53,49 @@ def make_trajectory(
         full_episode_done=terminated or truncated,
         lookahead_steps=lookahead_steps,
     )
+
+
+def test_replay_state_round_trip_restores_data_priorities_and_rng() -> None:
+    replay = FIFOReplayBuffer(
+        max_transitions=10,
+        unroll_steps=2,
+        td_steps=2,
+        discount=0.5,
+        seed=7,
+    )
+    replay.add(make_trajectory(3, block_id=0, terminated=True))
+    replay.add(
+        make_trajectory(
+            3,
+            block_id=1,
+            episode_id=1,
+            initial_value=10,
+            terminated=True,
+        )
+    )
+    replay.update_priorities([0, 1], [2.0, 4.0])
+
+    restored = FIFOReplayBuffer(
+        max_transitions=10,
+        unroll_steps=2,
+        td_steps=2,
+        discount=0.5,
+        seed=999,
+    )
+    restored.load_state_dict(replay.state_dict())
+
+    assert len(restored) == len(replay)
+    assert restored.trajectory_count == replay.trajectory_count
+    np.testing.assert_array_equal(restored.priorities, replay.priorities)
+    original_batch = replay.sample(4)
+    restored_batch = restored.sample(4)
+    for field in fields(original_batch):
+        original = getattr(original_batch, field.name)
+        loaded = getattr(restored_batch, field.name)
+        if original is None:
+            assert loaded is None
+        else:
+            torch.testing.assert_close(loaded, original)
 
 
 def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:

@@ -6,7 +6,7 @@ accumulated between LSTM resets instead of predicting each immediate reward.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Literal
@@ -564,6 +564,33 @@ class Trainer:
             )
         else:
             self._unroll = unroll
+
+    @property
+    def step_count(self) -> int:
+        """Return the number of optimizer updates already applied."""
+        return self._step_count
+
+    def training_state_dict(self) -> dict[str, object]:
+        """Return optimizer and schedule state needed to resume training."""
+        return {
+            "optimizer": self.optimizer.state_dict(),
+            "step_count": self._step_count,
+        }
+
+    def load_training_state_dict(self, state: Mapping[str, object]) -> None:
+        """Restore optimizer and learning-rate schedule state."""
+        if not isinstance(state, Mapping):
+            raise TypeError("trainer state must be a mapping")
+        step_count = state.get("step_count")
+        if isinstance(step_count, bool) or not isinstance(step_count, int):
+            raise TypeError("trainer step_count must be an integer")
+        if step_count < 0:
+            raise ValueError("trainer step_count must be non-negative")
+        optimizer_state = state.get("optimizer")
+        if not isinstance(optimizer_state, Mapping):
+            raise TypeError("trainer optimizer state must be a mapping")
+        self.optimizer.load_state_dict(dict(optimizer_state))
+        self._step_count = step_count
 
     def train_step(self, batch: ReplayBatch) -> TrainMetrics:
         """Run one update from policy, n-step value, and value-prefix targets."""

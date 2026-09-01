@@ -143,6 +143,130 @@ class FIFOReplayBuffer:
         """Return priorities in the same flat order used for sampling."""
         return self._priorities.copy()
 
+    def state_dict(self) -> dict[str, object]:
+        """Return the complete replay state needed to resume sampling."""
+        trajectory_fields = tuple(_StoredTrajectory.__dataclass_fields__)
+        return {
+            "version": 1,
+            "max_transitions": self.max_transitions,
+            "unroll_steps": self.unroll_steps,
+            "td_steps": self.td_steps,
+            "discount": self.discount,
+            "priority_epsilon": self._priority_epsilon,
+            "trajectories": [
+                {name: getattr(trajectory, name) for name in trajectory_fields}
+                for trajectory in self._trajectories
+            ],
+            "transition_ids": self._transition_ids,
+            "priorities": self._priorities,
+            "next_transition_id": self._next_transition_id,
+            "transition_count": self._transition_count,
+            "action_space_size": self._action_space_size,
+            "stack_size": self._stack_size,
+            "frame_shape": self._frame_shape,
+            "rng_state": self._rng.bit_generator.state,
+        }
+
+    def load_state_dict(self, state: Mapping[str, object]) -> None:
+        """Restore replay data produced by :meth:`state_dict`."""
+        if not isinstance(state, Mapping):
+            raise TypeError("replay state must be a mapping")
+        if state.get("version") != 1:
+            raise ValueError("unsupported replay state version")
+        expected_configuration = {
+            "max_transitions": self.max_transitions,
+            "unroll_steps": self.unroll_steps,
+            "td_steps": self.td_steps,
+            "discount": self.discount,
+            "priority_epsilon": self._priority_epsilon,
+        }
+        for name, expected in expected_configuration.items():
+            if state.get(name) != expected:
+                raise ValueError(
+                    f"replay state {name} does not match the configured buffer"
+                )
+
+        raw_trajectories = state.get("trajectories")
+        if not isinstance(raw_trajectories, list):
+            raise TypeError("replay trajectories must be a list")
+        trajectory_fields = tuple(_StoredTrajectory.__dataclass_fields__)
+        array_fields = {
+            "frames",
+            "actions",
+            "rewards",
+            "policy_targets",
+            "root_values",
+            "predicted_values",
+            "value_targets",
+            "value_valid_mask",
+        }
+        trajectories: deque[_StoredTrajectory] = deque()
+        for raw in raw_trajectories:
+            if not isinstance(raw, Mapping):
+                raise TypeError("each replay trajectory must be a mapping")
+            if set(raw) != set(trajectory_fields):
+                raise ValueError("replay trajectory fields are invalid")
+            values = dict(raw)
+            for name in array_fields:
+                array = np.ascontiguousarray(np.asarray(values[name]))
+                array.setflags(write=False)
+                values[name] = array
+            trajectories.append(_StoredTrajectory(**values))
+
+        transition_ids = np.ascontiguousarray(
+            np.asarray(state.get("transition_ids"), dtype=np.int64)
+        )
+        priorities = np.ascontiguousarray(
+            np.asarray(state.get("priorities"), dtype=np.float64)
+        )
+        transition_count = state.get("transition_count")
+        next_transition_id = state.get("next_transition_id")
+        if isinstance(transition_count, bool) or not isinstance(transition_count, int):
+            raise TypeError("replay transition_count must be an integer")
+        if isinstance(next_transition_id, bool) or not isinstance(
+            next_transition_id, int
+        ):
+            raise TypeError("replay next_transition_id must be an integer")
+        if transition_count != sum(map(len, trajectories)):
+            raise ValueError("replay transition count does not match trajectories")
+        if transition_count > self.max_transitions:
+            raise ValueError("replay state exceeds the configured capacity")
+        if transition_ids.shape != (transition_count,):
+            raise ValueError("replay transition IDs have an invalid shape")
+        if priorities.shape != (transition_count,):
+            raise ValueError("replay priorities have an invalid shape")
+        if priorities.size and (
+            not np.all(np.isfinite(priorities)) or np.any(priorities <= 0.0)
+        ):
+            raise ValueError("replay priorities must be finite and positive")
+        if transition_ids.size > 1 and np.any(np.diff(transition_ids) != 1):
+            raise ValueError("replay transition IDs must be contiguous")
+        if transition_ids.size and next_transition_id <= int(transition_ids[-1]):
+            raise ValueError("replay next transition ID is invalid")
+
+        trajectory_keys = {self._trajectory_key(item) for item in trajectories}
+        if len(trajectory_keys) != len(trajectories):
+            raise ValueError("replay trajectory identities must be unique")
+        rng = np.random.default_rng()
+        try:
+            rng.bit_generator.state = state["rng_state"]  # type: ignore[assignment]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("replay RNG state is invalid") from error
+
+        self._trajectories = trajectories
+        self._transition_ids = transition_ids
+        self._priorities = priorities
+        self._next_transition_id = next_transition_id
+        self._trajectory_keys = trajectory_keys
+        self._transition_count = transition_count
+        self._action_space_size = state.get("action_space_size")  # type: ignore[assignment]
+        self._stack_size = state.get("stack_size")  # type: ignore[assignment]
+        raw_frame_shape = state.get("frame_shape")
+        self._frame_shape = (
+            None if raw_frame_shape is None else tuple(raw_frame_shape)  # type: ignore[arg-type]
+        )
+        self._rng = rng
+
     def add(self, trajectory: GameTrajectory) -> ReplayAddResult:
         """Prepare one trajectory, then append it with FIFO eviction."""
         trajectory_length = len(trajectory)

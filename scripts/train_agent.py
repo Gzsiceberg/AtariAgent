@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import math
 import random
 import shutil
 import subprocess
@@ -180,9 +179,154 @@ def save_checkpoint(
         "target_network": dict(target_state),
         "target_version": target_version,
         "optimizer": trainer.optimizer.state_dict(),
+        "trainer_step": trainer.step_count,
         "config": OmegaConf.to_container(config, resolve=True),
     }
     torch.save(checkpoint, path)
+
+
+def capture_rng_state() -> dict[str, object]:
+    """Capture process RNGs used by learner augmentation and sampling."""
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all(),
+    }
+
+
+def restore_rng_state(state: Mapping[str, object]) -> None:
+    """Restore process RNGs from a trusted pre-final snapshot."""
+    try:
+        random.setstate(state["python"])  # type: ignore[arg-type]
+        np.random.set_state(state["numpy"])  # type: ignore[arg-type]
+        torch.set_rng_state(state["torch"])  # type: ignore[arg-type]
+        torch.cuda.set_rng_state_all(state["cuda"])  # type: ignore[arg-type]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("pre-final snapshot has invalid RNG state") from error
+
+
+def save_pre_final_snapshot(
+    path: Path,
+    *,
+    agent: AtariAgent,
+    trainer: Trainer,
+    replay: FIFOReplayBuffer,
+    target_state: Mapping[str, torch.Tensor],
+    target_version: int,
+    update: int,
+    config: TrainAgentConfig,
+    rng_state: Mapping[str, object],
+) -> None:
+    """Atomically persist everything required by the learner-only phase."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    snapshot: dict[str, object] = {
+        "snapshot_type": "atariagent_pre_final",
+        "snapshot_version": 1,
+        "update": update,
+        "representation": agent.representation_network.state_dict(),
+        "dynamics": agent.dynamics_network.state_dict(),
+        "prediction": agent.prediction_network.state_dict(),
+        "consistency": (
+            trainer.consistency_network.state_dict()
+            if trainer.consistency_network is not None
+            else None
+        ),
+        "trainer": trainer.training_state_dict(),
+        "target_network": dict(target_state),
+        "target_version": target_version,
+        "replay": replay.state_dict(),
+        "search_rng": agent.search.rng.getstate(),
+        "rng": dict(rng_state),
+        "config": OmegaConf.to_container(config, resolve=True),
+    }
+    try:
+        torch.save(snapshot, temporary_path)
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def load_pre_final_snapshot(
+    path: Path,
+    *,
+    agent: AtariAgent,
+    trainer: Trainer,
+    replay: FIFOReplayBuffer,
+    expected_update: int,
+) -> tuple[int, dict[str, torch.Tensor], int, Mapping[str, object]]:
+    """Load a trusted pre-final snapshot into initialized training objects."""
+    if not path.is_file():
+        raise FileNotFoundError(f"pre-final snapshot not found: {path}")
+    snapshot = torch.load(
+        path,
+        map_location="cpu",
+        # Replay is serialized as NumPy arrays. Only load snapshots produced
+        # locally by this training script because this enables Python pickle.
+        weights_only=False,
+    )
+    if not isinstance(snapshot, Mapping):
+        raise TypeError("pre-final snapshot must contain a mapping")
+    if snapshot.get("snapshot_type") != "atariagent_pre_final":
+        raise ValueError("file is not an AtariAgent pre-final snapshot")
+    if snapshot.get("snapshot_version") != 1:
+        raise ValueError("unsupported pre-final snapshot version")
+
+    update = snapshot.get("update")
+    target_version = snapshot.get("target_version")
+    if isinstance(update, bool) or not isinstance(update, int):
+        raise TypeError("snapshot update must be an integer")
+    if update != expected_update:
+        raise ValueError(
+            f"snapshot update {update} does not match training.steps {expected_update}"
+        )
+    if isinstance(target_version, bool) or not isinstance(target_version, int):
+        raise TypeError("snapshot target_version must be an integer")
+
+    for name, network in (
+        ("representation", agent.representation_network),
+        ("dynamics", agent.dynamics_network),
+        ("prediction", agent.prediction_network),
+    ):
+        state = snapshot.get(name)
+        if not isinstance(state, Mapping):
+            raise TypeError(f"snapshot {name} state must be a mapping")
+        network.load_state_dict(state)
+    consistency_state = snapshot.get("consistency")
+    if trainer.consistency_network is None:
+        if consistency_state is not None:
+            raise ValueError("snapshot uses a consistency network")
+    else:
+        if not isinstance(consistency_state, Mapping):
+            raise ValueError("snapshot has no consistency-network state")
+        trainer.consistency_network.load_state_dict(consistency_state)
+
+    trainer_state = snapshot.get("trainer")
+    replay_state = snapshot.get("replay")
+    target_state = snapshot.get("target_network")
+    search_rng_state = snapshot.get("search_rng")
+    rng_state = snapshot.get("rng")
+    if not isinstance(trainer_state, Mapping):
+        raise TypeError("snapshot trainer state must be a mapping")
+    if not isinstance(replay_state, Mapping):
+        raise TypeError("snapshot replay state must be a mapping")
+    if not isinstance(target_state, Mapping) or not all(
+        isinstance(name, str) and isinstance(value, torch.Tensor)
+        for name, value in target_state.items()
+    ):
+        raise TypeError("snapshot target-network state is invalid")
+    if not isinstance(rng_state, Mapping):
+        raise TypeError("snapshot RNG state must be a mapping")
+    trainer.load_training_state_dict(trainer_state)
+    if trainer.step_count != update:
+        raise ValueError("snapshot trainer step does not match its update")
+    replay.load_state_dict(replay_state)
+    try:
+        agent.search.rng.setstate(search_rng_state)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as error:
+        raise ValueError("snapshot search RNG state is invalid") from error
+    return update, dict(target_state), target_version, rng_state
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="train_agent")
@@ -311,6 +455,15 @@ def main(config: TrainAgentConfig) -> None:
         raise ValueError("loss.consistency_weight must be non-negative")
     if config.checkpoint.keep_representative <= 0:
         raise ValueError("checkpoint.keep_representative must be positive")
+    for value, name in (
+        (
+            config.checkpoint.pre_final_snapshot_path,
+            "pre_final_snapshot_path",
+        ),
+        (config.checkpoint.resume_pre_final_path, "resume_pre_final_path"),
+    ):
+        if value is not None and not value.strip():
+            raise ValueError(f"checkpoint.{name} must be null or non-empty")
     if config.evaluation.enabled and config.evaluation.episodes <= 0:
         raise ValueError("evaluation.episodes must be positive")
     if config.evaluation.enabled and config.evaluation.num_envs <= 0:
@@ -338,6 +491,12 @@ def main(config: TrainAgentConfig) -> None:
     configure_training_backend(config.training.deterministic)
     set_runtime_typechecking(config.training.runtime_type_checks)
     device = resolve_device(config.training.device)
+    resume_path = (
+        None
+        if config.checkpoint.resume_pre_final_path is None
+        else Path(config.checkpoint.resume_pre_final_path)
+    )
+    resuming_final_phase = resume_path is not None
     environments: list[Environment] = []
     reanalysis_pipeline: ReanalysisPipeline | None = None
     batch_worker: BatchWorker | None = None
@@ -456,8 +615,31 @@ def main(config: TrainAgentConfig) -> None:
             ),
         )
         target_version = 0
-        if target_reanalysis_enabled:
-            reanalysis_pipeline = ReanalysisPipeline(
+        update = 0
+        resume_rng_state: Mapping[str, object] | None = None
+        if resume_path is not None:
+            (
+                update,
+                target_state,
+                target_version,
+                resume_rng_state,
+            ) = load_pre_final_snapshot(
+                resume_path,
+                agent=agent,
+                trainer=trainer,
+                replay=replay,
+                expected_update=config.training.steps,
+            )
+            log(
+                "[bold green]Pre-final snapshot loaded[/bold green] "
+                f"[dim]update={update:,} replay={len(replay):,} "
+                f"path={resume_path}[/dim]"
+            )
+
+        def create_reanalysis_pipeline() -> ReanalysisPipeline | None:
+            if not target_reanalysis_enabled:
+                return None
+            pipeline = ReanalysisPipeline(
                 in_channels=config.environment.frame_stack * image_channels,
                 action_space_size=action_space_size,
                 search_config=agent.search.config,
@@ -482,11 +664,14 @@ def main(config: TrainAgentConfig) -> None:
                 ),
                 device=device,
             )
-            reanalysis_pipeline.publish_weights(
+            pipeline.publish_weights(
                 target_version,
                 target_state,
                 wait=True,
             )
+            return pipeline
+
+        reanalysis_pipeline = create_reanalysis_pipeline()
 
         total_updates = config.training.steps + config.training.final_steps
         representative_updates = set(
@@ -499,7 +684,6 @@ def main(config: TrainAgentConfig) -> None:
         reward_tracker = EpisodeRewardTracker()
         self_play_episode_rewards: list[float] = []
         latest_checkpoint_path = Path(config.checkpoint.path)
-        update = 0
         if config.evaluation.enabled:
             write_evaluation_history(
                 config.evaluation.data_path,
@@ -508,6 +692,7 @@ def main(config: TrainAgentConfig) -> None:
             )
         training_progress = tqdm(
             total=total_updates,
+            initial=update,
             desc="Training",
             unit="update",
             position=0,
@@ -517,6 +702,7 @@ def main(config: TrainAgentConfig) -> None:
         )
         self_play_progress = tqdm(
             total=config.self_play.total_transitions,
+            initial=(config.self_play.total_transitions if resuming_final_phase else 0),
             desc="Self-play",
             unit="transition",
             position=1,
@@ -586,31 +772,34 @@ def main(config: TrainAgentConfig) -> None:
                 f"std={stats.std:.2f} max={max(stats.rewards):.2f}[/dim]"
             )
 
-        batch_worker = BatchWorker(
-            replay,
-            batch_size=config.training.batch_size,
-            device=device,
-            reanalysis_pipeline=reanalysis_pipeline,
-            value_target=config.training.value_target,
-            collection_steps=config.training.steps,
-            mixed_value_start_step=(
-                config.training.mixed_value_start_step
-            ),
-            mixed_value_threshold=config.training.mixed_value_threshold,
-            reanalysis_initial_cache_clear_interval=(
-                config.reanalysis.initial_cache_clear_interval
-            ),
-            reanalysis_final_cache_clear_interval=(
-                config.reanalysis.target_update_interval
-            ),
-            reanalysis_cache_clear_ramp_steps=max(
-                config.training.steps // 2,
-                1,
-            ),
-            max_in_flight=config.training.batch_max_in_flight,
-            ready_prefetch=config.training.batch_ready_prefetch,
-            timeout_seconds=config.training.batch_worker_timeout_seconds,
-        )
+        def create_batch_worker() -> BatchWorker:
+            return BatchWorker(
+                replay,
+                batch_size=config.training.batch_size,
+                device=device,
+                reanalysis_pipeline=reanalysis_pipeline,
+                value_target=config.training.value_target,
+                collection_steps=config.training.steps,
+                mixed_value_start_step=(config.training.mixed_value_start_step),
+                mixed_value_threshold=config.training.mixed_value_threshold,
+                reanalysis_initial_cache_clear_interval=(
+                    config.reanalysis.initial_cache_clear_interval
+                ),
+                reanalysis_final_cache_clear_interval=(
+                    config.reanalysis.target_update_interval
+                ),
+                reanalysis_cache_clear_ramp_steps=max(
+                    config.training.steps // 2,
+                    1,
+                ),
+                max_in_flight=config.training.batch_max_in_flight,
+                ready_prefetch=config.training.batch_ready_prefetch,
+                timeout_seconds=(config.training.batch_worker_timeout_seconds),
+            )
+
+        batch_worker = create_batch_worker()
+        if resume_rng_state is not None:
+            restore_rng_state(resume_rng_state)
 
         def apply_gpu_update(ready: ReadyBatch) -> None:
             nonlocal update, target_state, target_version
@@ -726,7 +915,10 @@ def main(config: TrainAgentConfig) -> None:
             clip_rewards=config.self_play.clip_rewards,
         ) as worker:
             search_mode = agent.search.config.search_algorithm.upper()
-            while worker.total_transitions < config.self_play.total_transitions:
+            while (
+                not resuming_final_phase
+                and worker.total_transitions < config.self_play.total_transitions
+            ):
                 collection_iteration += 1
                 vector_steps = next_collection_vector_steps(
                     worker.total_transitions,
@@ -846,8 +1038,10 @@ def main(config: TrainAgentConfig) -> None:
                     )
                 )
 
-            final_trajectories = tuple(
-                flatten_trajectories(worker.flush())
+            final_trajectories = (
+                ()
+                if resuming_final_phase
+                else tuple(flatten_trajectories(worker.flush()))
             )
             if final_trajectories:
                 replay.extend(final_trajectories)
@@ -872,6 +1066,44 @@ def main(config: TrainAgentConfig) -> None:
             f"{reward_summary}[/dim]"
         )
         run_updates(config.training.steps - update)
+
+        pre_final_path = (
+            None
+            if config.checkpoint.pre_final_snapshot_path is None
+            else Path(config.checkpoint.pre_final_snapshot_path)
+        )
+        if not resuming_final_phase and pre_final_path is not None:
+            if update != config.training.steps:
+                raise RuntimeError("pre-final snapshot boundary was not reached")
+            pre_final_rng_state = capture_rng_state()
+            save_pre_final_snapshot(
+                pre_final_path,
+                agent=agent,
+                trainer=trainer,
+                replay=replay,
+                target_state=target_state,
+                target_version=target_version,
+                update=update,
+                config=config,
+                rng_state=pre_final_rng_state,
+            )
+            log(
+                "[bold green]Pre-final snapshot saved[/bold green] "
+                f"[dim]update={update:,} replay={len(replay):,} "
+                f"path={pre_final_path}[/dim]"
+            )
+
+            # Start the learner-only phase from the same empty reanalysis cache
+            # and seeded native-search state that a resumed run will use.
+            batch_worker.close()
+            batch_worker = None
+            if reanalysis_pipeline is not None:
+                reanalysis_pipeline.close()
+                reanalysis_pipeline = None
+            reanalysis_pipeline = create_reanalysis_pipeline()
+            batch_worker = create_batch_worker()
+            restore_rng_state(pre_final_rng_state)
+
         log(
             "[bold yellow]Final learner-only phase[/bold yellow] "
             f"[dim]updates={config.training.final_steps:,}[/dim]"

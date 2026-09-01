@@ -122,10 +122,14 @@ class LossConfig:
 
 @dataclass
 class CheckpointConfig:
-    """Checkpoint destination and representative snapshot count."""
+    """Checkpoint and resumable pre-final snapshot settings."""
 
     path: str = "checkpoints/${environment_slug:${environment.id}}/agent_latest.pt"
     keep_representative: int = 10
+    pre_final_snapshot_path: str | None = (
+        "checkpoints/${environment_slug:${environment.id}}/agent_pre_final.pt"
+    )
+    resume_pre_final_path: str | None = None
 
 
 @dataclass
