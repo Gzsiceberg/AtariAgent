@@ -122,6 +122,7 @@ def main() -> None:
         policy_chunk_size=args.chunk_size,
         cache_targets=True,
         cache_target_ttl=0,
+        policy_reanalysis_ramp_steps=10_000,
         rng_seed=0,
         support_min=-300,
         support_max=300,

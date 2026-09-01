@@ -89,6 +89,7 @@ class ReanalysisConfig:
     cache_targets: bool = True
     initial_cache_clear_interval: int = 100
     cache_target_ttl: int = 200
+    policy_reanalysis_ramp_steps: int = 10_000
     prefetch_batches: int = 2
     timeout_seconds: float = 600.0
     worker_num_threads: int = 4

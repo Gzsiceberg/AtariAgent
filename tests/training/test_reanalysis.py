@@ -45,6 +45,7 @@ def _pipeline(
     target_update_interval: int = 200,
     search_algorithm: str = "puct",
     cache_target_ttl: int = 200,
+    policy_reanalysis_ramp_steps: int = 10_000,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -57,6 +58,7 @@ def _pipeline(
         policy_chunk_size=4,
         cache_targets=True,
         cache_target_ttl=cache_target_ttl,
+        policy_reanalysis_ramp_steps=policy_reanalysis_ramp_steps,
         rng_seed=3,
         support_min=-300,
         support_max=300,
@@ -118,6 +120,43 @@ def test_native_pipeline_configures_search_noise_from_algorithm(
         ) == expected_temperatures
         pipeline.submit(_batch(), trained_steps=50)
         assert pipeline.wait_next().policy_roots_searched == 3
+    finally:
+        pipeline.close()
+
+
+def test_policy_reanalysis_weight_ramps_and_blends_cached_search_targets() -> None:
+    pipeline = _pipeline(
+        prefetch_batches=1,
+        cache_target_ttl=0,
+        policy_reanalysis_ramp_steps=10_000,
+    )
+    batch = _batch()
+    try:
+        assert pipeline.policy_reanalysis_weight(0) == 0.0
+        assert pipeline.policy_reanalysis_weight(5_000) == 0.5
+        assert pipeline.policy_reanalysis_weight(10_000) == 1.0
+        assert pipeline.policy_reanalysis_weight(20_000) == 1.0
+
+        pipeline.submit(batch, trained_steps=0)
+        replay_only = pipeline.wait_next().batch
+        pipeline.submit(batch, trained_steps=5_000)
+        blended = pipeline.wait_next().batch
+        pipeline.submit(batch, trained_steps=10_000)
+        search_only = pipeline.wait_next().batch
+
+        torch.testing.assert_close(
+            replay_only.policy_targets,
+            batch.policy_targets,
+        )
+        assert not torch.equal(search_only.policy_targets, batch.policy_targets)
+        torch.testing.assert_close(
+            blended.policy_targets,
+            torch.lerp(
+                batch.policy_targets,
+                search_only.policy_targets,
+                0.5,
+            ),
+        )
     finally:
         pipeline.close()
 
@@ -252,6 +291,8 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
         _pipeline(target_update_interval=0)
     with pytest.raises(ValueError, match="cache_target_ttl"):
         _pipeline(cache_target_ttl=-1)
+    with pytest.raises(ValueError, match="policy_reanalysis_ramp_steps"):
+        _pipeline(policy_reanalysis_ramp_steps=0)
 
     with pytest.raises(ValueError, match="prefetch_batches"):
         ReanalysisPipeline(
@@ -261,6 +302,7 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             policy_chunk_size=4,
             cache_targets=True,
             cache_target_ttl=200,
+            policy_reanalysis_ramp_steps=10_000,
             rng_seed=0,
             support_min=-300,
             support_max=300,
