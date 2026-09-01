@@ -99,6 +99,7 @@ class ReanalysisPipeline:
         policy_chunk_size: int,
         cache_targets: bool,
         cache_target_ttl: int,
+        policy_reanalysis_maturity_steps: int,
         policy_reanalysis_ramp_transitions: int,
         rng_seed: int,
         support_min: int,
@@ -120,6 +121,16 @@ class ReanalysisPipeline:
             raise TypeError("cache_target_ttl must be an integer")
         if cache_target_ttl < 0:
             raise ValueError("cache_target_ttl must be non-negative")
+        if isinstance(policy_reanalysis_maturity_steps, bool) or not isinstance(
+            policy_reanalysis_maturity_steps, int
+        ):
+            raise TypeError(
+                "policy_reanalysis_maturity_steps must be an integer"
+            )
+        if policy_reanalysis_maturity_steps <= 0:
+            raise ValueError(
+                "policy_reanalysis_maturity_steps must be positive"
+            )
         if isinstance(policy_reanalysis_ramp_transitions, bool) or not isinstance(
             policy_reanalysis_ramp_transitions, int
         ):
@@ -193,6 +204,9 @@ class ReanalysisPipeline:
         self.target_update_interval = target_update_interval
         self.root_noise_total_steps = root_noise_total_steps
         self.collection_steps = collection_steps
+        self.policy_reanalysis_maturity_steps = (
+            policy_reanalysis_maturity_steps
+        )
         self.policy_reanalysis_ramp_transitions = (
             policy_reanalysis_ramp_transitions
         )
@@ -279,15 +293,19 @@ class ReanalysisPipeline:
         *,
         trained_steps: int,
     ) -> Tensor:
-        """Return search weights from effective replay-transition ages."""
+        """Gate search weights by model maturity and sample staleness."""
         effective_ages = batch.effective_transition_ages(
             learner_step=trained_steps,
             collection_steps=self.collection_steps,
         )
+        maturity_weight = min(
+            trained_steps / self.policy_reanalysis_maturity_steps,
+            1.0,
+        )
         return (
             effective_ages.to(dtype=batch.policy_targets.dtype)
             .div(self.policy_reanalysis_ramp_transitions)
-            .clamp(max=1.0)
+            .clamp(max=maturity_weight)
             .reshape(batch.batch_size, 1, 1)
         )
 

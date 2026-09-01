@@ -43,9 +43,10 @@ reanalysis:
   # Re-search an entry once it is this many learner updates old. Zero disables
   # age-based expiration; cache clearing and target publication still refresh it.
   cache_target_ttl: 200
-  # Blend stored and reanalyzed policies according to each sample's replay age.
+  # Limit reanalysis by both model maturity and each sample's effective age.
+  policy_reanalysis_maturity_steps: 10000
   # Fresh samples use stored targets; samples this many transitions old use search.
-  policy_reanalysis_ramp_transitions: 2000
+  policy_reanalysis_ramp_transitions: 5000
   # Hard limit for queued native reanalysis requests.
   prefetch_batches: 2
   timeout_seconds: 600.0
@@ -126,8 +127,8 @@ loss:
 
 checkpoint:
   path: checkpoints/${environment_slug:${environment.id}}/agent_latest.pt
-  # Keep snapshots at ten evenly spaced points across the complete run.
-  keep_representative: 10
+  # Keep snapshots at twelve evenly spaced points across the complete run.
+  keep_representative: 12
 
 evaluation:
   enabled: true

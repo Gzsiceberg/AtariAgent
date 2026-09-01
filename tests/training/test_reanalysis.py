@@ -46,6 +46,7 @@ def _pipeline(
     target_update_interval: int = 200,
     search_algorithm: str = "puct",
     cache_target_ttl: int = 200,
+    policy_reanalysis_maturity_steps: int = 100,
     policy_reanalysis_ramp_transitions: int = 2_000,
     collection_steps: int = 100,
 ) -> ReanalysisPipeline:
@@ -60,6 +61,7 @@ def _pipeline(
         policy_chunk_size=4,
         cache_targets=True,
         cache_target_ttl=cache_target_ttl,
+        policy_reanalysis_maturity_steps=policy_reanalysis_maturity_steps,
         policy_reanalysis_ramp_transitions=(
             policy_reanalysis_ramp_transitions
         ),
@@ -129,7 +131,7 @@ def test_native_pipeline_configures_search_noise_from_algorithm(
         pipeline.close()
 
 
-def test_policy_reanalysis_weights_use_sample_age_and_blend_cached_targets() -> None:
+def test_policy_weights_combine_maturity_age_and_final_updates() -> None:
     pipeline = _pipeline(
         prefetch_batches=1,
         cache_target_ttl=0,
@@ -148,8 +150,15 @@ def test_policy_reanalysis_weights_use_sample_age_and_blend_cached_targets() -> 
     try:
         torch.testing.assert_close(
             pipeline.policy_reanalysis_weights(
+                old_batch,
+                trained_steps=50,
+            ).flatten(),
+            torch.tensor([0.5, 0.5]),
+        )
+        torch.testing.assert_close(
+            pipeline.policy_reanalysis_weights(
                 batch,
-                trained_steps=0,
+                trained_steps=100,
             ).flatten(),
             torch.tensor([0.0, 0.5]),
         )
@@ -161,11 +170,11 @@ def test_policy_reanalysis_weights_use_sample_age_and_blend_cached_targets() -> 
             torch.tensor([0.5, 0.5]),
         )
 
-        pipeline.submit(fresh_batch)
+        pipeline.submit(fresh_batch, trained_steps=100)
         replay_only = pipeline.wait_next().batch
-        pipeline.submit(middle_batch)
+        pipeline.submit(middle_batch, trained_steps=100)
         blended = pipeline.wait_next().batch
-        pipeline.submit(old_batch)
+        pipeline.submit(old_batch, trained_steps=100)
         search_only = pipeline.wait_next().batch
 
         torch.testing.assert_close(
@@ -321,6 +330,8 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
         _pipeline(target_update_interval=0)
     with pytest.raises(ValueError, match="cache_target_ttl"):
         _pipeline(cache_target_ttl=-1)
+    with pytest.raises(ValueError, match="policy_reanalysis_maturity_steps"):
+        _pipeline(policy_reanalysis_maturity_steps=0)
     with pytest.raises(ValueError, match="policy_reanalysis_ramp_transitions"):
         _pipeline(policy_reanalysis_ramp_transitions=0)
     with pytest.raises(ValueError, match="collection_steps"):
@@ -334,6 +345,7 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             policy_chunk_size=4,
             cache_targets=True,
             cache_target_ttl=200,
+            policy_reanalysis_maturity_steps=100,
             policy_reanalysis_ramp_transitions=2_000,
             rng_seed=0,
             support_min=-300,
