@@ -40,6 +40,7 @@ class WandbLogger:
                 ("train", "train/update"),
                 ("self_play", "self_play/total_episodes"),
                 ("behavior", "behavior/total_transitions"),
+                ("eval", "eval/update"),
             ):
                 run.define_metric(step_name)
                 run.define_metric(f"{namespace}/*", step_metric=step_name)
@@ -187,12 +188,13 @@ class WandbLogger:
             }
         )
 
-    def log_evaluation(self, stats: EvaluationStats) -> None:
+    def log_evaluation(self, stats: EvaluationStats, *, update: int) -> None:
         """Log checkpoint evaluation reward statistics."""
         if self._run is None:
             return
         self._run.log(
             {
+                "eval/update": update,
                 "eval/reward_mean": stats.mean,
                 "eval/reward_median": stats.median,
                 "eval/reward_std": stats.std,

@@ -134,7 +134,7 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
         recent_rewards=stats.rewards,
         total_episodes=3,
     )
-    logger.log_evaluation(stats)
+    logger.log_evaluation(stats, update=100)
     logger.finish(exit_code=0)
 
     behavior, self_play, evaluation = run.logged
@@ -157,7 +157,8 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
         "self_play/reward_latest",
     ):
         assert removed_metric not in self_play
-    assert "eval/update" not in evaluation
+    assert ("eval/*", "eval/update") in run.defined_metrics
+    assert evaluation["eval/update"] == 100
     assert "eval/episodes" not in evaluation
     assert evaluation["eval/reward_mean"] == pytest.approx(3.0)
     assert evaluation["eval/reward_min"] == 1.0
@@ -189,7 +190,7 @@ def test_disabled_wandb_logger_is_a_no_op(
     )
 
     logger.log_training(make_train_metrics(), update=1)
-    logger.log_evaluation(EvaluationStats.from_rewards((1.0,)))
+    logger.log_evaluation(EvaluationStats.from_rewards((1.0,)), update=1)
     logger.finish(exit_code=1)
 
     assert not logger.enabled

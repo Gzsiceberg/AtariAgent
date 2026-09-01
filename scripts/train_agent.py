@@ -544,7 +544,7 @@ def main(config: TrainAgentConfig) -> None:
                 evaluation_records,
                 environment_id=config.environment.id,
             )
-            wandb_logger.log_evaluation(stats)
+            wandb_logger.log_evaluation(stats, update=update)
             log(
                 "[bold blue]Evaluation complete[/bold blue] "
                 f"[dim]update={update:,} episodes={config.evaluation.episodes} "
