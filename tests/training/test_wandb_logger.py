@@ -109,7 +109,8 @@ def test_wandb_logger_emits_reanalysis_metrics() -> None:
         cache_target_age_max=30,
     )
 
-    assert ("reanalysis/*", "train/update") in run.defined_metrics
+    assert ("reanalysis/*", "reanalysis/update") in run.defined_metrics
+    assert run.logged[0]["reanalysis/update"] == 10
     assert run.logged[0]["reanalysis/cache_hit_rate"] == pytest.approx(0.75)
     assert run.logged[0]["reanalysis/cache_target_age_mean_updates"] == 12.5
     assert run.logged[0]["reanalysis/cache_target_age_max_updates"] == 30
@@ -128,21 +129,25 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
             root_count=8,
         ),
         total_transitions=400,
+        update=100,
     )
     logger.log_self_play(
         stats,
         recent_rewards=stats.rewards,
         total_episodes=3,
+        update=100,
     )
     logger.log_evaluation(stats, update=100)
     logger.finish(exit_code=0)
 
     behavior, self_play, evaluation = run.logged
-    assert ("behavior/*", "behavior/total_transitions") in run.defined_metrics
+    assert ("behavior/*", "behavior/update") in run.defined_metrics
+    assert behavior["behavior/update"] == 100
     assert behavior["behavior/policy_entropy"] == pytest.approx(0.5)
     assert behavior["behavior/max_action_probability"] == pytest.approx(0.75)
     assert behavior["behavior/effective_action_count"] == pytest.approx(1.5)
-    assert ("self_play/*", "self_play/total_episodes") in run.defined_metrics
+    assert ("self_play/*", "self_play/update") in run.defined_metrics
+    assert self_play["self_play/update"] == 100
     assert self_play["self_play/reward_mean_10"] == pytest.approx(3.0)
     assert self_play["self_play/reward_min_10"] == 1.0
     assert self_play["self_play/reward_max_10"] == 6.0

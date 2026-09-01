@@ -748,6 +748,7 @@ def main(config: TrainAgentConfig) -> None:
                     wandb_logger.log_behavior_policy(
                         worker.last_behavior_metrics,
                         total_transitions=worker.total_transitions,
+                        update=update,
                     )
                 trajectories = tuple(flatten_trajectories(grouped))
                 completed_rewards = reward_tracker.add(trajectories)
@@ -791,6 +792,7 @@ def main(config: TrainAgentConfig) -> None:
                         recent_stats,
                         recent_rewards=recent_rewards,
                         total_episodes=len(self_play_episode_rewards),
+                        update=update,
                     )
                     log(
                         "[bold cyan]Self-play reward statistics"

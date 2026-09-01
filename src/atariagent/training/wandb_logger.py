@@ -38,13 +38,13 @@ class WandbLogger:
         if run is not None:
             for namespace, step_name in (
                 ("train", "train/update"),
-                ("self_play", "self_play/total_episodes"),
-                ("behavior", "behavior/total_transitions"),
+                ("self_play", "self_play/update"),
+                ("behavior", "behavior/update"),
                 ("eval", "eval/update"),
+                ("reanalysis", "reanalysis/update"),
             ):
                 run.define_metric(step_name)
                 run.define_metric(f"{namespace}/*", step_metric=step_name)
-            run.define_metric("reanalysis/*", step_metric="train/update")
 
     @classmethod
     def initialize(
@@ -128,6 +128,7 @@ class WandbLogger:
         if policy_roots_requested > 0:
             data.update(
                 {
+                    "reanalysis/update": update,
                     "reanalysis/cache_hit_rate": (
                         cache_hits / policy_roots_requested
                     ),
@@ -152,6 +153,7 @@ class WandbLogger:
         metrics: BehaviorPolicyMetrics,
         *,
         total_transitions: int,
+        update: int,
     ) -> None:
         """Log PUCT's categorical behavior policy after action temperature."""
         if self._run is None:
@@ -159,6 +161,7 @@ class WandbLogger:
         self._run.log(
             {
                 "behavior/total_transitions": total_transitions,
+                "behavior/update": update,
                 "behavior/policy_entropy": metrics.entropy,
                 "behavior/max_action_probability": metrics.max_probability,
                 "behavior/effective_action_count": (
@@ -173,6 +176,7 @@ class WandbLogger:
         *,
         recent_rewards: Sequence[float],
         total_episodes: int,
+        update: int,
     ) -> None:
         """Log rolling full-game self-play reward statistics."""
         if self._run is None:
@@ -180,6 +184,7 @@ class WandbLogger:
         self._run.log(
             {
                 "self_play/total_episodes": total_episodes,
+                "self_play/update": update,
                 "self_play/reward_mean_10": stats.mean,
                 "self_play/reward_median_10": stats.median,
                 "self_play/reward_std_10": stats.std,
