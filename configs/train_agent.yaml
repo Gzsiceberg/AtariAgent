@@ -48,12 +48,8 @@ reanalysis:
   timeout_seconds: 600.0
   # Cap native OpenMP tree traversal to avoid CPU oversubscription.
   worker_num_threads: 4
-  # Increase delayed-target hard-copy spacing through five stages:
-  # 200/400/600/800/1000 at updates 0/2500/5000/7500/10000.
-  initial_target_update_interval: 200
+  # Keep delayed-target hard copies on a fixed learner-update interval.
   target_update_interval: 1000
-  target_update_ramp_steps: 10000
-  target_update_stages: 5
 
 training:
   device: auto
