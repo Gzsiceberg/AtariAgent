@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -129,6 +130,7 @@ def evaluate_agent(
             desc="Evaluation",
             unit="episode",
             dynamic_ncols=True,
+            disable=not sys.stderr.isatty(),
         ) as progress:
             while environments:
                 output = agent.act(

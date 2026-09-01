@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 from rich import print as rich_print
+from rich.text import Text
 from tqdm.auto import tqdm
 
 from atariagent import (
@@ -66,7 +67,10 @@ register_train_agent_config()
 
 
 def log(message: str) -> None:
-    """Print Rich markup without corrupting active tqdm progress bars."""
+    """Print one plain line when redirected, or Rich markup interactively."""
+    if not sys.stdout.isatty():
+        print(Text.from_markup(message).plain, flush=True)
+        return
     with tqdm.external_write_mode():
         rich_print(message)
 
@@ -500,6 +504,7 @@ def main(config: TrainAgentConfig) -> None:
             position=0,
             dynamic_ncols=True,
             file=sys.stdout,
+            disable=not sys.stdout.isatty(),
         )
         self_play_progress = tqdm(
             total=config.self_play.total_transitions,
@@ -508,6 +513,7 @@ def main(config: TrainAgentConfig) -> None:
             position=1,
             dynamic_ncols=True,
             file=sys.stdout,
+            disable=not sys.stdout.isatty(),
         )
         log(
             "[bold cyan]AtariAgent training started[/bold cyan] "
