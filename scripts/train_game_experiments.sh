@@ -35,41 +35,45 @@ MIN_INITIAL_DISK_GB="${MIN_INITIAL_DISK_GB:-30}"
 MIN_PER_GAME_DISK_GB="${MIN_PER_GAME_DISK_GB:-2}"
 DRY_RUN="${DRY_RUN:-0}"
 EXPECTED_FINAL_UPDATE=120000
+PAPER_SCORES_SOURCE="$REPO_ROOT/scripts/atari_100k_paper_scores.csv"
 
 mkdir -p "$RUN_ROOT"
 
-# EfficientZero reference scores transcribed from evaluations/efficient_zero_eval.png.
-# These are comparison targets, not stopping criteria. AtariAgent's default
-# evaluation uses one training seed and 16 episodes, so results are not a
-# like-for-like reproduction of the paper's multi-seed evaluation.
+# Keep a snapshot of the paper reference data used for this run. These are
+# comparison targets, not stopping criteria. AtariAgent's default evaluation
+# uses one training seed and 16 episodes, so results are not a like-for-like
+# reproduction of the papers' multi-seed evaluations.
+PAPER_SCORES="$RUN_ROOT/paper_scores.csv"
+cp "$PAPER_SCORES_SOURCE" "$PAPER_SCORES"
+
 GAME_MANIFEST="$RUN_ROOT/games.tsv"
 cat >"$GAME_MANIFEST" <<'GAMES'
-alien|ALE/Alien-v5|808.5
-amidar|ALE/Amidar-v5|148.6
-assault|ALE/Assault-v5|1263.1
-asterix|ALE/Asterix-v5|25557.8
-bank-heist|ALE/BankHeist-v5|351.0
-battle-zone|ALE/BattleZone-v5|13871.2
-boxing|ALE/Boxing-v5|52.7
-breakout|ALE/Breakout-v5|414.1
-chopper-command|ALE/ChopperCommand-v5|1117.3
-crazy-climber|ALE/CrazyClimber-v5|83940.2
-demon-attack|ALE/DemonAttack-v5|13003.9
-freeway|ALE/Freeway-v5|21.8
-frostbite|ALE/Frostbite-v5|296.3
-gopher|ALE/Gopher-v5|3260.3
-hero|ALE/Hero-v5|9315.9
-jamesbond|ALE/Jamesbond-v5|517.0
-kangaroo|ALE/Kangaroo-v5|724.1
-krull|ALE/Krull-v5|5663.3
-kung-fu-master|ALE/KungFuMaster-v5|30944.8
-ms-pacman|ALE/MsPacman-v5|1281.2
-pong|ALE/Pong-v5|20.1
-private-eye|ALE/PrivateEye-v5|96.7
-qbert|ALE/Qbert-v5|13781.9
-road-runner|ALE/RoadRunner-v5|17751.3
-seaquest|ALE/Seaquest-v5|1100.2
-up-n-down|ALE/UpNDown-v5|17264.2
+asterix|ALE/Asterix-v5
+bank-heist|ALE/BankHeist-v5
+battle-zone|ALE/BattleZone-v5
+alien|ALE/Alien-v5
+amidar|ALE/Amidar-v5
+assault|ALE/Assault-v5
+boxing|ALE/Boxing-v5
+breakout|ALE/Breakout-v5
+chopper-command|ALE/ChopperCommand-v5
+crazy-climber|ALE/CrazyClimber-v5
+demon-attack|ALE/DemonAttack-v5
+freeway|ALE/Freeway-v5
+frostbite|ALE/Frostbite-v5
+gopher|ALE/Gopher-v5
+hero|ALE/Hero-v5
+jamesbond|ALE/Jamesbond-v5
+kangaroo|ALE/Kangaroo-v5
+krull|ALE/Krull-v5
+kung-fu-master|ALE/KungFuMaster-v5
+ms-pacman|ALE/MsPacman-v5
+pong|ALE/Pong-v5
+private-eye|ALE/PrivateEye-v5
+qbert|ALE/Qbert-v5
+road-runner|ALE/RoadRunner-v5
+seaquest|ALE/Seaquest-v5
+up-n-down|ALE/UpNDown-v5
 GAMES
 
 BATCH_COMPLETED=0
@@ -264,7 +268,8 @@ fi
 write_summary() {
     uv run python scripts/summarize_game_experiments.py summarize "$RUN_ROOT" \
         --experiment-name "$EXPERIMENT_NAME" \
-        --expected-final-update "$EXPECTED_FINAL_UPDATE"
+        --expected-final-update "$EXPECTED_FINAL_UPDATE" \
+        --paper-scores "$PAPER_SCORES"
 }
 
 is_completed() {
@@ -283,7 +288,6 @@ check_host_health() {
 run_training() {
     local game="$1"
     local environment_id="$2"
-    local paper_score="$3"
     local output_dir="$RUN_ROOT/$game/$EXPERIMENT_NAME"
     local evaluation_path="$output_dir/evaluations/agent_evaluations.json"
     mkdir -p "$output_dir"
@@ -309,8 +313,7 @@ run_training() {
         command+=("wandb.entity=$WANDB_ENTITY")
     fi
 
-    printf '\n=== Starting %s (%s); EfficientZero reference: %s ===\n' \
-        "$game" "$environment_id" "$paper_score"
+    printf '\n=== Starting %s (%s) ===\n' "$game" "$environment_id"
     printf 'Output directory: %s\n' "$output_dir"
 
     if [[ "$DRY_RUN" == "1" ]]; then
@@ -369,9 +372,9 @@ printf 'W&B project: %s\n' "$WANDB_PROJECT"
 printf 'Automatic suspend on exit: %s\n' "$SUSPEND_WHEN_DONE"
 write_status starting "validating 26-game batch"
 
-while IFS='|' read -r game environment_id paper_score; do
+while IFS='|' read -r game environment_id; do
     [[ -n "$game" ]] || continue
-    run_training "$game" "$environment_id" "$paper_score"
+    run_training "$game" "$environment_id"
 done <"$GAME_MANIFEST"
 
 if [[ "$DRY_RUN" == "1" ]]; then
