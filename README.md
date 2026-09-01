@@ -40,7 +40,7 @@ Reproduce the measured Alien configuration with:
 ```bash
 uv run python scripts/train_agent.py \
     search=gumbel \
-    training.reanalysis_cache_clear_interval=0
+    reanalysis.cache_clear_interval=0
 ```
 
 The standard Gumbel preset clears the cache every 400 updates to favor fresher targets, so it may take longer than the result above.
@@ -219,7 +219,7 @@ AtariAgent retains the central EfficientZero learning ideas while redesigning th
 | Hardware objective | Official README recommends four RTX 3090 GPUs for high-throughput training | Official example launches with two GPUs and supports broader workloads | Consumer single-GPU experiments |
 | License | GPL-3.0 | GPL-3.0 | MIT |
 
-A cache interval of `0` maximizes reuse but allows cached targets to outlive target-network updates. Use a positive `training.reanalysis_cache_clear_interval` when target freshness is more important than maximum throughput.
+A cache interval of `0` maximizes reuse but allows cached targets to outlive target-network updates. Use a positive `reanalysis.cache_clear_interval` when target freshness is more important than maximum throughput.
 
 ## Scope and limitations
 

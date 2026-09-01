@@ -209,39 +209,49 @@ def main(config: TrainAgentConfig) -> None:
             config.training.mixed_value_threshold,
             "mixed_value_threshold",
         ),
-        (
-            config.training.reanalysis_cache_clear_interval,
-            "reanalysis_cache_clear_interval",
-        ),
     ):
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"training.{name} must be an integer")
         if value < 0:
             raise ValueError(f"training.{name} must be non-negative")
+    if not isinstance(config.reanalysis.enabled, bool):
+        raise TypeError("reanalysis.enabled must be a boolean")
     if (
         config.training.value_target in {"search", "mixed"}
-        and not config.training.use_target_network_reanalysis
+        and not config.reanalysis.enabled
     ):
         raise ValueError("search value targets require target reanalysis")
+    if isinstance(config.reanalysis.cache_clear_interval, bool) or not isinstance(
+        config.reanalysis.cache_clear_interval, int
+    ):
+        raise TypeError("reanalysis.cache_clear_interval must be an integer")
+    if config.reanalysis.cache_clear_interval < 0:
+        raise ValueError("reanalysis.cache_clear_interval must be non-negative")
     for value, name in (
-        (config.training.target_update_interval, "target_update_interval"),
+        (config.reanalysis.target_update_interval, "target_update_interval"),
         (
-            config.training.initial_target_update_interval,
+            config.reanalysis.initial_target_update_interval,
             "initial_target_update_interval",
         ),
     ):
         if value <= 0:
-            raise ValueError(f"{name} must be positive")
-    if config.training.initial_target_update_steps < 0:
-        raise ValueError("initial_target_update_steps must be non-negative")
-    if config.training.policy_reanalysis_chunk_size <= 0:
-        raise ValueError("policy_reanalysis_chunk_size must be positive")
-    if not isinstance(config.training.cache_reanalyzed_targets, bool):
-        raise TypeError("cache_reanalyzed_targets must be a boolean")
-    if config.training.reanalysis_worker_num_threads <= 0:
-        raise ValueError("reanalysis_worker_num_threads must be positive")
-    if config.training.reanalysis_prefetch_batches <= 0:
-        raise ValueError("reanalysis_prefetch_batches must be positive")
+            raise ValueError(f"reanalysis.{name} must be positive")
+    if (
+        config.reanalysis.initial_target_update_interval
+        > config.reanalysis.target_update_interval
+    ):
+        raise ValueError(
+            "reanalysis.initial_target_update_interval must not exceed "
+            "reanalysis.target_update_interval"
+        )
+    if config.reanalysis.policy_chunk_size <= 0:
+        raise ValueError("reanalysis.policy_chunk_size must be positive")
+    if not isinstance(config.reanalysis.cache_targets, bool):
+        raise TypeError("reanalysis.cache_targets must be a boolean")
+    if config.reanalysis.worker_num_threads <= 0:
+        raise ValueError("reanalysis.worker_num_threads must be positive")
+    if config.reanalysis.prefetch_batches <= 0:
+        raise ValueError("reanalysis.prefetch_batches must be positive")
     if config.training.batch_max_in_flight <= 0:
         raise ValueError("batch_max_in_flight must be positive")
     if config.training.batch_ready_prefetch <= 0:
@@ -305,9 +315,7 @@ def main(config: TrainAgentConfig) -> None:
     wandb_exit_code = 1
 
     try:
-        target_reanalysis_enabled = (
-            config.training.use_target_network_reanalysis
-        )
+        target_reanalysis_enabled = config.reanalysis.enabled
         environments = create_environments(config)
         action_space_size = int(environments[0].action_space.n)
         if any(
@@ -423,22 +431,18 @@ def main(config: TrainAgentConfig) -> None:
                 in_channels=config.environment.frame_stack * image_channels,
                 action_space_size=action_space_size,
                 search_config=agent.search.config,
-                policy_chunk_size=(
-                    config.training.policy_reanalysis_chunk_size
-                ),
-                cache_targets=config.training.cache_reanalyzed_targets,
+                policy_chunk_size=config.reanalysis.policy_chunk_size,
+                cache_targets=config.reanalysis.cache_targets,
                 rng_seed=config.seed,
                 support_min=-300,
                 support_max=300,
                 precision=config.training.precision,
-                search_threads=config.training.reanalysis_worker_num_threads,
-                prefetch_batches=(
-                    config.training.reanalysis_prefetch_batches
-                ),
-                timeout_seconds=config.training.reanalysis_timeout_seconds,
+                search_threads=config.reanalysis.worker_num_threads,
+                prefetch_batches=config.reanalysis.prefetch_batches,
+                timeout_seconds=config.reanalysis.timeout_seconds,
                 target_update_interval=max(
-                    config.training.target_update_interval,
-                    config.training.initial_target_update_interval,
+                    config.reanalysis.target_update_interval,
+                    config.reanalysis.initial_target_update_interval,
                 ),
                 root_noise_total_steps=config.training.steps,
                 device=device,
@@ -556,7 +560,7 @@ def main(config: TrainAgentConfig) -> None:
             ),
             mixed_value_threshold=config.training.mixed_value_threshold,
             reanalysis_cache_clear_interval=(
-                config.training.reanalysis_cache_clear_interval
+                config.reanalysis.cache_clear_interval
             ),
             max_in_flight=config.training.batch_max_in_flight,
             ready_prefetch=config.training.batch_ready_prefetch,
@@ -573,11 +577,12 @@ def main(config: TrainAgentConfig) -> None:
             update += 1
             if target_network_update_due(
                 update,
-                interval=config.training.target_update_interval,
+                last_update=target_version,
+                total_steps=config.training.steps,
+                interval=config.reanalysis.target_update_interval,
                 initial_interval=(
-                    config.training.initial_target_update_interval
+                    config.reanalysis.initial_target_update_interval
                 ),
-                initial_steps=config.training.initial_target_update_steps,
             ):
                 target_state = make_target_state(
                     agent.representation_network,

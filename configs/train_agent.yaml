@@ -1,8 +1,8 @@
 defaults:
   - train_agent_schema
+  - _self_
   - search: puct
   - override hydra/job_logging: disabled
-  - _self_
 
 seed: 2
 
@@ -30,6 +30,25 @@ replay:
   # EfficientZero V2 Atari uses priorities directly and full IS correction.
   priority_epsilon: 0.000001
 
+reanalysis:
+  # Refresh replay values and policies with the delayed target network.
+  enabled: true
+  # Two 768-root chunks are faster here than 1024+512 and use less memory.
+  policy_chunk_size: 768
+  # Cache corrected TD values, MCTS root values, and policies by replay state.
+  cache_targets: true
+  # Search presets override this to select their target-freshness policy.
+  cache_clear_interval: 0
+  # Hard limit for queued native reanalysis requests.
+  prefetch_batches: 2
+  timeout_seconds: 600.0
+  # Cap native OpenMP tree traversal to avoid CPU oversubscription.
+  worker_num_threads: 4
+  # Ramp hard-copy spacing from 200 to 1,000 learner updates over the first
+  # half of collection-phase training.
+  target_update_interval: 1000
+  initial_target_update_interval: 200
+
 training:
   device: auto
   # EfficientZero's 100k collection-phase updates followed by 20k
@@ -47,28 +66,11 @@ training:
   value_target: mixed
   mixed_value_start_step: 30000
   mixed_value_threshold: 5000
-  # Refresh replay values and policies with the delayed target network.
-  # PUCT reanalysis is noise-free. Self-play separately anneals root-prior
-  # noise while retaining the visit-softmax action-temperature schedule.
-  use_target_network_reanalysis: true
-  # Two 768-root chunks are faster here than 1024+512 and use less memory.
-  policy_reanalysis_chunk_size: 768
-  # Cache corrected TD values, MCTS root values, and policies by replay state.
-  cache_reanalyzed_targets: true
-  # Hard limit for queued native reanalysis requests.
-  reanalysis_prefetch_batches: 2
   # Bound threaded sampling, reanalysis, H2D transfer, and ready GPU batches.
   batch_max_in_flight: 3
   # Keep at most two transferred GPU batches waiting ahead of the learner.
   batch_ready_prefetch: 2
   batch_worker_timeout_seconds: 600.0
-  reanalysis_timeout_seconds: 600.0
-  # Cap native OpenMP tree traversal to avoid CPU oversubscription.
-  reanalysis_worker_num_threads: 4
-  # Hard-copy every 200 learner updates through update 2,000, then every 1,000.
-  target_update_interval: 1000
-  initial_target_update_interval: 200
-  initial_target_update_steps: 2000
   # Per raw frame; training and MCTS use discount ** frame_skip.
   discount: 0.997
   # EfficientZero's default SGD uses 0.2; use 0.001 when selecting Adam.

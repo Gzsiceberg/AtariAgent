@@ -60,19 +60,9 @@ class TrainingConfig:
     value_target: str = "mixed"
     mixed_value_start_step: int = 30_000
     mixed_value_threshold: int = 5_000
-    use_target_network_reanalysis: bool = True
-    policy_reanalysis_chunk_size: int = 768
-    cache_reanalyzed_targets: bool = True
-    reanalysis_cache_clear_interval: int = 0
-    reanalysis_prefetch_batches: int = 2
     batch_max_in_flight: int = 3
     batch_ready_prefetch: int = 2
     batch_worker_timeout_seconds: float = 600.0
-    reanalysis_timeout_seconds: float = 600.0
-    reanalysis_worker_num_threads: int = 4
-    target_update_interval: int = 1_000
-    initial_target_update_interval: int = 200
-    initial_target_update_steps: int = 1_000
     discount: float = 0.997
     optimizer: str = "adam"
     learning_rate: float = 1e-3
@@ -88,6 +78,21 @@ class TrainingConfig:
     compile_model: bool = False
     compile_mode: str = "max-autotune"
     log_every: int = 10
+
+
+@dataclass
+class ReanalysisConfig:
+    """Target-network reanalysis and native-search settings."""
+
+    enabled: bool = True
+    policy_chunk_size: int = 768
+    cache_targets: bool = True
+    cache_clear_interval: int = 0
+    prefetch_batches: int = 2
+    timeout_seconds: float = 600.0
+    worker_num_threads: int = 4
+    target_update_interval: int = 1_000
+    initial_target_update_interval: int = 200
 
 
 @dataclass
@@ -153,6 +158,7 @@ class TrainAgentConfig:
     self_play: SelfPlayConfig = field(default_factory=SelfPlayConfig)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    reanalysis: ReanalysisConfig = field(default_factory=ReanalysisConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
@@ -187,33 +193,64 @@ def final_evaluation_max_episode_steps(frame_skip: int) -> int:
     return FINAL_EVALUATION_RAW_FRAMES // frame_skip
 
 
-def target_network_update_due(
+def scheduled_target_update_interval(
     update: int,
     *,
-    interval: int,
+    total_steps: int,
     initial_interval: int,
-    initial_steps: int,
-) -> bool:
-    """Return whether the delayed target network should be hard-copied."""
+    final_interval: int,
+) -> int:
+    """Ramp the target-copy interval over the first half of training."""
     for value, name in (
         (update, "update"),
-        (interval, "interval"),
+        (total_steps, "total_steps"),
         (initial_interval, "initial_interval"),
-        (initial_steps, "initial_steps"),
+        (final_interval, "final_interval"),
     ):
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"{name} must be an integer")
     if update < 0:
         raise ValueError("update must be non-negative")
-    if interval <= 0 or initial_interval <= 0:
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+    if initial_interval <= 0 or final_interval <= 0:
         raise ValueError("target update intervals must be positive")
-    if initial_steps < 0:
-        raise ValueError("initial_steps must be non-negative")
-    if update == 0:
-        return False
-    if update <= initial_steps:
-        return update % initial_interval == 0
-    return (update - initial_steps) % interval == 0
+    if initial_interval > final_interval:
+        raise ValueError("initial_interval must not exceed final_interval")
+
+    ramp_progress = min(update / (0.5 * total_steps), 1.0)
+    return round(
+        initial_interval
+        + ramp_progress * (final_interval - initial_interval)
+    )
+
+
+def target_network_update_due(
+    update: int,
+    *,
+    last_update: int,
+    total_steps: int,
+    interval: int,
+    initial_interval: int,
+) -> bool:
+    """Return whether the delayed target network should be hard-copied."""
+    if isinstance(update, bool) or not isinstance(update, int):
+        raise TypeError("update must be an integer")
+    if isinstance(last_update, bool) or not isinstance(last_update, int):
+        raise TypeError("last_update must be an integer")
+    if update < 0:
+        raise ValueError("update must be non-negative")
+    if last_update < 0:
+        raise ValueError("last_update must be non-negative")
+    if last_update > update:
+        raise ValueError("last_update must not exceed update")
+    active_interval = scheduled_target_update_interval(
+        last_update,
+        total_steps=total_steps,
+        initial_interval=initial_interval,
+        final_interval=interval,
+    )
+    return update > last_update and update - last_update >= active_interval
 
 
 def next_collection_vector_steps(
@@ -279,6 +316,7 @@ __all__ = [
     "EnvironmentConfig",
     "EvaluationConfig",
     "LossConfig",
+    "ReanalysisConfig",
     "ReplayConfig",
     "SelfPlayConfig",
     "TrainAgentConfig",
@@ -290,6 +328,7 @@ __all__ = [
     "next_collection_vector_steps",
     "puct_root_noise_temperature",
     "register_train_agent_config",
+    "scheduled_target_update_interval",
     "target_network_update_due",
     "visit_softmax_temperature",
 ]

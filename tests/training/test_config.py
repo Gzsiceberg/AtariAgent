@@ -6,6 +6,7 @@ from hydra import compose, initialize_config_dir
 from atariagent.training.config import (
     AugmentationConfig,
     LossConfig,
+    ReanalysisConfig,
     SelfPlayConfig,
     TrainingConfig,
     WandbConfig,
@@ -15,6 +16,7 @@ from atariagent.training.config import (
     next_collection_vector_steps,
     puct_root_noise_temperature,
     register_train_agent_config,
+    scheduled_target_update_interval,
     target_network_update_due,
     visit_softmax_temperature,
 )
@@ -57,8 +59,10 @@ def test_search_presets_select_their_simulation_budgets() -> None:
 
     assert puct.self_play.search_algorithm == "puct"
     assert puct.self_play.num_simulations == 50
+    assert puct.reanalysis.cache_clear_interval == 0
     assert gumbel.self_play.search_algorithm == "gumbel"
     assert gumbel.self_play.num_simulations == 16
+    assert gumbel.reanalysis.cache_clear_interval == 400
 
 
 def test_wandb_is_disabled_by_default() -> None:
@@ -82,19 +86,9 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.value_target == "mixed"
     assert config.mixed_value_start_step == 30_000
     assert config.mixed_value_threshold == 5_000
-    assert config.use_target_network_reanalysis
-    assert config.policy_reanalysis_chunk_size == 768
-    assert config.cache_reanalyzed_targets
-    assert config.reanalysis_cache_clear_interval == 0
-    assert config.reanalysis_prefetch_batches == 2
     assert config.batch_max_in_flight == 3
     assert config.batch_ready_prefetch == 2
     assert config.batch_worker_timeout_seconds == pytest.approx(600.0)
-    assert config.reanalysis_timeout_seconds == pytest.approx(600.0)
-    assert config.reanalysis_worker_num_threads == 4
-    assert config.target_update_interval == 1_000
-    assert config.initial_target_update_interval == 200
-    assert config.initial_target_update_steps == 1_000
     assert config.optimizer == "adam"
     assert config.learning_rate == pytest.approx(0.001)
     assert config.lr_warmup_steps == 1_000
@@ -105,19 +99,62 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.compile_mode == "max-autotune"
 
 
-def test_target_network_updates_more_frequently_for_first_1000_updates() -> None:
-    due_updates = [
-        update
-        for update in range(1, 3_001)
+def test_reanalysis_uses_target_network_defaults() -> None:
+    config = ReanalysisConfig()
+
+    assert config.enabled
+    assert config.policy_chunk_size == 768
+    assert config.cache_targets
+    assert config.cache_clear_interval == 0
+    assert config.prefetch_batches == 2
+    assert config.timeout_seconds == pytest.approx(600.0)
+    assert config.worker_num_threads == 4
+    assert config.target_update_interval == 1_000
+    assert config.initial_target_update_interval == 200
+
+
+def test_target_network_interval_ramps_over_first_half_of_training() -> None:
+    intervals = [
+        scheduled_target_update_interval(
+            update,
+            total_steps=10_000,
+            initial_interval=200,
+            final_interval=1_000,
+        )
+        for update in (0, 2_500, 5_000, 10_000)
+    ]
+    assert intervals == [200, 600, 1_000, 1_000]
+
+    last_update = 0
+    due_updates = []
+    for update in range(1, 10_001):
         if target_network_update_due(
             update,
+            last_update=last_update,
+            total_steps=10_000,
             interval=1_000,
             initial_interval=200,
-            initial_steps=1_000,
-        )
-    ]
+        ):
+            due_updates.append(update)
+            last_update = update
 
-    assert due_updates == [200, 400, 600, 800, 1_000, 2_000, 3_000]
+    assert due_updates == [
+        200,
+        432,
+        701,
+        1_013,
+        1_375,
+        1_795,
+        2_282,
+        2_847,
+        3_503,
+        4_263,
+        5_145,
+        6_145,
+        7_145,
+        8_145,
+        9_145,
+    ]
 
 
 def test_final_evaluation_uses_efficientzero_v1_raw_frame_horizon() -> None:

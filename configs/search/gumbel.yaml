@@ -7,6 +7,6 @@ self_play:
   # 16 actions, and 8 otherwise. Below 4 actions N becomes 4.
   num_simulations: 16
 
-training:
+reanalysis:
   # Refresh cached targets every 400 learner updates.
-  reanalysis_cache_clear_interval: 400
+  cache_clear_interval: 400
