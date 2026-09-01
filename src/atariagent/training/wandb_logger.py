@@ -104,7 +104,6 @@ class WandbLogger:
         stats: EvaluationStats,
         *,
         recent_rewards: Sequence[float],
-        latest_reward: float,
         total_episodes: int,
     ) -> None:
         """Log rolling full-game self-play reward statistics."""
@@ -113,11 +112,11 @@ class WandbLogger:
         self._run.log(
             {
                 "self_play/total_episodes": total_episodes,
-                "self_play/reward_mean_100": stats.mean,
-                "self_play/reward_median_100": stats.median,
-                "self_play/reward_std_100": stats.std,
-                "self_play/reward_max_100": max(recent_rewards),
-                "self_play/reward_latest": latest_reward,
+                "self_play/reward_mean_10": stats.mean,
+                "self_play/reward_median_10": stats.median,
+                "self_play/reward_std_10": stats.std,
+                "self_play/reward_min_10": min(recent_rewards),
+                "self_play/reward_max_10": max(recent_rewards),
             }
         )
 

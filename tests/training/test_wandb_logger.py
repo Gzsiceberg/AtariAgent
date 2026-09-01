@@ -88,7 +88,6 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
     logger.log_self_play(
         stats,
         recent_rewards=stats.rewards,
-        latest_reward=6.0,
         total_episodes=3,
     )
     logger.log_evaluation(stats)
@@ -96,16 +95,20 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
 
     self_play, evaluation = run.logged
     assert ("self_play/*", "self_play/total_episodes") in run.defined_metrics
-    assert self_play["self_play/reward_mean_100"] == pytest.approx(3.0)
+    assert self_play["self_play/reward_mean_10"] == pytest.approx(3.0)
+    assert self_play["self_play/reward_min_10"] == 1.0
+    assert self_play["self_play/reward_max_10"] == 6.0
     for removed_metric in (
         "self_play/transitions",
         "self_play/iteration",
         "self_play/new_episodes",
         "self_play/reward_window",
+        "self_play/reward_mean_100",
         "self_play/reward_min_100",
+        "self_play/reward_max_100",
+        "self_play/reward_latest",
     ):
         assert removed_metric not in self_play
-    assert self_play["self_play/reward_max_100"] == 6.0
     assert "eval/update" not in evaluation
     assert "eval/episodes" not in evaluation
     assert evaluation["eval/reward_mean"] == pytest.approx(3.0)

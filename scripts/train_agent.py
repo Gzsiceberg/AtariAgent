@@ -713,27 +713,29 @@ def main(config: TrainAgentConfig) -> None:
                     )
                 if self_play_episode_rewards:
                     recent_stats = EvaluationStats.from_rewards(
-                        tuple(self_play_episode_rewards[-100:])
+                        tuple(self_play_episode_rewards[-10:])
                     )
                     progress_stats["full_episodes"] = len(
                         self_play_episode_rewards
                     )
-                    progress_stats["full_game_reward100"] = (
+                    progress_stats["reward_mean_10"] = (
                         f"{recent_stats.mean:.2f}"
+                    )
+                    progress_stats["reward_min_10"] = (
+                        f"{min(recent_stats.rewards):.2f}"
                     )
                 self_play_progress.set_postfix(
                     progress_stats,
                     refresh=False,
                 )
                 if completed_rewards:
-                    recent_rewards = self_play_episode_rewards[-100:]
+                    recent_rewards = self_play_episode_rewards[-10:]
                     recent_stats = EvaluationStats.from_rewards(
                         tuple(recent_rewards)
                     )
                     wandb_logger.log_self_play(
                         recent_stats,
                         recent_rewards=recent_rewards,
-                        latest_reward=completed_rewards[-1],
                         total_episodes=len(self_play_episode_rewards),
                     )
                     log(
@@ -743,12 +745,11 @@ def main(config: TrainAgentConfig) -> None:
                         f"new_episodes={len(completed_rewards)} "
                         f"total_episodes={len(self_play_episode_rewards):,} "
                         f"window={len(recent_rewards)} "
-                        f"mean={recent_stats.mean:.2f} "
-                        f"median={recent_stats.median:.2f} "
-                        f"std={recent_stats.std:.2f} "
-                        f"min={min(recent_rewards):.2f} "
-                        f"max={max(recent_rewards):.2f} "
-                        f"latest={completed_rewards[-1]:.2f} "
+                        f"reward_mean_10={recent_stats.mean:.2f} "
+                        f"reward_median_10={recent_stats.median:.2f} "
+                        f"reward_std_10={recent_stats.std:.2f} "
+                        f"reward_min_10={min(recent_rewards):.2f} "
+                        f"reward_max_10={max(recent_rewards):.2f} "
                         f"mode={search_mode}[/dim]"
                     )
                 if warming_up and len(replay) >= minimum_replay_size:
@@ -778,13 +779,15 @@ def main(config: TrainAgentConfig) -> None:
 
         self_play_progress.close()
         if self_play_episode_rewards:
-            recent_rewards = self_play_episode_rewards[-100:]
+            recent_rewards = self_play_episode_rewards[-10:]
             recent_stats = EvaluationStats.from_rewards(tuple(recent_rewards))
             reward_summary = (
                 f"full_episodes={len(self_play_episode_rewards):,} "
-                f"full_game_reward100_mean={recent_stats.mean:.2f} "
-                f"full_game_reward100_median={recent_stats.median:.2f} "
-                f"full_game_reward100_std={recent_stats.std:.2f}"
+                f"reward_mean_10={recent_stats.mean:.2f} "
+                f"reward_median_10={recent_stats.median:.2f} "
+                f"reward_std_10={recent_stats.std:.2f} "
+                f"reward_min_10={min(recent_rewards):.2f} "
+                f"reward_max_10={max(recent_rewards):.2f}"
             )
         else:
             reward_summary = "full_episodes=0"
