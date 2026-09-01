@@ -21,7 +21,7 @@ from atariagent.selfplay import (
 
 
 class DiscreteActionSpace:
-    n = 2
+    n = np.int64(2)
 
 
 class LifeLossEnvironment(gym.Env):

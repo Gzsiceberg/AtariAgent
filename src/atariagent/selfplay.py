@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -686,9 +687,15 @@ class SelfPlayWorker:
         results: list[SearchResult] = []
         policies: list[np.ndarray] = []
         for environment in self.environments:
-            action_count = getattr(environment.action_space, "n", None)
-            if isinstance(action_count, bool) or not isinstance(action_count, int):
+            raw_action_count = getattr(environment.action_space, "n", None)
+            if isinstance(raw_action_count, bool):
                 raise TypeError("environment action_space.n must be an integer")
+            try:
+                action_count = operator.index(raw_action_count)
+            except TypeError as error:
+                raise TypeError(
+                    "environment action_space.n must be an integer"
+                ) from error
             if action_count <= 0:
                 raise ValueError("environment action_space.n must be positive")
             action = int(self._rng.integers(action_count))
