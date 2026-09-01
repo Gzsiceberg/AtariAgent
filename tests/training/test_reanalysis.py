@@ -47,6 +47,7 @@ def _pipeline(
     search_algorithm: str = "puct",
     cache_target_ttl: int = 200,
     policy_reanalysis_ramp_transitions: int = 2_000,
+    collection_steps: int = 100,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -71,6 +72,7 @@ def _pipeline(
         timeout_seconds=timeout_seconds,
         target_update_interval=target_update_interval,
         root_noise_total_steps=100,
+        collection_steps=collection_steps,
         device="cpu",
     )
     representation = RepresentationNetwork(4)
@@ -145,8 +147,18 @@ def test_policy_reanalysis_weights_use_sample_age_and_blend_cached_targets() -> 
     )
     try:
         torch.testing.assert_close(
-            pipeline.policy_reanalysis_weights(batch).flatten(),
+            pipeline.policy_reanalysis_weights(
+                batch,
+                trained_steps=0,
+            ).flatten(),
             torch.tensor([0.0, 0.5]),
+        )
+        torch.testing.assert_close(
+            pipeline.policy_reanalysis_weights(
+                fresh_batch,
+                trained_steps=1_100,
+            ).flatten(),
+            torch.tensor([0.5, 0.5]),
         )
 
         pipeline.submit(fresh_batch)
@@ -311,6 +323,8 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
         _pipeline(cache_target_ttl=-1)
     with pytest.raises(ValueError, match="policy_reanalysis_ramp_transitions"):
         _pipeline(policy_reanalysis_ramp_transitions=0)
+    with pytest.raises(ValueError, match="collection_steps"):
+        _pipeline(collection_steps=101)
 
     with pytest.raises(ValueError, match="prefetch_batches"):
         ReanalysisPipeline(
@@ -330,6 +344,7 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             timeout_seconds=1.0,
             target_update_interval=200,
             root_noise_total_steps=100,
+            collection_steps=100,
             device="cpu",
         )
 

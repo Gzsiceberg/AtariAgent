@@ -83,6 +83,7 @@ class BatchWorker:
         device: torch.device | str,
         reanalysis_pipeline: ReanalysisPipeline | None = None,
         value_target: str = "td",
+        collection_steps: int = 100_000,
         mixed_value_start_step: int = 30_000,
         mixed_value_threshold: int = 5_000,
         reanalysis_initial_cache_clear_interval: int = 100,
@@ -94,6 +95,7 @@ class BatchWorker:
     ) -> None:
         for value, name in (
             (batch_size, "batch_size"),
+            (collection_steps, "collection_steps"),
             (mixed_value_start_step, "mixed_value_start_step"),
             (mixed_value_threshold, "mixed_value_threshold"),
             (
@@ -117,6 +119,8 @@ class BatchWorker:
             raise ValueError("batch_size must be positive")
         if value_target not in {"td", "search", "mixed"}:
             raise ValueError("value_target must be td, search, or mixed")
+        if collection_steps <= 0:
+            raise ValueError("collection_steps must be positive")
         if mixed_value_start_step < 0 or mixed_value_threshold < 0:
             raise ValueError("mixed value thresholds must be non-negative")
         if (
@@ -146,6 +150,7 @@ class BatchWorker:
         self.device = torch.device(device)
         self.reanalysis_pipeline = reanalysis_pipeline
         self.value_target = value_target
+        self.collection_steps = collection_steps
         self.mixed_value_start_step = mixed_value_start_step
         self.mixed_value_threshold = mixed_value_threshold
         self.reanalysis_initial_cache_clear_interval = (
@@ -459,6 +464,7 @@ class BatchWorker:
         cpu_batch = cpu_batch.with_selected_value_targets(
             mode=self.value_target,
             learner_step=sample_step,
+            collection_steps=self.collection_steps,
             mixed_start_step=self.mixed_value_start_step,
             freshness_threshold=self.mixed_value_threshold,
         ).without_reanalysis_metadata()

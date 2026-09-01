@@ -480,6 +480,7 @@ def main(config: TrainAgentConfig) -> None:
                 root_noise_total_steps=(
                     config.training.steps + config.training.final_steps
                 ),
+                collection_steps=config.training.steps,
                 device=device,
             )
             reanalysis_pipeline.publish_weights(
@@ -592,6 +593,7 @@ def main(config: TrainAgentConfig) -> None:
             device=device,
             reanalysis_pipeline=reanalysis_pipeline,
             value_target=config.training.value_target,
+            collection_steps=config.training.steps,
             mixed_value_start_step=(
                 config.training.mixed_value_start_step
             ),

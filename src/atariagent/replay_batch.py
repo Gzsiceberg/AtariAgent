@@ -95,6 +95,7 @@ class ReplayBatch:
         *,
         mode: str,
         learner_step: int,
+        collection_steps: int,
         mixed_start_step: int,
         freshness_threshold: int,
     ) -> ReplayBatch:
@@ -103,6 +104,7 @@ class ReplayBatch:
             raise ValueError("value target mode must be td, search, or mixed")
         for value, name in (
             (learner_step, "learner_step"),
+            (collection_steps, "collection_steps"),
             (mixed_start_step, "mixed_start_step"),
             (freshness_threshold, "freshness_threshold"),
         ):
@@ -121,7 +123,11 @@ class ReplayBatch:
                 raise ValueError("batch has no replay transition ages")
             if self.transition_ages.shape != (self.batch_size,):
                 raise ValueError("transition ages have an invalid shape")
-            sample_uses_search = self.transition_ages >= freshness_threshold
+            effective_ages = self.effective_transition_ages(
+                learner_step=learner_step,
+                collection_steps=collection_steps,
+            )
+            sample_uses_search = effective_ages >= freshness_threshold
             search_mask = search_mask & sample_uses_search[:, None]
         selected = torch.where(
             search_mask,
@@ -129,6 +135,30 @@ class ReplayBatch:
             self.value_targets,
         )
         return replace(self, value_targets=selected)
+
+    def effective_transition_ages(
+        self,
+        *,
+        learner_step: int,
+        collection_steps: int,
+    ) -> Tensor:
+        """Add elapsed learner-only updates to each replay-transition age."""
+        for value, name in (
+            (learner_step, "learner_step"),
+            (collection_steps, "collection_steps"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.transition_ages is None:
+            raise ValueError("batch has no replay transition ages")
+        if self.transition_ages.shape != (self.batch_size,):
+            raise ValueError("transition ages have an invalid shape")
+        if torch.any(self.transition_ages < 0):
+            raise ValueError("transition ages must be non-negative")
+        final_update_steps = max(learner_step - collection_steps, 0)
+        return self.transition_ages + final_update_steps
 
     @staticmethod
     @runtime_typed

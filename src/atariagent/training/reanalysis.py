@@ -109,6 +109,7 @@ class ReanalysisPipeline:
         timeout_seconds: float,
         target_update_interval: int,
         root_noise_total_steps: int,
+        collection_steps: int,
         device: torch.device | str | None = None,
     ) -> None:
         if not isinstance(cache_targets, bool):
@@ -151,6 +152,14 @@ class ReanalysisPipeline:
             raise TypeError("root_noise_total_steps must be an integer")
         if root_noise_total_steps <= 0:
             raise ValueError("root_noise_total_steps must be positive")
+        if isinstance(collection_steps, bool) or not isinstance(
+            collection_steps, int
+        ):
+            raise TypeError("collection_steps must be an integer")
+        if collection_steps <= 0:
+            raise ValueError("collection_steps must be positive")
+        if collection_steps > root_noise_total_steps:
+            raise ValueError("collection_steps must not exceed total steps")
         set_tree_search_num_threads(search_threads)
 
         self.device = torch.device(
@@ -183,6 +192,7 @@ class ReanalysisPipeline:
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
         self.root_noise_total_steps = root_noise_total_steps
+        self.collection_steps = collection_steps
         self.policy_reanalysis_ramp_transitions = (
             policy_reanalysis_ramp_transitions
         )
@@ -263,17 +273,19 @@ class ReanalysisPipeline:
             self.root_noise_total_steps,
         )
 
-    def policy_reanalysis_weights(self, batch: ReplayBatch) -> Tensor:
-        """Return per-sample search weights from replay-transition ages."""
-        transition_ages = batch.transition_ages
-        if transition_ages is None:
-            raise ValueError("batch has no replay transition ages")
-        if transition_ages.shape != (batch.batch_size,):
-            raise ValueError("batch transition ages have an invalid shape")
-        if torch.any(transition_ages < 0):
-            raise ValueError("batch transition ages must be non-negative")
+    def policy_reanalysis_weights(
+        self,
+        batch: ReplayBatch,
+        *,
+        trained_steps: int,
+    ) -> Tensor:
+        """Return search weights from effective replay-transition ages."""
+        effective_ages = batch.effective_transition_ages(
+            learner_step=trained_steps,
+            collection_steps=self.collection_steps,
+        )
         return (
-            transition_ages.to(dtype=batch.policy_targets.dtype)
+            effective_ages.to(dtype=batch.policy_targets.dtype)
             .div(self.policy_reanalysis_ramp_transitions)
             .clamp(max=1.0)
             .reshape(batch.batch_size, 1, 1)
@@ -283,7 +295,10 @@ class ReanalysisPipeline:
         """Queue one ReplayBatch with schedules evaluated at submission."""
         self._require_open()
         root_noise_temperature = self.root_noise_temperature(trained_steps)
-        policy_reanalysis_weights = self.policy_reanalysis_weights(batch)
+        policy_reanalysis_weights = self.policy_reanalysis_weights(
+            batch,
+            trained_steps=trained_steps,
+        )
         request_id = int(
             self._engine.submit(
                 batch,

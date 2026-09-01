@@ -29,6 +29,7 @@ def test_mixed_values_use_td_before_start_step() -> None:
     selected = batch.with_selected_value_targets(
         mode="mixed",
         learner_step=29_999,
+        collection_steps=100_000,
         mixed_start_step=30_000,
         freshness_threshold=5_000,
     )
@@ -42,6 +43,7 @@ def test_mixed_values_use_search_for_stale_samples_at_strict_boundary() -> None:
     selected = batch.with_selected_value_targets(
         mode="mixed",
         learner_step=30_000,
+        collection_steps=100_000,
         mixed_start_step=30_000,
         freshness_threshold=5_000,
     )
@@ -52,12 +54,44 @@ def test_mixed_values_use_search_for_stale_samples_at_strict_boundary() -> None:
     )
 
 
+def test_mixed_values_add_final_updates_to_transition_ages() -> None:
+    batch = replace(
+        _batch(),
+        transition_ages=torch.tensor([0, 4_999]),
+    )
+
+    first_final_update = batch.with_selected_value_targets(
+        mode="mixed",
+        learner_step=100_001,
+        collection_steps=100_000,
+        mixed_start_step=30_000,
+        freshness_threshold=5_000,
+    )
+    after_threshold = batch.with_selected_value_targets(
+        mode="mixed",
+        learner_step=105_000,
+        collection_steps=100_000,
+        mixed_start_step=30_000,
+        freshness_threshold=5_000,
+    )
+
+    torch.testing.assert_close(
+        first_final_update.value_targets,
+        torch.tensor([[1.0, 2.0], [30.0, 4.0]]),
+    )
+    torch.testing.assert_close(
+        after_threshold.value_targets,
+        torch.tensor([[10.0, 20.0], [30.0, 4.0]]),
+    )
+
+
 def test_search_values_fall_back_to_td_without_a_valid_search_root() -> None:
     batch = _batch()
 
     selected = batch.with_selected_value_targets(
         mode="search",
         learner_step=0,
+        collection_steps=100_000,
         mixed_start_step=30_000,
         freshness_threshold=5_000,
     )
@@ -75,6 +109,7 @@ def test_mixed_value_selection_requires_reanalysis_metadata() -> None:
         batch.with_selected_value_targets(
             mode="mixed",
             learner_step=30_000,
+            collection_steps=100_000,
             mixed_start_step=30_000,
             freshness_threshold=5_000,
         )
