@@ -95,6 +95,7 @@ class ReanalysisPipeline:
         search_config: SearchConfig,
         policy_chunk_size: int,
         cache_targets: bool,
+        cache_refresh_probability: float,
         rng_seed: int,
         support_min: int,
         support_max: int,
@@ -108,6 +109,15 @@ class ReanalysisPipeline:
     ) -> None:
         if not isinstance(cache_targets, bool):
             raise TypeError("cache_targets must be a boolean")
+        if isinstance(cache_refresh_probability, bool) or not isinstance(
+            cache_refresh_probability, int | float
+        ):
+            raise TypeError("cache_refresh_probability must be numeric")
+        if (
+            not math.isfinite(cache_refresh_probability)
+            or not 0.0 <= cache_refresh_probability <= 1.0
+        ):
+            raise ValueError("cache_refresh_probability must be in [0, 1]")
         if isinstance(search_threads, bool) or not isinstance(search_threads, int):
             raise TypeError("search_threads must be an integer")
         if search_threads <= 0:
@@ -170,6 +180,7 @@ class ReanalysisPipeline:
             timeout_seconds,
             target_update_interval,
             cache_targets,
+            cache_refresh_probability,
         )
         self._latest_target_state: TargetState | None = None
         self._closed = False

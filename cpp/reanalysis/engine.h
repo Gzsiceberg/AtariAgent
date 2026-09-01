@@ -19,7 +19,8 @@ public:
         int prefetch_batches,
         double timeout_seconds,
         int target_update_interval,
-        bool cache_targets
+        bool cache_targets,
+        double cache_refresh_probability
     );
     ~NativeReanalysisEngine();
 

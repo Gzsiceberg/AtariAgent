@@ -106,6 +106,7 @@ def test_reanalysis_uses_target_network_defaults() -> None:
     assert config.policy_chunk_size == 768
     assert config.cache_targets
     assert config.cache_clear_interval == 0
+    assert config.cache_refresh_probability == pytest.approx(0.05)
     assert config.prefetch_batches == 2
     assert config.timeout_seconds == pytest.approx(600.0)
     assert config.worker_num_threads == 4

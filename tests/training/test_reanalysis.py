@@ -44,6 +44,7 @@ def _pipeline(
     timeout_seconds: float = 60.0,
     target_update_interval: int = 200,
     search_algorithm: str = "puct",
+    cache_refresh_probability: float = 0.0,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -55,6 +56,7 @@ def _pipeline(
         ),
         policy_chunk_size=4,
         cache_targets=True,
+        cache_refresh_probability=cache_refresh_probability,
         rng_seed=3,
         support_min=-300,
         support_max=300,
@@ -187,6 +189,25 @@ def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
         pipeline.close()
 
 
+def test_native_pipeline_probabilistically_refreshes_cached_targets() -> None:
+    pipeline = _pipeline(
+        prefetch_batches=1,
+        cache_refresh_probability=1.0,
+    )
+    batch = _batch()
+    try:
+        pipeline.submit(batch)
+        first = pipeline.wait_next()
+        pipeline.submit(batch)
+        refreshed = pipeline.wait_next()
+
+        assert first.policy_roots_searched == 3
+        assert refreshed.policy_roots_searched == 3
+        assert pipeline.cache_size == 3
+    finally:
+        pipeline.close()
+
+
 def test_native_pipeline_validates_native_batch_tensor_contract() -> None:
     pipeline = _pipeline(prefetch_batches=1)
     try:
@@ -229,6 +250,7 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             search_config=SearchConfig(num_simulations=1),
             policy_chunk_size=4,
             cache_targets=True,
+            cache_refresh_probability=0.0,
             rng_seed=0,
             support_min=-300,
             support_max=300,

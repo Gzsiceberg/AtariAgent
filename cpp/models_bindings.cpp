@@ -369,14 +369,16 @@ PYBIND11_MODULE(_models_native, module) {
                 int,
                 double,
                 int,
-                bool
+                bool,
+                double
             >(),
             py::arg("target"),
             py::arg("device"),
             py::arg("prefetch_batches"),
             py::arg("timeout_seconds"),
             py::arg("target_update_interval"),
-            py::arg("cache_targets")
+            py::arg("cache_targets"),
+            py::arg("cache_refresh_probability")
         )
         .def(
             "publish_weights",

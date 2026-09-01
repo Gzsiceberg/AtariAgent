@@ -39,6 +39,8 @@ reanalysis:
   cache_targets: true
   # Search presets override this to select their target-freshness policy.
   cache_clear_interval: 0
+  # Re-search cached targets for this fraction of sampled requests.
+  cache_refresh_probability: 0.05
   # Hard limit for queued native reanalysis requests.
   prefetch_batches: 2
   timeout_seconds: 600.0

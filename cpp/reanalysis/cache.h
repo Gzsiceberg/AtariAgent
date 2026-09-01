@@ -36,7 +36,8 @@ public:
         const torch::Tensor& policy_mask,
         const torch::Tensor& policy_targets,
         const torch::Tensor& value_targets,
-        const torch::Tensor& indices
+        const torch::Tensor& indices,
+        double refresh_probability
     );
     void resolve(
         const std::vector<CacheMiss>& misses,

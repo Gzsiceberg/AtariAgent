@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 import shutil
 import subprocess
@@ -248,6 +249,13 @@ def main(config: TrainAgentConfig) -> None:
         raise ValueError("reanalysis.policy_chunk_size must be positive")
     if not isinstance(config.reanalysis.cache_targets, bool):
         raise TypeError("reanalysis.cache_targets must be a boolean")
+    if (
+        not math.isfinite(config.reanalysis.cache_refresh_probability)
+        or not 0.0 <= config.reanalysis.cache_refresh_probability <= 1.0
+    ):
+        raise ValueError(
+            "reanalysis.cache_refresh_probability must be in [0, 1]"
+        )
     if config.reanalysis.worker_num_threads <= 0:
         raise ValueError("reanalysis.worker_num_threads must be positive")
     if config.reanalysis.prefetch_batches <= 0:
@@ -433,6 +441,9 @@ def main(config: TrainAgentConfig) -> None:
                 search_config=agent.search.config,
                 policy_chunk_size=config.reanalysis.policy_chunk_size,
                 cache_targets=config.reanalysis.cache_targets,
+                cache_refresh_probability=(
+                    config.reanalysis.cache_refresh_probability
+                ),
                 rng_seed=config.seed,
                 support_min=-300,
                 support_max=300,

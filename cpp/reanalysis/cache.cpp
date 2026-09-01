@@ -1,6 +1,9 @@
 #include "reanalysis/cache.h"
 
+#include <cmath>
 #include <cstdint>
+#include <random>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -34,8 +37,18 @@ public:
         const torch::Tensor& policy_mask,
         const torch::Tensor& policy_targets,
         const torch::Tensor& value_targets,
-        const torch::Tensor& indices
+        const torch::Tensor& indices,
+        double refresh_probability
     ) {
+        if (!std::isfinite(refresh_probability)
+            || refresh_probability < 0.0
+            || refresh_probability > 1.0) {
+            throw std::invalid_argument(
+                "refresh_probability must be in [0, 1]"
+            );
+        }
+        std::bernoulli_distribution should_refresh(refresh_probability);
+        const bool refresh_cached = should_refresh(rng_);
         const torch::Tensor positions = torch::nonzero(policy_mask).contiguous();
         const torch::Tensor contiguous_indices = indices.contiguous();
         const auto* position_data = positions.data_ptr<std::int64_t>();
@@ -50,25 +63,25 @@ public:
             const auto offset = position_data[row * 2 + 1];
             const auto flat = sample * state_count + offset;
             const auto state_id = index_data[sample] + offset;
-            auto cached = entries_.find(state_id);
-            if (cached != entries_.end()) {
-                hits.emplace_back(flat, &cached->second);
-                continue;
-            }
             auto existing = miss_lookup.find(state_id);
-            if (existing == miss_lookup.end()) {
-                const auto index = result.misses.size();
-                miss_lookup[state_id] = index;
-                result.misses.push_back(CacheMiss{
-                    state_id,
-                    static_cast<std::size_t>(flat),
-                    {static_cast<std::size_t>(flat)},
-                });
-            } else {
+            if (existing != miss_lookup.end()) {
                 result.misses[existing->second].positions.push_back(
                     static_cast<std::size_t>(flat)
                 );
+                continue;
             }
+            auto cached = entries_.find(state_id);
+            if (cached != entries_.end() && !refresh_cached) {
+                hits.emplace_back(flat, &cached->second);
+                continue;
+            }
+            const auto index = result.misses.size();
+            miss_lookup[state_id] = index;
+            result.misses.push_back(CacheMiss{
+                state_id,
+                static_cast<std::size_t>(flat),
+                {static_cast<std::size_t>(flat)},
+            });
         }
         result.roots_searched = static_cast<std::int64_t>(
             result.misses.size()
@@ -264,6 +277,7 @@ private:
     }
 
     std::unordered_map<std::int64_t, CacheEntry> entries_;
+    std::mt19937 rng_{0};
 };
 
 ReanalysisCache::ReanalysisCache() : impl_(std::make_unique<Impl>()) {}
@@ -273,10 +287,15 @@ CachePreparation ReanalysisCache::prepare(
     const torch::Tensor& policy_mask,
     const torch::Tensor& policy_targets,
     const torch::Tensor& value_targets,
-    const torch::Tensor& indices
+    const torch::Tensor& indices,
+    double refresh_probability
 ) {
     return impl_->prepare(
-        policy_mask, policy_targets, value_targets, indices
+        policy_mask,
+        policy_targets,
+        value_targets,
+        indices,
+        refresh_probability
     );
 }
 

@@ -41,14 +41,16 @@ public:
         int prefetch_batches,
         double timeout_seconds,
         int target_update_interval,
-        bool cache_targets
+        bool cache_targets,
+        double cache_refresh_probability
     )
         : target_(std::move(target)),
           device_(device),
           prefetch_batches_(prefetch_batches),
           timeout_seconds_(timeout_seconds),
           target_update_interval_(target_update_interval),
-          cache_targets_(cache_targets) {
+          cache_targets_(cache_targets),
+          cache_refresh_probability_(cache_refresh_probability) {
         if (!target_) {
             throw std::invalid_argument("target must not be null");
         }
@@ -61,6 +63,13 @@ public:
         if (target_update_interval_ <= 0) {
             throw std::invalid_argument(
                 "target_update_interval must be positive"
+            );
+        }
+        if (!std::isfinite(cache_refresh_probability_)
+            || cache_refresh_probability_ < 0.0
+            || cache_refresh_probability_ > 1.0) {
+            throw std::invalid_argument(
+                "cache_refresh_probability must be in [0, 1]"
             );
         }
 #ifdef ATARIAGENT_HAS_CUDA
@@ -553,7 +562,8 @@ private:
                 job->policy_mask,
                 job->policy_targets,
                 job->value_targets,
-                job->indices
+                job->indices,
+                cache_refresh_probability_
             );
             job->cache_misses = std::move(prepared.misses);
             job->roots_searched = prepared.roots_searched;
@@ -747,6 +757,7 @@ private:
     double timeout_seconds_;
     int target_update_interval_;
     bool cache_targets_;
+    double cache_refresh_probability_;
     mutable std::mutex mutex_;
     std::condition_variable work_ready_;
     std::condition_variable result_ready_;
@@ -770,7 +781,8 @@ NativeReanalysisEngine::NativeReanalysisEngine(
     int prefetch_batches,
     double timeout_seconds,
     int target_update_interval,
-    bool cache_targets
+    bool cache_targets,
+    double cache_refresh_probability
 )
     : impl_(std::make_unique<Impl>(
           std::move(target),
@@ -778,7 +790,8 @@ NativeReanalysisEngine::NativeReanalysisEngine(
           prefetch_batches,
           timeout_seconds,
           target_update_interval,
-          cache_targets
+          cache_targets,
+          cache_refresh_probability
       )) {}
 
 NativeReanalysisEngine::~NativeReanalysisEngine() = default;

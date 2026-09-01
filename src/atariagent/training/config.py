@@ -88,6 +88,7 @@ class ReanalysisConfig:
     policy_chunk_size: int = 768
     cache_targets: bool = True
     cache_clear_interval: int = 0
+    cache_refresh_probability: float = 0.05
     prefetch_batches: int = 2
     timeout_seconds: float = 600.0
     worker_num_threads: int = 4
