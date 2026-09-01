@@ -477,7 +477,9 @@ def main(config: TrainAgentConfig) -> None:
                 target_update_interval=(
                     config.reanalysis.target_update_interval
                 ),
-                root_noise_total_steps=config.training.steps,
+                root_noise_total_steps=(
+                    config.training.steps + config.training.final_steps
+                ),
                 device=device,
             )
             reanalysis_pipeline.publish_weights(
