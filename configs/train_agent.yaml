@@ -44,7 +44,7 @@ reanalysis:
   # age-based expiration; cache clearing and target publication still refresh it.
   cache_target_ttl: 200
   # Limit reanalysis by both model maturity and each sample's effective age.
-  policy_reanalysis_maturity_steps: 10000
+  policy_reanalysis_maturity_steps: 5000
   # Fresh samples use stored targets; samples this many transitions old use search.
   policy_reanalysis_ramp_transitions: 5000
   # Hard limit for queued native reanalysis requests.
