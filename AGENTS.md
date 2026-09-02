@@ -8,6 +8,7 @@
 - Use [`pytest`](https://docs.pytest.org/) for writing and running tests.
 - Prefer [`einops`](https://einops.rocks/) for most tensor shape operations instead of manual PyTorch shape manipulation.
 - Do not update the user's plan unless explicitly asked to do so.
+- Do not commit changes unless the user explicitly asks you to commit them.
 
 ## Reference Repositories
 
