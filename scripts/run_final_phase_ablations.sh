@@ -89,13 +89,13 @@ run_ablation() {
     "${command[@]}" 2>&1 | tee "$output_dir/training.log"
 }
 
-# Run the unchanged control first to measure normal resumed behavior.
-run_ablation "baseline" true 1000
-
 # Independent one-factor ablation: only caching differs from the baseline.
 run_ablation "no-cache" false 1000
 
 # Independent one-factor ablation: only target update frequency differs.
 run_ablation "target-interval-200" true 200
+
+# Run the unchanged control last to measure normal resumed behavior.
+run_ablation "baseline" true 1000
 
 printf '\nAll final-phase ablations completed. Results: %s\n' "$RUN_ROOT"
