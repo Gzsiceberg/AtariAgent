@@ -5,6 +5,7 @@ from hydra import compose, initialize_config_dir
 
 from atariagent.training.config import (
     AugmentationConfig,
+    EvaluationConfig,
     LossConfig,
     ReanalysisConfig,
     SelfPlayConfig,
@@ -73,6 +74,24 @@ def test_search_presets_select_their_simulation_budgets() -> None:
     assert gumbel.self_play.search_algorithm == "gumbel"
     assert gumbel.self_play.num_simulations == 16
     assert gumbel.reanalysis.initial_cache_clear_interval == 100
+
+
+def test_resume_evaluation_is_disabled_by_default_and_can_be_enabled() -> None:
+    config = EvaluationConfig()
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        resumed = compose(
+            config_name="train_agent",
+            overrides=[
+                "checkpoint.resume_pre_final_path=/tmp/agent_pre_final.pt",
+                "evaluation.evaluate_on_resume=true",
+            ],
+        )
+
+    assert not config.evaluate_on_resume
+    assert resumed.evaluation.evaluate_on_resume
 
 
 def test_wandb_is_disabled_by_default() -> None:

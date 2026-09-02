@@ -150,9 +150,12 @@ uv run python scripts/train_agent.py \
     checkpoint.resume_pre_final_path=checkpoints/Alien-v5/agent_pre_final.pt
 ```
 
-The resumed run skips self-play and starts at update 100,000. Override
-`checkpoint.path` and the `evaluation.*_path` settings if you want to preserve
-outputs from an earlier final-phase run. Set
+The resumed run skips self-play and starts at update 100,000. To evaluate the
+loaded model before applying any final-phase updates, add
+`evaluation.evaluate_on_resume=true`. That baseline is recorded at update
+100,000 in the configured evaluation history before training continues.
+Override `checkpoint.path` and the `evaluation.*_path` settings if you want to
+preserve outputs from an earlier final-phase run. Set
 `checkpoint.pre_final_snapshot_path=null` to disable snapshot creation. Only
 load snapshots you trust; replay snapshots use Python pickle through
 `torch.load`.

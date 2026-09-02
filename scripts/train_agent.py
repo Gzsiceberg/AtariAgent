@@ -441,6 +441,20 @@ def main(config: TrainAgentConfig) -> None:
     ):
         if value is not None and not value.strip():
             raise ValueError(f"checkpoint.{name} must be null or non-empty")
+    if not isinstance(config.evaluation.evaluate_on_resume, bool):
+        raise TypeError("evaluation.evaluate_on_resume must be a boolean")
+    if config.evaluation.evaluate_on_resume and not config.evaluation.enabled:
+        raise ValueError(
+            "evaluation.evaluate_on_resume requires evaluation.enabled=true"
+        )
+    if (
+        config.evaluation.evaluate_on_resume
+        and config.checkpoint.resume_pre_final_path is None
+    ):
+        raise ValueError(
+            "evaluation.evaluate_on_resume requires "
+            "checkpoint.resume_pre_final_path"
+        )
     if config.evaluation.enabled and config.evaluation.episodes <= 0:
         raise ValueError("evaluation.episodes must be positive")
     if config.evaluation.enabled and config.evaluation.num_envs <= 0:
@@ -694,6 +708,33 @@ def main(config: TrainAgentConfig) -> None:
             f"updates={total_updates:,}[/dim]"
         )
 
+        def evaluate_current_agent(
+            checkpoint_path: Path, *, phase: str = "Evaluation"
+        ) -> None:
+            """Evaluate the in-memory agent and persist its result."""
+            stats = evaluate_agent(
+                agent,
+                lambda: create_evaluation_environment(config),
+                episodes=config.evaluation.episodes,
+                num_envs=config.evaluation.num_envs,
+                seed=config.seed,
+            )
+            evaluation_records.append(
+                EvaluationRecord.create(update, checkpoint_path, stats)
+            )
+            write_evaluation_history(
+                config.evaluation.data_path,
+                evaluation_records,
+                environment_id=config.environment.id,
+            )
+            wandb_logger.log_evaluation(stats, update=update)
+            log(
+                f"[bold blue]{phase} complete[/bold blue] "
+                f"[dim]update={update:,} episodes={config.evaluation.episodes} "
+                f"mean={stats.mean:.2f} median={stats.median:.2f} "
+                f"std={stats.std:.2f} max={max(stats.rewards):.2f}[/dim]"
+            )
+
         def checkpoint_and_evaluate() -> None:
             """Save scheduled weights and evaluate representative checkpoints."""
             if update in checkpointed_updates:
@@ -723,28 +764,11 @@ def main(config: TrainAgentConfig) -> None:
 
             if not config.evaluation.enabled or not is_representative:
                 return
-            stats = evaluate_agent(
-                agent,
-                lambda: create_evaluation_environment(config),
-                episodes=config.evaluation.episodes,
-                num_envs=config.evaluation.num_envs,
-                seed=config.seed,
-            )
-            evaluation_records.append(
-                EvaluationRecord.create(update, saved_path, stats)
-            )
-            write_evaluation_history(
-                config.evaluation.data_path,
-                evaluation_records,
-                environment_id=config.environment.id,
-            )
-            wandb_logger.log_evaluation(stats, update=update)
-            log(
-                "[bold blue]Evaluation complete[/bold blue] "
-                f"[dim]update={update:,} episodes={config.evaluation.episodes} "
-                f"mean={stats.mean:.2f} median={stats.median:.2f} "
-                f"std={stats.std:.2f} max={max(stats.rewards):.2f}[/dim]"
-            )
+            evaluate_current_agent(saved_path)
+
+        if resuming_final_phase and config.evaluation.evaluate_on_resume:
+            assert resume_path is not None
+            evaluate_current_agent(resume_path, phase="Resume evaluation")
 
         def create_batch_worker() -> BatchWorker:
             return BatchWorker(

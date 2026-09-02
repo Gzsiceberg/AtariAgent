@@ -134,6 +134,7 @@ class EvaluationConfig:
     """Noise-free checkpoint evaluation and output settings."""
 
     enabled: bool = True
+    evaluate_on_resume: bool = False
     episodes: int = 10
     num_envs: int = 4
     data_path: str = (

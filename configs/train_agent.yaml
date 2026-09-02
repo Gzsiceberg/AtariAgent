@@ -131,6 +131,8 @@ checkpoint:
 
 evaluation:
   enabled: true
+  # Evaluate the loaded update before applying final-phase learner updates.
+  evaluate_on_resume: false
   episodes: 16
   num_envs: 16
   data_path: evaluations/${environment_slug:${environment.id}}/agent_evaluations.json
