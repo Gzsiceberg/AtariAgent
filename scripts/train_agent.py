@@ -1018,13 +1018,10 @@ def main(config: TrainAgentConfig) -> None:
                     )
                 )
 
-            final_trajectories = (
-                ()
-                if resuming_final_phase
-                else tuple(flatten_trajectories(worker.flush()))
-            )
-            if final_trajectories:
-                replay.extend(final_trajectories)
+            # Deliberately discard in-progress partial trajectories at the
+            # collection budget. EfficientZero actors leave these unfinished
+            # trajectories out of replay rather than flushing them immediately
+            # before the learner-only phase.
 
         self_play_progress.close()
         if self_play_episode_rewards:
