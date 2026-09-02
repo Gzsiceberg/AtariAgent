@@ -32,7 +32,7 @@ class SelfPlayConfig:
     root_exploration_fraction: float = 0.25
     c_visit: float = 50.0
     c_scale: float = 0.1
-    steps_per_iteration: int = 100
+    steps_per_iteration: int = 25
     trajectory_length: int = 400
     clip_rewards: bool = True
 
@@ -53,7 +53,7 @@ class TrainingConfig:
     device: str = "auto"
     steps: int = 100_000
     final_steps: int = 20_000
-    updates_per_iteration: int = 400
+    updates_per_iteration: int = 100
     batch_size: int = 256
     unroll_steps: int = 5
     td_steps: int = 5

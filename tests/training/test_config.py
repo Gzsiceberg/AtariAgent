@@ -48,6 +48,7 @@ def test_self_play_defaults_to_50_simulation_puct() -> None:
     assert config.search_algorithm == "puct"
     assert config.num_simulations == 50
     assert config.root_exploration_fraction == pytest.approx(0.25)
+    assert config.num_envs * config.steps_per_iteration == 100
 
 
 def test_search_presets_select_their_simulation_budgets() -> None:
@@ -65,6 +66,8 @@ def test_search_presets_select_their_simulation_budgets() -> None:
     assert puct.self_play.search_algorithm == "puct"
     assert puct.self_play.num_simulations == 50
     assert puct.self_play.root_exploration_fraction == pytest.approx(0.25)
+    assert puct.self_play.steps_per_iteration == 25
+    assert puct.training.updates_per_iteration == 100
     assert custom_puct.self_play.root_exploration_fraction == pytest.approx(0.4)
     assert puct.reanalysis.initial_cache_clear_interval == 100
     assert gumbel.self_play.search_algorithm == "gumbel"
@@ -103,6 +106,7 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.lr_decay_steps == 100_000
     assert config.steps == 100_000
     assert config.final_steps == 20_000
+    assert config.updates_per_iteration == 100
     assert config.compile_mode == "max-autotune"
 
 
