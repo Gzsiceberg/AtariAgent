@@ -10,8 +10,8 @@
 #   cache_targets=true, target_update_interval=200
 #
 # Each invocation creates a new W&B run. The resumed 100k checkpoint is
-# evaluated before training, followed by the scheduled 110k and 120k
-# evaluations, so each run contains its own common baseline.
+# evaluated before training, followed by evaluations every 5k updates at
+# 105k, 110k, 115k, and 120k, so every run contains the same baseline.
 #
 # Usage:
 #   ./scripts/run_final_phase_ablations.sh
@@ -61,6 +61,7 @@ run_ablation() {
         "checkpoint.resume_pre_final_path=$SNAPSHOT_PATH"
         "checkpoint.pre_final_snapshot_path=null"
         "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
+        "checkpoint.keep_representative=24"
         "evaluation.enabled=true"
         "evaluation.evaluate_on_resume=true"
         "evaluation.data_path=$output_dir/evaluations/agent_evaluations.json"
