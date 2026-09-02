@@ -44,8 +44,6 @@ reanalysis:
   # Re-search an entry once it is this many learner updates old. Zero disables
   # age-based expiration; cache clearing and target publication still refresh it.
   cache_target_ttl: 200
-  # Blend stored and reanalyzed policies as the model matures.
-  policy_reanalysis_maturity_steps: 5000
   # Hard limit for queued native reanalysis requests.
   prefetch_batches: 2
   timeout_seconds: 600.0

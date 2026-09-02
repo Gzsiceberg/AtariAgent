@@ -376,10 +376,6 @@ def main(config: TrainAgentConfig) -> None:
             "initial_cache_clear_interval",
         ),
         (config.reanalysis.target_update_interval, "target_update_interval"),
-        (
-            config.reanalysis.policy_reanalysis_maturity_steps,
-            "policy_reanalysis_maturity_steps",
-        ),
     ):
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"reanalysis.{name} must be an integer")
@@ -630,9 +626,6 @@ def main(config: TrainAgentConfig) -> None:
                 policy_chunk_size=config.reanalysis.policy_chunk_size,
                 cache_targets=config.reanalysis.cache_targets,
                 cache_target_ttl=config.reanalysis.cache_target_ttl,
-                policy_reanalysis_maturity_steps=(
-                    config.reanalysis.policy_reanalysis_maturity_steps
-                ),
                 rng_seed=config.seed,
                 support_min=-300,
                 support_max=300,

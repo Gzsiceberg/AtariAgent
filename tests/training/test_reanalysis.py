@@ -45,7 +45,6 @@ def _pipeline(
     target_update_interval: int = 200,
     search_algorithm: str = "puct",
     cache_target_ttl: int = 200,
-    policy_reanalysis_maturity_steps: int = 100,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -58,7 +57,6 @@ def _pipeline(
         policy_chunk_size=4,
         cache_targets=True,
         cache_target_ttl=cache_target_ttl,
-        policy_reanalysis_maturity_steps=policy_reanalysis_maturity_steps,
         rng_seed=3,
         support_min=-300,
         support_max=300,
@@ -116,39 +114,18 @@ def test_native_pipeline_configures_search_noise_from_algorithm(
         pipeline.close()
 
 
-def test_policy_reanalysis_weight_uses_model_maturity() -> None:
-    pipeline = _pipeline(
-        prefetch_batches=1,
-        cache_target_ttl=0,
-        policy_reanalysis_maturity_steps=100,
-    )
+def test_policy_reanalysis_replaces_stored_targets_immediately() -> None:
+    pipeline = _pipeline(prefetch_batches=1, cache_target_ttl=0)
     batch = _batch()
+    batch = replace(
+        batch,
+        policy_targets=torch.zeros_like(batch.policy_targets),
+    )
     try:
-        assert pipeline.policy_reanalysis_weight(0) == 0.0
-        assert pipeline.policy_reanalysis_weight(50) == 0.5
-        assert pipeline.policy_reanalysis_weight(100) == 1.0
-        assert pipeline.policy_reanalysis_weight(200) == 1.0
-
         pipeline.submit(batch, trained_steps=0)
-        replay_only = pipeline.wait_next().batch
-        pipeline.submit(batch, trained_steps=50)
-        blended = pipeline.wait_next().batch
-        pipeline.submit(batch, trained_steps=100)
-        search_only = pipeline.wait_next().batch
+        reanalyzed = pipeline.wait_next().batch
 
-        torch.testing.assert_close(
-            replay_only.policy_targets,
-            batch.policy_targets,
-        )
-        assert not torch.equal(search_only.policy_targets, batch.policy_targets)
-        torch.testing.assert_close(
-            blended.policy_targets,
-            torch.lerp(
-                batch.policy_targets,
-                search_only.policy_targets,
-                0.5,
-            ),
-        )
+        assert not torch.equal(reanalyzed.policy_targets, batch.policy_targets)
     finally:
         pipeline.close()
 
@@ -283,8 +260,6 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
         _pipeline(target_update_interval=0)
     with pytest.raises(ValueError, match="cache_target_ttl"):
         _pipeline(cache_target_ttl=-1)
-    with pytest.raises(ValueError, match="policy_reanalysis_maturity_steps"):
-        _pipeline(policy_reanalysis_maturity_steps=0)
 
     with pytest.raises(ValueError, match="prefetch_batches"):
         ReanalysisPipeline(
@@ -294,7 +269,6 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             policy_chunk_size=4,
             cache_targets=True,
             cache_target_ttl=200,
-            policy_reanalysis_maturity_steps=100,
             rng_seed=0,
             support_min=-300,
             support_max=300,
