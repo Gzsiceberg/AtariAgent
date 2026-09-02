@@ -17,7 +17,6 @@ from atariagent.training.config import (
     puct_root_noise_temperature,
     register_train_agent_config,
     scheduled_cache_clear_interval,
-    scheduled_target_update_interval,
     target_network_update_due,
     visit_softmax_temperature,
 )
@@ -112,10 +111,23 @@ def test_reanalysis_uses_target_network_defaults() -> None:
     assert config.prefetch_batches == 2
     assert config.timeout_seconds == pytest.approx(600.0)
     assert config.worker_num_threads == 4
-    assert config.initial_target_update_interval == 200
     assert config.target_update_interval == 1_000
-    assert config.target_update_ramp_steps == 10_000
-    assert config.target_update_stages == 5
+
+
+def test_target_network_uses_fixed_update_interval() -> None:
+    interval = ReanalysisConfig().target_update_interval
+    last_update = 0
+    due_updates = []
+    for update in range(1, 3_001):
+        if target_network_update_due(
+            update,
+            last_update=last_update,
+            interval=interval,
+        ):
+            due_updates.append(update)
+            last_update = update
+
+    assert due_updates == [1_000, 2_000, 3_000]
 
 
 def test_cache_clear_interval_ramps_over_first_half_of_training() -> None:
@@ -129,43 +141,6 @@ def test_cache_clear_interval_ramps_over_first_half_of_training() -> None:
         for update in (0, 2_500, 5_000, 10_000)
     ]
     assert intervals == [100, 550, 1_000, 1_000]
-
-
-def test_target_update_interval_increases_in_five_stages() -> None:
-    intervals = [
-        scheduled_target_update_interval(
-            update,
-            ramp_steps=10_000,
-            initial_interval=200,
-            final_interval=1_000,
-            stages=5,
-        )
-        for update in (0, 2_499, 2_500, 5_000, 7_500, 10_000, 20_000)
-    ]
-    assert intervals == [200, 200, 400, 600, 800, 1_000, 1_000]
-
-
-def test_target_network_uses_scheduled_update_interval() -> None:
-    last_update = 0
-    due_updates = []
-    for update in range(1, 10_001):
-        interval = scheduled_target_update_interval(
-            update,
-            ramp_steps=10_000,
-            initial_interval=200,
-            final_interval=1_000,
-            stages=5,
-        )
-        if target_network_update_due(
-            update,
-            last_update=last_update,
-            interval=interval,
-        ):
-            due_updates.append(update)
-            last_update = update
-
-    assert due_updates[:4] == [200, 400, 600, 800]
-    assert due_updates[-1] == 9_600
 
 
 def test_final_evaluation_uses_efficientzero_v1_raw_frame_horizon() -> None:

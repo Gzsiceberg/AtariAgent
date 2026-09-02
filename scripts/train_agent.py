@@ -56,7 +56,6 @@ from atariagent.training.config import (
     next_collection_vector_steps,
     puct_root_noise_temperature,
     register_train_agent_config,
-    scheduled_target_update_interval,
     target_network_update_due,
     visit_softmax_temperature,
 )
@@ -376,16 +375,7 @@ def main(config: TrainAgentConfig) -> None:
             config.reanalysis.initial_cache_clear_interval,
             "initial_cache_clear_interval",
         ),
-        (
-            config.reanalysis.initial_target_update_interval,
-            "initial_target_update_interval",
-        ),
         (config.reanalysis.target_update_interval, "target_update_interval"),
-        (
-            config.reanalysis.target_update_ramp_steps,
-            "target_update_ramp_steps",
-        ),
-        (config.reanalysis.target_update_stages, "target_update_stages"),
         (
             config.reanalysis.policy_reanalysis_maturity_steps,
             "policy_reanalysis_maturity_steps",
@@ -395,23 +385,14 @@ def main(config: TrainAgentConfig) -> None:
             raise TypeError(f"reanalysis.{name} must be an integer")
         if value <= 0:
             raise ValueError(f"reanalysis.{name} must be positive")
-    for initial_interval, name in (
-        (
-            config.reanalysis.initial_cache_clear_interval,
-            "initial_cache_clear_interval",
-        ),
-        (
-            config.reanalysis.initial_target_update_interval,
-            "initial_target_update_interval",
-        ),
+    if (
+        config.reanalysis.initial_cache_clear_interval
+        > config.reanalysis.target_update_interval
     ):
-        if initial_interval > config.reanalysis.target_update_interval:
-            raise ValueError(
-                f"reanalysis.{name} must not exceed "
-                "reanalysis.target_update_interval"
-            )
-    if config.reanalysis.target_update_stages < 2:
-        raise ValueError("reanalysis.target_update_stages must be at least two")
+        raise ValueError(
+            "reanalysis.initial_cache_clear_interval must not exceed "
+            "reanalysis.target_update_interval"
+        )
     if config.reanalysis.policy_chunk_size <= 0:
         raise ValueError("reanalysis.policy_chunk_size must be positive")
     if not isinstance(config.reanalysis.cache_targets, bool):
@@ -809,19 +790,10 @@ def main(config: TrainAgentConfig) -> None:
             batch_worker.complete(ready, metrics.priorities)
 
             update += 1
-            target_update_interval = scheduled_target_update_interval(
-                update,
-                ramp_steps=config.reanalysis.target_update_ramp_steps,
-                initial_interval=(
-                    config.reanalysis.initial_target_update_interval
-                ),
-                final_interval=config.reanalysis.target_update_interval,
-                stages=config.reanalysis.target_update_stages,
-            )
             if target_network_update_due(
                 update,
                 last_update=target_version,
-                interval=target_update_interval,
+                interval=config.reanalysis.target_update_interval,
             ):
                 target_state = make_target_state(
                     agent.representation_network,
@@ -927,7 +899,6 @@ def main(config: TrainAgentConfig) -> None:
                     config.self_play.steps_per_iteration,
                 )
                 warming_up = len(replay) < minimum_replay_size
-                collection_mode = "RANDOM" if warming_up else search_mode
                 previous_transitions = worker.total_transitions
                 if agent.search.config.search_algorithm == "puct":
                     temperature = visit_softmax_temperature(
@@ -941,7 +912,6 @@ def main(config: TrainAgentConfig) -> None:
                         temperature=temperature,
                         root_noise_temperature=root_noise_temperature,
                         gumbel_sampling=False,
-                        random_policy=warming_up,
                     )
                 else:
                     temperature = None
@@ -950,7 +920,6 @@ def main(config: TrainAgentConfig) -> None:
                         vector_steps,
                         root_noise_temperature=0.0,
                         gumbel_sampling=True,
-                        random_policy=warming_up,
                     )
                 self_play_progress.update(
                     worker.total_transitions - previous_transitions
@@ -969,11 +938,11 @@ def main(config: TrainAgentConfig) -> None:
                     "iteration": collection_iteration,
                     "added": insertion.added_transitions,
                     "replay": f"{len(replay)}/{replay.max_transitions}",
-                    "mode": collection_mode,
+                    "mode": search_mode,
                 }
-                if temperature is not None and not warming_up:
+                if temperature is not None:
                     progress_stats["temperature"] = f"{temperature:.2f}"
-                if root_noise_temperature is not None and not warming_up:
+                if root_noise_temperature is not None:
                     progress_stats["root_noise"] = (
                         f"{root_noise_temperature:.2f}"
                     )
@@ -1017,7 +986,7 @@ def main(config: TrainAgentConfig) -> None:
                         f"reward_std_10={recent_stats.std:.2f} "
                         f"reward_min_10={min(recent_rewards):.2f} "
                         f"reward_max_10={max(recent_rewards):.2f} "
-                        f"mode={collection_mode}[/dim]"
+                        f"mode={search_mode}[/dim]"
                     )
                 if warming_up and len(replay) >= minimum_replay_size:
                     log(
