@@ -54,7 +54,6 @@ from atariagent.training.config import (
     TrainAgentConfig,
     final_evaluation_max_episode_steps,
     next_collection_vector_steps,
-    puct_root_noise_temperature,
     register_train_agent_config,
     target_network_update_due,
     visit_softmax_temperature,
@@ -643,9 +642,6 @@ def main(config: TrainAgentConfig) -> None:
                 target_update_interval=(
                     config.reanalysis.target_update_interval
                 ),
-                root_noise_total_steps=(
-                    config.training.steps + config.training.final_steps
-                ),
                 device=device,
             )
             pipeline.publish_weights(
@@ -907,9 +903,7 @@ def main(config: TrainAgentConfig) -> None:
                     temperature = visit_softmax_temperature(
                         update, config.training.steps
                     )
-                    root_noise_temperature = puct_root_noise_temperature(
-                        update, config.training.steps
-                    )
+                    root_noise_temperature = 1.0
                     grouped = worker.run(
                         vector_steps,
                         temperature=temperature,

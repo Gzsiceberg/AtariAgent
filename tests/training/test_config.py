@@ -14,7 +14,6 @@ from atariagent.training.config import (
     environment_slug,
     final_evaluation_max_episode_steps,
     next_collection_vector_steps,
-    puct_root_noise_temperature,
     register_train_agent_config,
     scheduled_cache_clear_interval,
     target_network_update_due,
@@ -169,17 +168,6 @@ def test_collection_steps_stop_at_exact_transition_budget() -> None:
     assert next_collection_vector_steps(100_000, 100_000, 4, 100) == 0
 
 
-def test_puct_root_noise_temperature_decreases_linearly_to_zero() -> None:
-    collection_steps = 100_000
-
-    assert puct_root_noise_temperature(0, collection_steps) == 1.0
-    assert puct_root_noise_temperature(25_000, collection_steps) == 0.75
-    assert puct_root_noise_temperature(50_000, collection_steps) == 0.5
-    assert puct_root_noise_temperature(75_000, collection_steps) == 0.25
-    assert puct_root_noise_temperature(100_000, collection_steps) == 0.0
-    assert puct_root_noise_temperature(120_000, collection_steps) == 0.0
-
-
 def test_visit_temperature_uses_efficientzero_v1_collection_schedule() -> None:
     collection_steps = 100_000
 
@@ -196,7 +184,3 @@ def test_visit_temperature_rejects_invalid_steps() -> None:
         visit_softmax_temperature(0, 0)
     with pytest.raises(ValueError, match="trained_steps"):
         visit_softmax_temperature(-1, 100)
-    with pytest.raises(ValueError, match="total_steps"):
-        puct_root_noise_temperature(0, 0)
-    with pytest.raises(ValueError, match="trained_steps"):
-        puct_root_noise_temperature(-1, 100)

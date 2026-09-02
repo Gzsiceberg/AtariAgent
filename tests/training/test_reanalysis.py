@@ -67,7 +67,6 @@ def _pipeline(
         prefetch_batches=prefetch_batches,
         timeout_seconds=timeout_seconds,
         target_update_interval=target_update_interval,
-        root_noise_total_steps=100,
         device="cpu",
     )
     representation = RepresentationNetwork(4)
@@ -109,15 +108,8 @@ def test_native_pipeline_configures_search_noise_from_algorithm(
         search_algorithm=search_algorithm,
     )
     try:
-        expected_temperatures = (
-            (0.0, 0.0, 0.0)
-            if search_algorithm == "gumbel"
-            else (1.0, 0.5, 0.0)
-        )
-        assert tuple(
-            pipeline.root_noise_temperature(step)
-            for step in (0, 50, 100)
-        ) == expected_temperatures
+        expected_temperature = 0.0 if search_algorithm == "gumbel" else 1.0
+        assert pipeline.root_noise_temperature() == expected_temperature
         pipeline.submit(_batch(), trained_steps=50)
         assert pipeline.wait_next().policy_roots_searched == 3
     finally:
@@ -311,7 +303,6 @@ def test_native_pipeline_validates_ordering_timeout_and_shutdown() -> None:
             prefetch_batches=0,
             timeout_seconds=1.0,
             target_update_interval=200,
-            root_noise_total_steps=100,
             device="cpu",
         )
 

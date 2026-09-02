@@ -21,8 +21,6 @@ from atariagent.models.native import (
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import SearchConfig
 
-from .config import puct_root_noise_temperature
-
 Precision = Literal["fp32", "bf16"]
 TargetState = dict[str, Tensor]
 
@@ -108,7 +106,6 @@ class ReanalysisPipeline:
         prefetch_batches: int,
         timeout_seconds: float,
         target_update_interval: int,
-        root_noise_total_steps: int,
         device: torch.device | str | None = None,
     ) -> None:
         if not isinstance(cache_targets, bool):
@@ -145,12 +142,6 @@ class ReanalysisPipeline:
             raise TypeError("target_update_interval must be an integer")
         if target_update_interval <= 0:
             raise ValueError("target_update_interval must be positive")
-        if isinstance(root_noise_total_steps, bool) or not isinstance(
-            root_noise_total_steps, int
-        ):
-            raise TypeError("root_noise_total_steps must be an integer")
-        if root_noise_total_steps <= 0:
-            raise ValueError("root_noise_total_steps must be positive")
         set_tree_search_num_threads(search_threads)
 
         self.device = torch.device(
@@ -182,7 +173,6 @@ class ReanalysisPipeline:
         self.prefetch_batches = prefetch_batches
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
-        self.root_noise_total_steps = root_noise_total_steps
         self.policy_reanalysis_maturity_steps = (
             policy_reanalysis_maturity_steps
         )
@@ -250,18 +240,9 @@ class ReanalysisPipeline:
         self._require_open()
         self._engine.clear_cache()
 
-    def root_noise_temperature(self, trained_steps: int) -> float:
-        """Return the search-noise temperature for a learner step."""
-        if isinstance(trained_steps, bool) or not isinstance(trained_steps, int):
-            raise TypeError("trained_steps must be an integer")
-        if trained_steps < 0:
-            raise ValueError("trained_steps must be non-negative")
-        if self.search_algorithm == "gumbel":
-            return 0.0
-        return puct_root_noise_temperature(
-            trained_steps,
-            self.root_noise_total_steps,
-        )
+    def root_noise_temperature(self) -> float:
+        """Return fixed training noise for PUCT and none for Gumbel search."""
+        return 0.0 if self.search_algorithm == "gumbel" else 1.0
 
     def policy_reanalysis_weight(self, trained_steps: int) -> float:
         """Return search-policy weight based on model maturity."""
@@ -277,7 +258,7 @@ class ReanalysisPipeline:
     def submit(self, batch: ReplayBatch, *, trained_steps: int = 0) -> int:
         """Queue one ReplayBatch with schedules evaluated at submission."""
         self._require_open()
-        root_noise_temperature = self.root_noise_temperature(trained_steps)
+        root_noise_temperature = self.root_noise_temperature()
         policy_reanalysis_weight = self.policy_reanalysis_weight(trained_steps)
         request_id = int(
             self._engine.submit(
