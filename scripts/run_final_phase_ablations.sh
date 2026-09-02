@@ -68,6 +68,8 @@ run_ablation() {
         "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
         "reanalysis.cache_targets=$cache_targets"
         "reanalysis.target_update_interval=$target_update_interval"
+        "training.progress_mode=always"
+        "training.progress_interval_seconds=10"
         "wandb.enabled=true"
         "wandb.project=$WANDB_PROJECT"
         "$wandb_entity_override"

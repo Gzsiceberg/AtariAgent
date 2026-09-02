@@ -79,6 +79,8 @@ class TrainingConfig:
     compile_model: bool = False
     compile_mode: str = "max-autotune"
     log_every: int = 10
+    progress_mode: str = "auto"
+    progress_interval_seconds: float = 0.1
 
 
 @dataclass

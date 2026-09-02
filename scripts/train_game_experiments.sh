@@ -305,6 +305,8 @@ run_training() {
         "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
         "evaluation.data_path=$evaluation_path"
         "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
+        training.progress_mode=always
+        training.progress_interval_seconds=10
         wandb.enabled=true
         "wandb.project=$WANDB_PROJECT"
         "wandb.tags=[atari-100k,puct,all-games,$game]"

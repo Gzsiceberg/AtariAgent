@@ -127,6 +127,25 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.final_steps == 20_000
     assert config.updates_per_iteration == 100
     assert config.compile_mode == "max-autotune"
+    assert config.progress_mode == "auto"
+    assert config.progress_interval_seconds == pytest.approx(0.1)
+
+
+def test_progress_can_be_forced_for_redirected_batch_output() -> None:
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        config = compose(
+            config_name="train_agent",
+            overrides=[
+                "training.progress_mode=always",
+                "training.progress_interval_seconds=10",
+            ],
+        )
+
+    assert config.training.progress_mode == "always"
+    assert config.training.progress_interval_seconds == pytest.approx(10.0)
 
 
 def test_reanalysis_uses_target_network_defaults() -> None:

@@ -347,6 +347,10 @@ def main(config: TrainAgentConfig) -> None:
         raise ValueError("updates_per_iteration must be positive")
     if config.training.log_every <= 0:
         raise ValueError("log_every must be positive")
+    if config.training.progress_mode not in {"auto", "always", "never"}:
+        raise ValueError("training.progress_mode must be auto, always, or never")
+    if config.training.progress_interval_seconds <= 0.0:
+        raise ValueError("training.progress_interval_seconds must be positive")
     if config.training.value_target not in {"td", "search", "mixed"}:
         raise ValueError("training.value_target must be td, search, or mixed")
     for value, name in (
@@ -678,15 +682,22 @@ def main(config: TrainAgentConfig) -> None:
                 evaluation_records,
                 environment_id=config.environment.id,
             )
+        progress_disabled = config.training.progress_mode == "never" or (
+            config.training.progress_mode == "auto" and not sys.stdout.isatty()
+        )
+        progress_options = {
+            "dynamic_ncols": True,
+            "file": sys.stdout,
+            "disable": progress_disabled,
+            "mininterval": config.training.progress_interval_seconds,
+        }
         training_progress = tqdm(
             total=total_updates,
             initial=update,
             desc="Training",
             unit="update",
             position=0,
-            dynamic_ncols=True,
-            file=sys.stdout,
-            disable=not sys.stdout.isatty(),
+            **progress_options,
         )
         self_play_progress = tqdm(
             total=config.self_play.total_transitions,
@@ -694,9 +705,7 @@ def main(config: TrainAgentConfig) -> None:
             desc="Self-play",
             unit="transition",
             position=1,
-            dynamic_ncols=True,
-            file=sys.stdout,
-            disable=not sys.stdout.isatty(),
+            **progress_options,
         )
         log(
             "[bold cyan]AtariAgent training started[/bold cyan] "

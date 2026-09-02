@@ -98,6 +98,9 @@ training:
   compile_model: true
   compile_mode: default
   log_every: 50
+  # auto shows tqdm only on a terminal; always also supports tee/log pipelines.
+  progress_mode: auto  # auto, always, or never
+  progress_interval_seconds: 0.1
 
 # Apply independent draws to the root stack and the packed sequence of
 # consistency targets, matching the released EfficientZero Atari learner.
