@@ -28,7 +28,11 @@ self_play:
 replay:
   max_transitions: 100000
   warmup_transitions: 2000
-  # EfficientZero V2 Atari uses priorities directly and full IS correction.
+  # EfficientZero V1 samples with priority**0.6 and linearly anneals the
+  # importance-sampling exponent from 0.4 to 1.0 over all learner updates.
+  priority_alpha: 0.6
+  priority_beta_initial: 0.4
+  priority_beta_final: 1.0
   priority_epsilon: 0.000001
 
 reanalysis:

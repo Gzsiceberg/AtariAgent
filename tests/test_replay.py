@@ -490,7 +490,7 @@ def test_precomputed_values_match_reference_for_boundary_types(
         )
 
 
-def test_prioritized_replay_matches_efficientzero_v2_atari() -> None:
+def test_prioritized_replay_matches_efficientzero_v1_atari() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
@@ -502,15 +502,14 @@ def test_prioritized_replay_matches_efficientzero_v2_atari() -> None:
 
     batch = replay.sample(batch_size=3)
 
-    probabilities = np.array([1.0, 4.0, 16.0])
+    probabilities = np.array([1.0, 4.0, 16.0]) ** 0.6
     probabilities /= probabilities.sum()
-    expected_weights = (3 * probabilities[batch.indices.numpy()]) ** -1.0
+    expected_weights = (3 * probabilities[batch.indices.numpy()]) ** -0.4
     expected_weights /= expected_weights.max()
-    expected_weights = expected_weights.clip(0.1, 1.0)
     np.testing.assert_allclose(
         batch.importance_weights.numpy(), expected_weights, rtol=1e-6
     )
-    assert batch.importance_weights.min() == pytest.approx(0.1)
+    assert batch.importance_weights.min() > 0.1
 
     counts = np.zeros(3, dtype=np.int64)
     for _ in range(300):
@@ -519,7 +518,7 @@ def test_prioritized_replay_matches_efficientzero_v2_atari() -> None:
     assert counts[2] > counts[1] > counts[0]
 
 
-def test_new_replay_transitions_use_prediction_target_error() -> None:
+def test_new_replay_transitions_use_current_maximum_priority() -> None:
     replay = FIFOReplayBuffer(max_transitions=10, priority_epsilon=1e-6)
     replay.add(make_trajectory(2, terminated=True))
     replay.update_priorities([0, 1], [2.0, 5.0])
@@ -534,13 +533,10 @@ def test_new_replay_transitions_use_prediction_target_error() -> None:
         )
     )
 
-    np.testing.assert_allclose(
-        replay.priorities,
-        np.array([2.0, 5.0, 9.000001]),
-    )
+    np.testing.assert_allclose(replay.priorities, np.array([2.0, 5.0, 5.0]))
 
 
-def test_initial_priority_uses_predicted_value_bootstraps() -> None:
+def test_first_replay_transitions_use_unit_priority() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=2,
         unroll_steps=1,
@@ -556,8 +552,7 @@ def test_initial_priority_uses_predicted_value_bootstraps() -> None:
         )
     )
 
-    # Prediction-bootstrapped targets are [11, 17], giving errors [1, 3].
-    np.testing.assert_allclose(replay.priorities, np.full(2, 3.000001))
+    np.testing.assert_allclose(replay.priorities, np.ones(2))
 
 
 def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
@@ -583,6 +578,10 @@ def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
         ("discount", -0.1, ValueError),
         ("discount", 1.1, ValueError),
         ("discount", float("nan"), ValueError),
+        ("priority_alpha", -0.1, ValueError),
+        ("priority_alpha", 1.1, ValueError),
+        ("priority_beta", -0.1, ValueError),
+        ("priority_beta", 1.1, ValueError),
         ("priority_epsilon", 0.0, ValueError),
         ("priority_epsilon", float("nan"), ValueError),
     ],

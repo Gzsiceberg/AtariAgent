@@ -15,7 +15,7 @@ from torch import Tensor
 from atariagent.replay import FIFOReplayBuffer
 from atariagent.replay_batch import ReplayBatch
 
-from .config import scheduled_cache_clear_interval
+from .config import linear_priority_beta, scheduled_cache_clear_interval
 from .reanalysis import ReanalysisPipeline, TargetState
 
 
@@ -86,6 +86,9 @@ class BatchWorker:
         collection_steps: int = 100_000,
         mixed_value_start_step: int = 30_000,
         mixed_value_threshold: int = 5_000,
+        priority_beta_initial: float = 0.4,
+        priority_beta_final: float = 1.0,
+        priority_beta_steps: int = 120_000,
         reanalysis_initial_cache_clear_interval: int = 100,
         reanalysis_final_cache_clear_interval: int = 1_000,
         reanalysis_cache_clear_ramp_steps: int = 50_000,
@@ -98,6 +101,7 @@ class BatchWorker:
             (collection_steps, "collection_steps"),
             (mixed_value_start_step, "mixed_value_start_step"),
             (mixed_value_threshold, "mixed_value_threshold"),
+            (priority_beta_steps, "priority_beta_steps"),
             (
                 reanalysis_initial_cache_clear_interval,
                 "reanalysis_initial_cache_clear_interval",
@@ -123,6 +127,12 @@ class BatchWorker:
             raise ValueError("collection_steps must be positive")
         if mixed_value_start_step < 0 or mixed_value_threshold < 0:
             raise ValueError("mixed value thresholds must be non-negative")
+        if priority_beta_steps <= 0:
+            raise ValueError("priority_beta_steps must be positive")
+        if not 0.0 <= priority_beta_initial <= priority_beta_final <= 1.0:
+            raise ValueError(
+                "priority beta bounds must satisfy 0 <= initial <= final <= 1"
+            )
         if (
             reanalysis_initial_cache_clear_interval <= 0
             or reanalysis_final_cache_clear_interval <= 0
@@ -153,6 +163,9 @@ class BatchWorker:
         self.collection_steps = collection_steps
         self.mixed_value_start_step = mixed_value_start_step
         self.mixed_value_threshold = mixed_value_threshold
+        self.priority_beta_initial = priority_beta_initial
+        self.priority_beta_final = priority_beta_final
+        self.priority_beta_steps = priority_beta_steps
         self.reanalysis_initial_cache_clear_interval = (
             reanalysis_initial_cache_clear_interval
         )
@@ -329,7 +342,7 @@ class BatchWorker:
 
         for step in range(run.start_step, end_step):
             self._drain_controls()
-            token, batch, sample_ms = self._sample(False)
+            token, batch, sample_ms = self._sample(False, step)
             try:
                 ready = self._transfer(
                     token,
@@ -373,7 +386,7 @@ class BatchWorker:
                 ):
                     pipeline.clear_cache()
                     self._last_reanalysis_cache_clear_step = submitted_step
-                token, batch, sample_ms = self._sample(True)
+                token, batch, sample_ms = self._sample(True, submitted_step)
                 try:
                     request_id = pipeline.submit(
                         batch,
@@ -420,6 +433,7 @@ class BatchWorker:
     def _sample(
         self,
         include_value_bootstraps: bool,
+        sample_step: int,
     ) -> tuple[int, ReplayBatch, float]:
         self._acquire_slot()
         started = perf_counter()
@@ -429,6 +443,12 @@ class BatchWorker:
                     self.batch_size,
                     include_value_bootstraps=include_value_bootstraps,
                     pin_memory=self.device.type == "cuda",
+                    priority_beta=linear_priority_beta(
+                        sample_step,
+                        self.priority_beta_steps,
+                        initial=self.priority_beta_initial,
+                        final=self.priority_beta_final,
+                    ),
                 )
             if self.device.type == "cuda" and not batch.frames.is_pinned():
                 raise RuntimeError("CUDA batch-worker input must be pinned")

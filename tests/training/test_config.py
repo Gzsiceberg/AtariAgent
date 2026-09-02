@@ -8,12 +8,14 @@ from atariagent.training.config import (
     EvaluationConfig,
     LossConfig,
     ReanalysisConfig,
+    ReplayConfig,
     SelfPlayConfig,
     TrainingConfig,
     WandbConfig,
     checkpoint_path_for_environment,
     environment_slug,
     final_evaluation_max_episode_steps,
+    linear_priority_beta,
     next_collection_vector_steps,
     proportional_training_update,
     register_train_agent_config,
@@ -32,6 +34,17 @@ def test_output_paths_are_derived_from_environment_id() -> None:
 
     with pytest.raises(ValueError, match="valid final component"):
         environment_slug("ALE/")
+
+
+def test_replay_uses_efficientzero_v1_per_defaults() -> None:
+    config = ReplayConfig()
+
+    assert config.priority_alpha == pytest.approx(0.6)
+    assert config.priority_beta_initial == pytest.approx(0.4)
+    assert config.priority_beta_final == pytest.approx(1.0)
+    assert linear_priority_beta(0, 120_000) == pytest.approx(0.4)
+    assert linear_priority_beta(100_000, 120_000) == pytest.approx(0.9)
+    assert linear_priority_beta(120_000, 120_000) == pytest.approx(1.0)
 
 
 def test_augmentation_uses_efficientzero_atari_defaults() -> None:

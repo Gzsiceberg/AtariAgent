@@ -43,6 +43,9 @@ class ReplayConfig:
 
     max_transitions: int = 10_000
     warmup_transitions: int = 2_000
+    priority_alpha: float = 0.6
+    priority_beta_initial: float = 0.4
+    priority_beta_final: float = 1.0
     priority_epsilon: float = 1e-6
 
 
@@ -256,6 +259,28 @@ def target_network_update_due(
     return update > last_update and update - last_update >= interval
 
 
+def linear_priority_beta(
+    update: int,
+    total_updates: int,
+    *,
+    initial: float = 0.4,
+    final: float = 1.0,
+) -> float:
+    """Return EfficientZero V1's linear PER importance-weight exponent."""
+    if isinstance(update, bool) or not isinstance(update, int):
+        raise TypeError("update must be an integer")
+    if isinstance(total_updates, bool) or not isinstance(total_updates, int):
+        raise TypeError("total_updates must be an integer")
+    if update < 0:
+        raise ValueError("update must be non-negative")
+    if total_updates <= 0:
+        raise ValueError("total_updates must be positive")
+    if not 0.0 <= initial <= final <= 1.0:
+        raise ValueError("priority beta bounds must satisfy 0 <= initial <= final <= 1")
+    progress = min(update / total_updates, 1.0)
+    return initial + progress * (final - initial)
+
+
 def proportional_training_update(
     collected_transitions: int,
     total_transitions: int,
@@ -338,6 +363,7 @@ __all__ = [
     "checkpoint_path_for_environment",
     "environment_slug",
     "final_evaluation_max_episode_steps",
+    "linear_priority_beta",
     "next_collection_vector_steps",
     "proportional_training_update",
     "register_train_agent_config",

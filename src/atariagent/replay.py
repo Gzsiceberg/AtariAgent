@@ -70,6 +70,8 @@ class FIFOReplayBuffer:
         unroll_steps: int = 5,
         td_steps: int = 5,
         discount: float = 0.997,
+        priority_alpha: float = 0.6,
+        priority_beta: float = 0.4,
         priority_epsilon: float = 1e-6,
         seed: int = 0,
     ) -> None:
@@ -87,6 +89,12 @@ class FIFOReplayBuffer:
                 raise ValueError(f"{name} must be positive")
         if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be finite and in [0, 1]")
+        for value, name in (
+            (priority_alpha, "priority_alpha"),
+            (priority_beta, "priority_beta"),
+        ):
+            if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and in [0, 1]")
         if not np.isfinite(priority_epsilon) or priority_epsilon <= 0.0:
             raise ValueError("priority_epsilon must be finite and positive")
 
@@ -94,6 +102,8 @@ class FIFOReplayBuffer:
         self._unroll_steps = unroll_steps
         self._td_steps = td_steps
         self._discount = float(discount)
+        self._priority_alpha = float(priority_alpha)
+        self._priority_beta = float(priority_beta)
         self._priority_epsilon = float(priority_epsilon)
         self._reward_discounts = self.discount ** np.arange(
             self.td_steps, dtype=np.float64
@@ -330,10 +340,12 @@ class FIFOReplayBuffer:
             self._transition_ids = self._transition_ids[evicted_transitions:]
             self._priorities = self._priorities[evicted_transitions:]
 
+        # EfficientZero V1's --use_max_priority mode assigns every newly
+        # collected transition the current replay maximum, independent of its
+        # insertion-time prediction error.
         maximum_priority = (
             float(self._priorities.max()) if self._priorities.size else 1.0
         )
-        maximum_priority = max(maximum_priority, stored.initial_priority)
         transition_ids = np.arange(
             self._next_transition_id,
             self._next_transition_id + trajectory_length,
@@ -388,6 +400,7 @@ class FIFOReplayBuffer:
         *,
         include_value_bootstraps: bool = True,
         pin_memory: bool = False,
+        priority_beta: float | None = None,
     ) -> ReplayBatch:
         """Prioritize unique starts and copy their prepared local context."""
         self._validate_sample_request(batch_size)
@@ -395,9 +408,14 @@ class FIFOReplayBuffer:
             raise TypeError("include_value_bootstraps must be a boolean")
         if not isinstance(pin_memory, bool):
             raise TypeError("pin_memory must be a boolean")
+        resolved_beta = self._priority_beta if priority_beta is None else priority_beta
+        if not np.isfinite(resolved_beta) or not 0.0 <= resolved_beta <= 1.0:
+            raise ValueError("priority_beta must be finite and in [0, 1]")
         assert self._action_space_size is not None
 
-        locations, transition_ids, importance_weights = self._sample_context(batch_size)
+        locations, transition_ids, importance_weights = self._sample_context(
+            batch_size, priority_beta=float(resolved_beta)
+        )
         arrays = self._allocate_batch_arrays(
             batch_size,
             include_value_bootstraps=include_value_bootstraps,
@@ -600,13 +618,17 @@ class FIFOReplayBuffer:
             )
 
     def _sample_context(
-        self, batch_size: int
+        self,
+        batch_size: int,
+        *,
+        priority_beta: float | None = None,
     ) -> tuple[
         list[tuple[_StoredTrajectory, int]],
         np.ndarray,
         np.ndarray,
     ]:
-        probabilities = self._priorities.copy()
+        resolved_beta = self._priority_beta if priority_beta is None else priority_beta
+        probabilities = self._priorities**self._priority_alpha
         probabilities /= probabilities.sum()
         flat_indices = self._rng.choice(
             self._transition_count,
@@ -615,11 +637,12 @@ class FIFOReplayBuffer:
             p=probabilities,
         )
         sampled_probabilities = probabilities[flat_indices]
-        importance_weights = 1.0 / (self._transition_count * sampled_probabilities)
+        importance_weights = (
+            self._transition_count * sampled_probabilities
+        ) ** -resolved_beta
+        # EfficientZero V1 normalizes by the largest weight in this sampled
+        # batch and does not floor the result.
         importance_weights /= importance_weights.max()
-        # EfficientZero V2 Atari floors normalized importance weights so
-        # highly probable samples still contribute meaningfully to the loss.
-        np.clip(importance_weights, 0.1, 1.0, out=importance_weights)
         return (
             self._locations_for_indices(flat_indices),
             self._transition_ids[flat_indices],

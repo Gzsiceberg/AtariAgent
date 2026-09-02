@@ -41,6 +41,7 @@ class _FakeReplay:
     def __init__(self, sample) -> None:
         self._sample = sample
         self.priority_updates: list[tuple[torch.Tensor, torch.Tensor]] = []
+        self.priority_betas: list[float] = []
 
     def sample(
         self,
@@ -48,9 +49,11 @@ class _FakeReplay:
         *,
         include_value_bootstraps: bool,
         pin_memory: bool,
+        priority_beta: float,
     ):
         assert batch_size == 2
         assert not pin_memory
+        self.priority_betas.append(priority_beta)
         return self._sample(include_value_bootstraps)
 
     def update_priorities(
@@ -121,6 +124,27 @@ def test_worker_bounds_sampling_when_consumer_is_slow() -> None:
     assert ready_steps == [10, 11, 12, 13, 14]
     assert sampled == ready_steps
     assert len(replay.priority_updates) == 5
+
+
+def test_worker_anneals_priority_beta_by_learner_step() -> None:
+    replay = _FakeReplay(lambda _: _batch().without_value_bootstraps())
+    with BatchWorker(
+        replay,  # type: ignore[arg-type]
+        batch_size=2,
+        device="cpu",
+        priority_beta_initial=0.4,
+        priority_beta_final=1.0,
+        priority_beta_steps=100,
+        max_in_flight=1,
+        ready_prefetch=1,
+        timeout_seconds=2.0,
+    ) as worker:
+        worker.start(50, 1)
+        ready = worker.next_ready()
+        worker.complete(ready, torch.ones(2))
+        worker.wait_idle()
+
+    assert replay.priority_betas == pytest.approx([0.7])
 
 
 def test_worker_propagates_sampling_failure() -> None:

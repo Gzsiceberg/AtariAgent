@@ -339,6 +339,17 @@ def main(config: TrainAgentConfig) -> None:
     )
     if config.training.batch_size < 2:
         raise ValueError("batch_size must be at least 2 for batch normalization")
+    if not 0.0 <= config.replay.priority_alpha <= 1.0:
+        raise ValueError("replay.priority_alpha must be in [0, 1]")
+    if not (
+        0.0
+        <= config.replay.priority_beta_initial
+        <= config.replay.priority_beta_final
+        <= 1.0
+    ):
+        raise ValueError(
+            "replay priority beta bounds must satisfy 0 <= initial <= final <= 1"
+        )
     if config.training.steps <= 0:
         raise ValueError("training.steps must be positive")
     if config.training.final_steps < 0:
@@ -600,6 +611,8 @@ def main(config: TrainAgentConfig) -> None:
             unroll_steps=config.training.unroll_steps,
             td_steps=config.training.td_steps,
             discount=discount,
+            priority_alpha=config.replay.priority_alpha,
+            priority_beta=config.replay.priority_beta_initial,
             priority_epsilon=config.replay.priority_epsilon,
             seed=config.seed,
         )
@@ -789,6 +802,11 @@ def main(config: TrainAgentConfig) -> None:
                 collection_steps=config.training.steps,
                 mixed_value_start_step=(config.training.mixed_value_start_step),
                 mixed_value_threshold=config.training.mixed_value_threshold,
+                priority_beta_initial=config.replay.priority_beta_initial,
+                priority_beta_final=config.replay.priority_beta_final,
+                priority_beta_steps=(
+                    config.training.steps + config.training.final_steps
+                ),
                 reanalysis_initial_cache_clear_interval=(
                     config.reanalysis.initial_cache_clear_interval
                 ),
