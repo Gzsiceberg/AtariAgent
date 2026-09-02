@@ -254,6 +254,28 @@ def target_network_update_due(
     return update > last_update and update - last_update >= interval
 
 
+def proportional_training_update(
+    collected_transitions: int,
+    total_transitions: int,
+    training_steps: int,
+) -> int:
+    """Return the online learner update matching collection progress."""
+    for value, name in (
+        (collected_transitions, "collected_transitions"),
+        (total_transitions, "total_transitions"),
+        (training_steps, "training_steps"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+    if total_transitions <= 0 or training_steps <= 0:
+        raise ValueError("total_transitions and training_steps must be positive")
+    if not 0 <= collected_transitions <= total_transitions:
+        raise ValueError(
+            "collected_transitions must be between zero and total_transitions"
+        )
+    return collected_transitions * training_steps // total_transitions
+
+
 def next_collection_vector_steps(
     collected_transitions: int,
     total_transitions: int,
@@ -315,6 +337,7 @@ __all__ = [
     "environment_slug",
     "final_evaluation_max_episode_steps",
     "next_collection_vector_steps",
+    "proportional_training_update",
     "register_train_agent_config",
     "scheduled_cache_clear_interval",
     "target_network_update_due",

@@ -59,7 +59,8 @@ training:
   # learner-only updates.
   steps: 100000
   final_steps: 20000
-  # Four environments collect 400 transitions per iteration on average.
+  # Bound learner work into chunks while matching update progress to the
+  # fraction of the 100k transition budget already collected.
   updates_per_iteration: 400
   batch_size: 256
   unroll_steps: 5

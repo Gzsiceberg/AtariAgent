@@ -54,6 +54,7 @@ from atariagent.training.config import (
     TrainAgentConfig,
     final_evaluation_max_episode_steps,
     next_collection_vector_steps,
+    proportional_training_update,
     register_train_agent_config,
     target_network_update_due,
     visit_softmax_temperature,
@@ -868,6 +869,18 @@ def main(config: TrainAgentConfig) -> None:
                 apply_gpu_update(ready)
             batch_worker.wait_idle()
 
+        def run_updates_to(target_update: int) -> None:
+            """Advance in bounded chunks before collecting more experience."""
+            if target_update < update:
+                raise ValueError("target update must not precede current update")
+            while update < target_update:
+                run_updates(
+                    min(
+                        config.training.updates_per_iteration,
+                        target_update - update,
+                    )
+                )
+
         minimum_replay_size = max(
             config.replay.warmup_transitions,
             config.training.batch_size,
@@ -997,10 +1010,11 @@ def main(config: TrainAgentConfig) -> None:
                 ):
                     continue
 
-                run_updates(
-                    min(
-                        config.training.updates_per_iteration,
-                        config.training.steps - update,
+                run_updates_to(
+                    proportional_training_update(
+                        worker.total_transitions,
+                        config.self_play.total_transitions,
+                        config.training.steps,
                     )
                 )
 
@@ -1031,7 +1045,9 @@ def main(config: TrainAgentConfig) -> None:
             f"[dim]transitions={config.self_play.total_transitions:,} "
             f"{reward_summary}[/dim]"
         )
-        run_updates(config.training.steps - update)
+        # Normally already exact from proportional pacing; retain this as a
+        # safety net when replay only becomes trainable after collection ends.
+        run_updates_to(config.training.steps)
 
         pre_final_path = (
             None

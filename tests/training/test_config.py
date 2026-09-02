@@ -14,6 +14,7 @@ from atariagent.training.config import (
     environment_slug,
     final_evaluation_max_episode_steps,
     next_collection_vector_steps,
+    proportional_training_update,
     register_train_agent_config,
     scheduled_cache_clear_interval,
     target_network_update_due,
@@ -166,6 +167,23 @@ def test_collection_steps_stop_at_exact_transition_budget() -> None:
 
     assert collected == 100_000
     assert next_collection_vector_steps(100_000, 100_000, 4, 100) == 0
+
+
+def test_training_update_tracks_collection_progress_after_warmup() -> None:
+    assert proportional_training_update(0, 100_000, 100_000) == 0
+    assert proportional_training_update(2_400, 100_000, 100_000) == 2_400
+    assert proportional_training_update(50_000, 100_000, 100_000) == 50_000
+    assert proportional_training_update(100_000, 100_000, 100_000) == 100_000
+    assert proportional_training_update(25, 100, 200) == 50
+
+
+def test_proportional_training_update_validates_budgets() -> None:
+    with pytest.raises(TypeError, match="collected_transitions"):
+        proportional_training_update(1.0, 100, 100)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="must be positive"):
+        proportional_training_update(0, 0, 100)
+    with pytest.raises(ValueError, match="between zero"):
+        proportional_training_update(101, 100, 100)
 
 
 def test_visit_temperature_uses_efficientzero_v1_collection_schedule() -> None:
