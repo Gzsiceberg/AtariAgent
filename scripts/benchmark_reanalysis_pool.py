@@ -64,6 +64,10 @@ def make_batch(args: argparse.Namespace) -> ReplayBatch:
         value_bootstrap_values=torch.zeros(args.batch_size, states),
         value_bootstrap_discounts=torch.ones(args.batch_size, states),
         value_bootstrap_mask=torch.ones(args.batch_size, states, dtype=torch.bool),
+        reanalysis_state_ids=(
+            torch.arange(args.batch_size)[:, None]
+            + torch.arange(states)[None, :]
+        ),
     )
 
 

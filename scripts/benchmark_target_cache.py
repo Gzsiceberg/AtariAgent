@@ -88,14 +88,20 @@ def main() -> None:
     base_batch = make_batch(args)
     rng = np.random.default_rng(0)
     maximum_start = args.replay_size - args.unroll_steps
+    sampled_starts = tuple(
+        torch.from_numpy(
+            rng.choice(maximum_start, args.batch_size, replace=False)
+        ).long()
+        for _ in range(args.updates)
+    )
+    state_offsets = torch.arange(args.unroll_steps + 1)
     batches = tuple(
         replace(
             base_batch,
-            indices=torch.from_numpy(
-                rng.choice(maximum_start, args.batch_size, replace=False)
-            ).long(),
+            indices=starts,
+            reanalysis_state_ids=starts[:, None] + state_offsets[None, :],
         )
-        for _ in range(args.updates)
+        for starts in sampled_starts
     )
     representation = RepresentationNetwork(12).to(device)
     prediction = PredictionNetwork(args.action_space_size).to(device)

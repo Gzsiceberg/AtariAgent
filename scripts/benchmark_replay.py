@@ -122,6 +122,8 @@ def replay_storage_bytes(replay: FIFOReplayBuffer) -> int:
         getattr(trajectory, name).nbytes
         for trajectory in replay._trajectories
         for name in array_names
+    ) + sum(
+        state_ids.nbytes for state_ids in replay._reanalysis_state_ids
     ) + replay._transition_ids.nbytes + replay._priorities.nbytes
 
 

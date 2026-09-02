@@ -25,7 +25,9 @@ class ReplayBatch:
     stored bootstrap terms so reanalysis can refresh TD endpoints without
     changing replay. Search values and zero-based transition ages (the number
     of newer replay transitions) are temporary metadata used to select
-    EfficientZero V2's mixed value target before training.
+    EfficientZero V2's mixed value target before training. Reanalysis state
+    IDs identify logical states across adjacent unrolls and overlapping blocks
+    without relying on replay insertion order.
     """
 
     frames: UInt8[Tensor, "batch frames channels height width"]
@@ -49,6 +51,7 @@ class ReplayBatch:
     ) = None
     search_value_targets: Float[Tensor, "batch states"] | None = None
     transition_ages: Int[Tensor, "batch"] | None = None
+    reanalysis_state_ids: Int[Tensor, "batch states"] | None = None
 
     @property
     def batch_size(self) -> int:
@@ -233,6 +236,7 @@ class ReplayBatch:
             reanalysis_frames=None,
             search_value_targets=None,
             transition_ages=None,
+            reanalysis_state_ids=None,
         )
 
     def pin_memory(self) -> ReplayBatch:

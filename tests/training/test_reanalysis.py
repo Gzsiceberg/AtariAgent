@@ -35,6 +35,9 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
         value_bootstrap_values=torch.ones(batch_size, 2),
         value_bootstrap_discounts=torch.ones(batch_size, 2),
         value_bootstrap_mask=torch.ones(batch_size, 2, dtype=torch.bool),
+        reanalysis_state_ids=(
+            torch.arange(batch_size)[:, None] + torch.arange(2)[None, :]
+        ),
     )
 
 
@@ -150,6 +153,29 @@ def test_native_pipeline_accepts_consolidated_reanalysis_frames() -> None:
         pipeline.close()
 
 
+def test_native_pipeline_uses_explicit_state_ids_instead_of_id_arithmetic() -> None:
+    pipeline = _pipeline(prefetch_batches=1)
+    batch = replace(
+        _batch(),
+        reanalysis_state_ids=torch.tensor([[0, 10], [11, 12]]),
+    )
+    try:
+        pipeline.submit(batch)
+        first = pipeline.wait_next()
+        pipeline.submit(batch)
+        cached = pipeline.wait_next()
+
+        # The old index-plus-offset keys aliased (sample 0, offset 1) with
+        # (sample 1, offset 0). Their explicit logical state IDs are distinct.
+        assert first.policy_roots_searched == 4
+        assert first.cache_hits == 0
+        assert cached.policy_roots_searched == 0
+        assert cached.cache_hits == 4
+        assert pipeline.cache_size == 4
+    finally:
+        pipeline.close()
+
+
 def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
     pipeline = _pipeline(prefetch_batches=1)
     batch = _batch()
@@ -234,6 +260,15 @@ def test_native_pipeline_validates_native_batch_tensor_contract() -> None:
         with pytest.raises(ValueError, match="indices must be a 1D int64"):
             pipeline.submit(
                 replace(_batch(), indices=torch.arange(2, dtype=torch.int32))
+            )
+        with pytest.raises(ValueError, match="reanalysis_state_ids"):
+            pipeline.submit(replace(_batch(), reanalysis_state_ids=None))
+        with pytest.raises(ValueError, match="reanalysis_state_ids"):
+            pipeline.submit(
+                replace(
+                    _batch(),
+                    reanalysis_state_ids=torch.zeros(2, 2, dtype=torch.int32),
+                )
             )
     finally:
         pipeline.close()

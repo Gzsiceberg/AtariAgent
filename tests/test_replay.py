@@ -14,6 +14,7 @@ def make_trajectory(
     *,
     block_id: int = 0,
     episode_id: int = 0,
+    environment_index: int = 0,
     initial_value: int = 0,
     stack_size: int = 1,
     terminated: bool = False,
@@ -38,7 +39,7 @@ def make_trajectory(
             float(initial_value + step) for step in range(length)
         )
     return GameTrajectory(
-        environment_index=0,
+        environment_index=environment_index,
         episode_id=episode_id,
         block_id=block_id,
         stack_size=stack_size,
@@ -158,6 +159,9 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.transition_ages is not None
     assert batch.transition_ages.shape == (3,)
     assert batch.transition_ages.dtype == torch.long
+    assert batch.reanalysis_state_ids is not None
+    assert batch.reanalysis_state_ids.shape == (3, 6)
+    assert batch.reanalysis_state_ids.dtype == torch.long
     assert batch.importance_weights.max() == pytest.approx(1.0)
 
     sampled_start_values = batch.frames[:, 0, 0, 0, 0]
@@ -203,6 +207,57 @@ def test_replay_can_skip_target_network_bootstrap_metadata() -> None:
     assert batch.value_bootstrap_values is None
     assert batch.value_bootstrap_discounts is None
     assert batch.value_bootstrap_mask is None
+
+
+def test_reanalysis_state_ids_share_real_states_across_block_overlap() -> None:
+    replay = FIFOReplayBuffer(
+        max_transitions=20,
+        unroll_steps=2,
+        td_steps=2,
+        seed=1,
+    )
+    replay.add(make_trajectory(7, block_id=0, lookahead_steps=2))
+    replay.add(
+        make_trajectory(
+            3,
+            block_id=1,
+            initial_value=5,
+            terminated=True,
+        )
+    )
+    replay.add(
+        make_trajectory(
+            3,
+            block_id=1,
+            environment_index=1,
+            initial_value=5,
+            terminated=True,
+        )
+    )
+
+    batch = replay.sample(batch_size=11)
+    assert batch.reanalysis_state_ids is not None
+    root_values = batch.frames[:, 0, 0, 0, 0]
+    first_block_tail = int((root_values == 4).nonzero().item())
+    matching_roots = (root_values == 5).nonzero().flatten()
+    same_environment = int(
+        matching_roots[
+            batch.reanalysis_state_ids[matching_roots, 0]
+            == batch.reanalysis_state_ids[first_block_tail, 1]
+        ].item()
+    )
+    other_environment = int(
+        matching_roots[matching_roots != same_environment].item()
+    )
+
+    assert (
+        batch.reanalysis_state_ids[first_block_tail, 1]
+        == batch.reanalysis_state_ids[same_environment, 0]
+    )
+    assert (
+        batch.reanalysis_state_ids[first_block_tail, 1]
+        != batch.reanalysis_state_ids[other_environment, 0]
+    )
 
 
 def test_replay_builds_fixed_n_step_values_from_stored_root_values() -> None:

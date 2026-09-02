@@ -141,6 +141,9 @@ public:
             job->original_batch, "value_targets"
         );
         job->indices = tensor_attribute(job->original_batch, "indices");
+        job->reanalysis_state_ids = optional_tensor_attribute(
+            job->original_batch, "reanalysis_state_ids"
+        );
         job->stack_size = py::cast<std::int64_t>(
             job->original_batch.attr("stack_size")
         );
@@ -160,6 +163,11 @@ public:
             job->original_batch, "value_bootstrap_mask"
         );
         validate_batch(*job);
+        if (cache_targets_ && !job->reanalysis_state_ids) {
+            throw std::invalid_argument(
+                "cached reanalysis requires reanalysis_state_ids"
+            );
+        }
         job->submitted = Clock::now();
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -321,6 +329,7 @@ private:
         torch::Tensor value_targets;
         torch::Tensor search_value_targets;
         torch::Tensor indices;
+        std::optional<torch::Tensor> reanalysis_state_ids;
         std::optional<torch::Tensor> value_bootstrap_frames;
         std::optional<torch::Tensor> reanalysis_frames;
         std::optional<torch::Tensor> value_bootstrap_values;
@@ -413,6 +422,18 @@ private:
             throw std::invalid_argument(
                 "reanalysis batch tensors have incompatible shapes"
             );
+        }
+        if (job.reanalysis_state_ids) {
+            require_cpu(*job.reanalysis_state_ids, "reanalysis_state_ids");
+            if (job.reanalysis_state_ids->scalar_type() != torch::kLong
+                || job.reanalysis_state_ids->sizes()
+                    != job.policy_mask.sizes()
+                || !job.reanalysis_state_ids->is_contiguous()) {
+                throw std::invalid_argument(
+                    "reanalysis_state_ids must be a contiguous int64 tensor "
+                    "matching policy_mask"
+                );
+            }
         }
         if (job.reanalysis_frames) {
             require_cpu(*job.reanalysis_frames, "reanalysis_frames");
@@ -575,7 +596,7 @@ private:
                 job->policy_mask,
                 job->policy_targets,
                 job->value_targets,
-                job->indices,
+                *job->reanalysis_state_ids,
                 job->trained_step,
                 cache_target_ttl_
             );
@@ -710,6 +731,7 @@ private:
         job->frames = torch::Tensor();
         job->policy_mask = torch::Tensor();
         job->indices = torch::Tensor();
+        job->reanalysis_state_ids.reset();
         job->value_bootstrap_frames.reset();
         job->reanalysis_frames.reset();
         job->value_bootstrap_values.reset();

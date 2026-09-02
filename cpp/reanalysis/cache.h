@@ -39,7 +39,7 @@ public:
         const torch::Tensor& policy_mask,
         const torch::Tensor& policy_targets,
         const torch::Tensor& value_targets,
-        const torch::Tensor& indices,
+        const torch::Tensor& state_ids,
         std::int64_t current_step,
         std::int64_t target_ttl
     );

@@ -37,7 +37,7 @@ public:
         const torch::Tensor& policy_mask,
         const torch::Tensor& policy_targets,
         const torch::Tensor& value_targets,
-        const torch::Tensor& indices,
+        const torch::Tensor& state_ids,
         std::int64_t current_step,
         std::int64_t target_ttl
     ) {
@@ -48,9 +48,9 @@ public:
             throw std::invalid_argument("target_ttl must be non-negative");
         }
         const torch::Tensor positions = torch::nonzero(policy_mask).contiguous();
-        const torch::Tensor contiguous_indices = indices.contiguous();
+        const torch::Tensor contiguous_state_ids = state_ids.contiguous();
         const auto* position_data = positions.data_ptr<std::int64_t>();
-        const auto* index_data = contiguous_indices.data_ptr<std::int64_t>();
+        const auto* state_id_data = contiguous_state_ids.data_ptr<std::int64_t>();
         const auto state_count = policy_targets.size(1);
         const auto action_count = policy_targets.size(2);
         std::unordered_map<std::int64_t, std::size_t> miss_lookup;
@@ -60,7 +60,12 @@ public:
             const auto sample = position_data[row * 2];
             const auto offset = position_data[row * 2 + 1];
             const auto flat = sample * state_count + offset;
-            const auto state_id = index_data[sample] + offset;
+            const auto state_id = state_id_data[flat];
+            if (state_id < 0) {
+                throw std::invalid_argument(
+                    "active reanalysis state IDs must be non-negative"
+                );
+            }
             auto existing = miss_lookup.find(state_id);
             if (existing != miss_lookup.end()) {
                 result.misses[existing->second].positions.push_back(
@@ -303,7 +308,7 @@ CachePreparation ReanalysisCache::prepare(
     const torch::Tensor& policy_mask,
     const torch::Tensor& policy_targets,
     const torch::Tensor& value_targets,
-    const torch::Tensor& indices,
+    const torch::Tensor& state_ids,
     std::int64_t current_step,
     std::int64_t target_ttl
 ) {
@@ -311,7 +316,7 @@ CachePreparation ReanalysisCache::prepare(
         policy_mask,
         policy_targets,
         value_targets,
-        indices,
+        state_ids,
         current_step,
         target_ttl
     );

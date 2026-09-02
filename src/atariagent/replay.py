@@ -100,6 +100,11 @@ class FIFOReplayBuffer:
         )
         self._bootstrap_discount = float(self.discount**self.td_steps)
         self._trajectories: deque[_StoredTrajectory] = deque()
+        self._reanalysis_state_ids: deque[np.ndarray] = deque()
+        self._reanalysis_state_registry: dict[
+            tuple[int, int, int, int], tuple[int, int]
+        ] = {}
+        self._next_reanalysis_state_id = 0
         self._transition_ids = np.empty(0, dtype=np.int64)
         self._priorities = np.empty(0, dtype=np.float64)
         self._next_transition_id = 0
@@ -247,6 +252,18 @@ class FIFOReplayBuffer:
         trajectory_keys = {self._trajectory_key(item) for item in trajectories}
         if len(trajectory_keys) != len(trajectories):
             raise ValueError("replay trajectory identities must be unique")
+        reanalysis_state_ids: deque[np.ndarray] = deque()
+        reanalysis_state_registry: dict[
+            tuple[int, int, int, int], tuple[int, int]
+        ] = {}
+        next_reanalysis_state_id = 0
+        for trajectory in trajectories:
+            state_ids, next_reanalysis_state_id = self._intern_state_ids(
+                trajectory,
+                reanalysis_state_registry,
+                next_reanalysis_state_id,
+            )
+            reanalysis_state_ids.append(state_ids)
         rng = np.random.default_rng()
         try:
             rng.bit_generator.state = state["rng_state"]  # type: ignore[assignment]
@@ -254,6 +271,9 @@ class FIFOReplayBuffer:
             raise ValueError("replay RNG state is invalid") from error
 
         self._trajectories = trajectories
+        self._reanalysis_state_ids = reanalysis_state_ids
+        self._reanalysis_state_registry = reanalysis_state_registry
+        self._next_reanalysis_state_id = next_reanalysis_state_id
         self._transition_ids = transition_ids
         self._priorities = priorities
         self._next_transition_id = next_transition_id
@@ -292,8 +312,15 @@ class FIFOReplayBuffer:
 
         evicted_trajectories = 0
         evicted_transitions = 0
+        state_ids, self._next_reanalysis_state_id = self._intern_state_ids(
+            stored,
+            self._reanalysis_state_registry,
+            self._next_reanalysis_state_id,
+        )
         while self._transition_count + trajectory_length > self.max_transitions:
             evicted = self._trajectories.popleft()
+            evicted_state_ids = self._reanalysis_state_ids.popleft()
+            self._release_state_ids(evicted, evicted_state_ids)
             self._trajectory_keys.remove(self._trajectory_key(evicted))
             self._transition_count -= len(evicted)
             evicted_trajectories += 1
@@ -326,6 +353,7 @@ class FIFOReplayBuffer:
             self._stack_size = stored.stack_size
             self._frame_shape = frame_shape
         self._trajectories.append(stored)
+        self._reanalysis_state_ids.append(state_ids)
         self._trajectory_keys.add(key)
         self._transition_count += trajectory_length
         return ReplayAddResult(
@@ -660,6 +688,10 @@ class FIFOReplayBuffer:
             "indices": ((batch_size,), np.dtype(np.int64)),
             "importance_weights": ((batch_size,), np.dtype(np.float32)),
             "transition_ages": ((batch_size,), np.dtype(np.int64)),
+            "reanalysis_state_ids": (
+                (batch_size, states),
+                np.dtype(np.int64),
+            ),
         }
         if include_value_bootstraps:
             del specs["frames"]
@@ -745,13 +777,17 @@ class FIFOReplayBuffer:
             value_bootstrap_mask=optional_tensor("value_bootstrap_mask"),
             reanalysis_frames=shared_frames,
             transition_ages=torch.from_numpy(arrays["transition_ages"]),
+            reanalysis_state_ids=torch.from_numpy(
+                arrays["reanalysis_state_ids"]
+            ),
         )
 
     def _locations_for_indices(
         self, flat_indices: np.ndarray
-    ) -> list[tuple[_StoredTrajectory, int]]:
+    ) -> list[tuple[_StoredTrajectory, np.ndarray, int]]:
         """Resolve flat replay offsets with vectorized cumulative boundaries."""
         trajectories = tuple(self._trajectories)
+        state_ids = tuple(self._reanalysis_state_ids)
         lengths = np.fromiter(
             (len(trajectory) for trajectory in trajectories),
             dtype=np.int64,
@@ -762,7 +798,11 @@ class FIFOReplayBuffer:
         starts = ends - lengths
         positions = flat_indices - starts[trajectory_indices]
         return [
-            (trajectories[int(trajectory_index)], int(position))
+            (
+                trajectories[int(trajectory_index)],
+                state_ids[int(trajectory_index)],
+                int(position),
+            )
             for trajectory_index, position in zip(
                 trajectory_indices, positions, strict=True
             )
@@ -771,7 +811,7 @@ class FIFOReplayBuffer:
     def _fill_batch_arrays(
         self,
         arrays: Mapping[str, np.ndarray],
-        locations: list[tuple[_StoredTrajectory, int]],
+        locations: list[tuple[_StoredTrajectory, np.ndarray, int]],
         *,
         transition_ids: np.ndarray,
         importance_weights: np.ndarray,
@@ -796,8 +836,11 @@ class FIFOReplayBuffer:
         value_bootstrap_values = arrays.get("value_bootstrap_values")
         value_bootstrap_discounts = arrays.get("value_bootstrap_discounts")
         value_bootstrap_mask = arrays.get("value_bootstrap_mask")
+        reanalysis_state_ids = arrays["reanalysis_state_ids"]
 
-        for batch_index, (trajectory, start) in enumerate(locations):
+        for batch_index, (trajectory, trajectory_state_ids, start) in enumerate(
+            locations
+        ):
             stored_count = trajectory.stored_transition_count
             action_count = min(unroll_steps, stored_count - start)
             frame_count = stack_size + action_count
@@ -847,6 +890,10 @@ class FIFOReplayBuffer:
             ]
             if policy_count < state_count:
                 policy_mask[batch_index, :policy_count] = True
+            reanalysis_state_ids[batch_index].fill(-1)
+            reanalysis_state_ids[batch_index, :policy_count] = (
+                trajectory_state_ids[start : start + policy_count]
+            )
 
             value_count = min(state_count, stored_count + 1 - start)
             if value_count < state_count:
@@ -909,6 +956,61 @@ class FIFOReplayBuffer:
         # has age zero and exactly ``freshness_threshold`` transitions satisfy
         # ``age < freshness_threshold``.
         arrays["transition_ages"][:] = self._next_transition_id - 1 - transition_ids
+
+    @staticmethod
+    def _logical_state_key(
+        trajectory: _StoredTrajectory,
+        position: int,
+    ) -> tuple[int, int, int, int]:
+        block_offset, block_position = divmod(position, len(trajectory))
+        return (
+            trajectory.environment_index,
+            trajectory.episode_id,
+            trajectory.block_id + block_offset,
+            block_position,
+        )
+
+    @classmethod
+    def _intern_state_ids(
+        cls,
+        trajectory: _StoredTrajectory,
+        registry: dict[tuple[int, int, int, int], tuple[int, int]],
+        next_state_id: int,
+    ) -> tuple[np.ndarray, int]:
+        """Assign compact IDs while sharing canonical overlapping states."""
+        state_ids = np.empty(trajectory.stored_transition_count, dtype=np.int64)
+        for position in range(trajectory.stored_transition_count):
+            key = cls._logical_state_key(trajectory, position)
+            registered = registry.get(key)
+            if registered is None:
+                state_id = next_state_id
+                next_state_id += 1
+                registry[key] = (state_id, 1)
+            else:
+                state_id, references = registered
+                registry[key] = (state_id, references + 1)
+            state_ids[position] = state_id
+        state_ids.setflags(write=False)
+        return state_ids, next_state_id
+
+    def _release_state_ids(
+        self,
+        trajectory: _StoredTrajectory,
+        state_ids: np.ndarray,
+    ) -> None:
+        """Release canonical identities once no stored block references them."""
+        for position, raw_state_id in enumerate(state_ids):
+            key = self._logical_state_key(trajectory, position)
+            state_id, references = self._reanalysis_state_registry[key]
+            if state_id != int(raw_state_id):
+                raise RuntimeError("reanalysis state identity is inconsistent")
+            if references == 1:
+                del self._reanalysis_state_registry[key]
+            else:
+                self._reanalysis_state_registry[key] = (
+                    state_id,
+                    references - 1,
+                )
 
     @staticmethod
     def _trajectory_key(
