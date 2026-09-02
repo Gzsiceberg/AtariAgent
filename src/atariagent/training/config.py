@@ -29,6 +29,7 @@ class SelfPlayConfig:
     total_transitions: int = 100_000
     num_simulations: int = 50
     search_algorithm: str = "puct"
+    root_exploration_fraction: float = 0.25
     c_visit: float = 50.0
     c_scale: float = 0.1
     steps_per_iteration: int = 100

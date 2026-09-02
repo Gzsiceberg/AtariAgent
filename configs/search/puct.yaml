@@ -4,3 +4,4 @@
 self_play:
   search_algorithm: puct
   num_simulations: 50
+  root_exploration_fraction: 0.25

@@ -47,6 +47,7 @@ def test_self_play_defaults_to_50_simulation_puct() -> None:
 
     assert config.search_algorithm == "puct"
     assert config.num_simulations == 50
+    assert config.root_exploration_fraction == pytest.approx(0.25)
 
 
 def test_search_presets_select_their_simulation_budgets() -> None:
@@ -55,10 +56,16 @@ def test_search_presets_select_their_simulation_budgets() -> None:
 
     with initialize_config_dir(version_base=None, config_dir=config_dir):
         puct = compose(config_name="train_agent")
+        custom_puct = compose(
+            config_name="train_agent",
+            overrides=["self_play.root_exploration_fraction=0.4"],
+        )
         gumbel = compose(config_name="train_agent", overrides=["search=gumbel"])
 
     assert puct.self_play.search_algorithm == "puct"
     assert puct.self_play.num_simulations == 50
+    assert puct.self_play.root_exploration_fraction == pytest.approx(0.25)
+    assert custom_puct.self_play.root_exploration_fraction == pytest.approx(0.4)
     assert puct.reanalysis.initial_cache_clear_interval == 100
     assert gumbel.self_play.search_algorithm == "gumbel"
     assert gumbel.self_play.num_simulations == 16

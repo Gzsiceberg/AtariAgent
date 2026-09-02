@@ -528,6 +528,9 @@ def main(config: TrainAgentConfig) -> None:
                 discount=discount,
                 value_prefix_horizon=config.training.lstm_horizon,
                 search_algorithm=config.self_play.search_algorithm,
+                root_exploration_fraction=(
+                    config.self_play.root_exploration_fraction
+                ),
                 num_top_actions=num_top_actions,
                 c_visit=config.self_play.c_visit,
                 c_scale=config.self_play.c_scale,
