@@ -562,15 +562,14 @@ private:
                 }
             } catch (...) {
                 job->error = std::current_exception();
-                if (job->kind == Kind::Request) {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    completed_.push_back(job);
-                    result_ready_.notify_one();
-                } else {
+                if (job->kind != Kind::Request) {
                     std::lock_guard<std::mutex> lock(mutex_);
                     failure_ = job->error;
                     result_ready_.notify_all();
                 }
+            }
+            if (job->kind == Kind::Request) {
+                complete_request(job);
             }
             {
                 std::lock_guard<std::mutex> lock(job->done_mutex);
@@ -578,6 +577,14 @@ private:
             }
             job->done_cv.notify_all();
         }
+    }
+
+    void complete_request(const std::shared_ptr<Job>& job) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            completed_.push_back(job);
+        }
+        result_ready_.notify_one();
     }
 
     void process_weights(const std::shared_ptr<Job>& job) {
@@ -697,11 +704,6 @@ private:
         ).count();
         job->peak_memory_bytes = peak_memory();
         release_request_inputs(job.get());
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            completed_.push_back(job);
-        }
-        result_ready_.notify_one();
     }
 
     void run_target(
