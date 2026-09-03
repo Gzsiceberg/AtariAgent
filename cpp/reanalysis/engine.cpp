@@ -20,7 +20,6 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -193,9 +192,9 @@ public:
             }
             job->request_id = next_request_id_++;
             job->version = published_version_;
-            pending_[job->request_id] = job;
             jobs_.push_back(job);
-            max_pending_ = std::max(max_pending_, pending_count_locked());
+            ++pending_count_;
+            max_pending_ = std::max(max_pending_, pending_count_);
         }
         work_ready_.notify_one();
         return job->request_id;
@@ -231,7 +230,7 @@ public:
                 }
                 job = completed_.front();
                 completed_.pop_front();
-                pending_.erase(job->request_id);
+                --pending_count_;
             }
         }
         if (timed_out) {
@@ -936,12 +935,12 @@ private:
         py::gil_scoped_acquire acquire;
         jobs_.clear();
         completed_.clear();
-        pending_.clear();
+        pending_count_ = 0;
         cache_.clear();
         target_.reset();
     }
 
-    std::size_t pending_count_locked() const { return pending_.size(); }
+    std::size_t pending_count_locked() const { return pending_count_; }
 
     std::shared_ptr<ValueTargetNetwork> target_;
     torch::Device device_;
@@ -955,7 +954,6 @@ private:
     std::condition_variable result_ready_;
     std::deque<std::shared_ptr<Job>> jobs_;
     std::deque<std::shared_ptr<Job>> completed_;
-    std::unordered_map<std::int64_t, std::shared_ptr<Job>> pending_;
     ReanalysisCache cache_;
     std::thread worker_;
     std::exception_ptr failure_;
@@ -963,6 +961,7 @@ private:
     std::int64_t next_request_id_ = 0;
     std::int64_t published_version_ = -1;
     std::int64_t active_version_ = -1;
+    std::size_t pending_count_ = 0;
     std::size_t max_pending_ = 0;
     std::size_t cache_size_ = 0;
 };
