@@ -30,6 +30,8 @@ RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RUN_ROOT="${RUN_ROOT:-runs/final_phase_ablations/$RUN_ID}"
 SNAPSHOT_PATH="${SNAPSHOT_PATH:-checkpoints/Asterix-v5/agent_pre_final.pt}"
 ENVIRONMENT_ID="${ENVIRONMENT_ID:-ALE/Asterix-v5}"
+GAME_NAME="${ENVIRONMENT_ID##*/}"
+GAME_NAME="${GAME_NAME%-v5}"
 WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
@@ -90,6 +92,7 @@ run_ablation() {
         "wandb.enabled=true"
         "wandb.project=$WANDB_PROJECT"
         "$wandb_entity_override"
+        "wandb.name=${GAME_NAME}_${name}"
         "wandb.tags=[final-phase-ablation,$name]"
     )
 

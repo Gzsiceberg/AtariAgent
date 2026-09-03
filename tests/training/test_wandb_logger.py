@@ -47,7 +47,7 @@ def make_train_metrics() -> TrainMetrics:
     )
 
 
-def test_wandb_run_uses_game_and_repository_commit_as_name(
+def test_wandb_run_uses_game_and_optional_suffix_as_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run = FakeRun()
@@ -58,14 +58,15 @@ def test_wandb_run_uses_game_and_repository_commit_as_name(
         return run
 
     monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=fake_init))
+    assert wandb_run_name("ALE/MsPacman-v5") == "MsPacman"
     logger = WandbLogger.initialize(
         WandbConfig(enabled=True),
-        run_name=wandb_run_name("ALE/MsPacman-v5", "0123456789abcdef"),
+        run_name=wandb_run_name("ALE/MsPacman-v5", "mixed-threshold-20000"),
         run_config={"seed": 2},
     )
 
     assert logger.enabled
-    assert initialization["name"] == "MsPacman_0123456789abcdef"
+    assert initialization["name"] == "MsPacman_mixed-threshold-20000"
 
 
 def test_wandb_logger_emits_training_metrics() -> None:

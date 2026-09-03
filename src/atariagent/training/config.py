@@ -159,6 +159,7 @@ class WandbConfig:
     enabled: bool = False
     project: str = "AtariAgent"
     entity: str | None = None
+    name: str | None = None
     tags: list[str] = field(default_factory=list)
 
 

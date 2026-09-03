@@ -482,6 +482,8 @@ def main(config: TrainAgentConfig) -> None:
         raise TypeError("wandb.enabled must be a boolean")
     if config.wandb.enabled and not config.wandb.project.strip():
         raise ValueError("wandb.project must not be empty when enabled")
+    if config.wandb.name is not None and not config.wandb.name.strip():
+        raise ValueError("wandb.name must not be empty")
     if config.self_play.num_envs <= 0:
         raise ValueError("self_play.num_envs must be positive")
     if config.self_play.search_algorithm not in {"puct", "mcts", "gumbel"}:
@@ -543,7 +545,7 @@ def main(config: TrainAgentConfig) -> None:
             raise TypeError("resolved training config must be a mapping")
         wandb_logger = WandbLogger.initialize(
             config.wandb,
-            run_name=wandb_run_name(config.environment.id, commit),
+            run_name=(config.wandb.name or wandb_run_name(config.environment.id)),
             run_config=resolved_config,
         )
 

@@ -22,12 +22,15 @@ class _WandbRun(Protocol):
     def finish(self, exit_code: int | None = None) -> None: ...
 
 
-def wandb_run_name(environment_id: str, commit_hash: str) -> str:
-    """Build a W&B run name from the Atari game and repository commit."""
-    if not commit_hash:
-        raise ValueError("commit_hash must not be empty")
+def wandb_run_name(environment_id: str, suffix: str | None = None) -> str:
+    """Build a W&B run name from the Atari game and an optional suffix."""
     game_name = environment_slug(environment_id).removesuffix("-v5")
-    return f"{game_name}_{commit_hash}"
+    if suffix is None:
+        return game_name
+    normalized_suffix = suffix.strip()
+    if not normalized_suffix:
+        raise ValueError("suffix must not be empty")
+    return f"{game_name}_{normalized_suffix}"
 
 
 class WandbLogger:

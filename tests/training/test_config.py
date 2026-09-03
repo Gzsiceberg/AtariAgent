@@ -113,6 +113,7 @@ def test_wandb_is_disabled_by_default() -> None:
     assert not config.enabled
     assert config.project == "AtariAgent"
     assert config.entity is None
+    assert config.name is None
     assert config.tags == []
 
 
