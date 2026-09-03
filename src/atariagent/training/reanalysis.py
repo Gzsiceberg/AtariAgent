@@ -252,7 +252,7 @@ class ReanalysisPipeline:
         )
 
     def submit(self, batch: ReplayBatch, *, trained_steps: int = 0) -> int:
-        """Queue one ReplayBatch for target-network reanalysis."""
+        """Queue a batch containing consolidated reanalysis frames."""
         self._require_open()
         root_noise_temperature = self.root_noise_temperature()
         use_mcts_bootstrap = self.uses_mcts_bootstrap(trained_steps)

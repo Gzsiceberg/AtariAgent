@@ -18,8 +18,11 @@ from atariagent.training.reanalysis import (
 
 
 def _batch(batch_size: int = 2) -> ReplayBatch:
+    reanalysis_frames = torch.zeros(
+        batch_size, 6, 1, 96, 96, dtype=torch.uint8
+    )
     return ReplayBatch(
-        frames=torch.zeros(batch_size, 5, 1, 96, 96, dtype=torch.uint8),
+        frames=reanalysis_frames[:, :5],
         actions=torch.zeros(batch_size, 1, 1, dtype=torch.long),
         rewards=torch.zeros(batch_size, 1),
         policy_targets=torch.full((batch_size, 2, 2), 0.5),
@@ -29,9 +32,8 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
         value_mask=torch.ones(batch_size, 2, dtype=torch.bool),
         indices=torch.arange(batch_size),
         importance_weights=torch.ones(batch_size),
-        value_bootstrap_frames=torch.zeros(
-            batch_size, 5, 1, 96, 96, dtype=torch.uint8
-        ),
+        value_bootstrap_frames=reanalysis_frames[:, 1:],
+        reanalysis_frames=reanalysis_frames,
         value_bootstrap_values=torch.ones(batch_size, 2),
         value_bootstrap_discounts=torch.ones(batch_size, 2),
         value_bootstrap_mask=torch.ones(batch_size, 2, dtype=torch.bool),
@@ -173,19 +175,18 @@ def test_policy_reanalysis_replaces_stored_targets_immediately() -> None:
         pipeline.close()
 
 
-def test_native_pipeline_accepts_consolidated_reanalysis_frames() -> None:
+def test_native_pipeline_uses_consolidated_reanalysis_frames() -> None:
     pipeline = _pipeline(prefetch_batches=1)
     batch = _batch()
-    combined = torch.zeros(batch.batch_size, 6, 1, 96, 96, dtype=torch.uint8)
-    shared_batch = replace(
+    separate_batch = replace(
         batch,
-        frames=combined[:, :5],
-        value_bootstrap_frames=combined[:, 1:],
-        reanalysis_frames=combined,
+        frames=batch.frames.clone(),
+        value_bootstrap_frames=batch.value_bootstrap_frames.clone(),
+        reanalysis_frames=None,
     )
-    assert replay_batch_nbytes(shared_batch) < replay_batch_nbytes(batch)
+    assert replay_batch_nbytes(batch) < replay_batch_nbytes(separate_batch)
     try:
-        pipeline.submit(shared_batch)
+        pipeline.submit(batch)
         ready = pipeline.wait_next()
         assert ready.batch.search_value_targets is not None
         assert ready.policy_roots_searched == 3
@@ -403,6 +404,8 @@ def test_native_pipeline_validates_native_batch_tensor_contract() -> None:
             pipeline.submit(
                 replace(_batch(), indices=torch.arange(2, dtype=torch.int32))
             )
+        with pytest.raises(ValueError, match="reanalysis_frames"):
+            pipeline.submit(replace(_batch(), reanalysis_frames=None))
         with pytest.raises(ValueError, match="reanalysis_state_ids"):
             pipeline.submit(replace(_batch(), reanalysis_state_ids=None))
         with pytest.raises(ValueError, match="reanalysis_state_ids"):

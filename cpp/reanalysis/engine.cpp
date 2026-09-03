@@ -154,9 +154,15 @@ public:
         job->value_bootstrap_frames = optional_tensor_attribute(
             job->original_batch, "value_bootstrap_frames"
         );
-        job->reanalysis_frames = optional_tensor_attribute(
+        auto reanalysis_frames = optional_tensor_attribute(
             job->original_batch, "reanalysis_frames"
         );
+        if (!reanalysis_frames) {
+            throw std::invalid_argument(
+                "reanalysis_frames are required for native reanalysis"
+            );
+        }
+        job->reanalysis_frames = std::move(*reanalysis_frames);
         job->value_bootstrap_values = optional_tensor_attribute(
             job->original_batch, "value_bootstrap_values"
         );
@@ -342,7 +348,7 @@ private:
         std::optional<torch::Tensor> cached_bootstrap_search_values;
         std::optional<torch::Tensor> cached_bootstrap_search_value_mask;
         std::optional<torch::Tensor> value_bootstrap_frames;
-        std::optional<torch::Tensor> reanalysis_frames;
+        torch::Tensor reanalysis_frames;
         std::optional<torch::Tensor> value_bootstrap_values;
         std::optional<torch::Tensor> value_bootstrap_discounts;
         std::optional<torch::Tensor> value_bootstrap_mask;
@@ -470,15 +476,16 @@ private:
                 );
             }
         }
-        if (job.reanalysis_frames) {
-            require_cpu(*job.reanalysis_frames, "reanalysis_frames");
-            if (job.reanalysis_frames->dim() != 5
-                || job.reanalysis_frames->size(0) != job.frames.size(0)
-                || job.reanalysis_frames->size(1) < job.frames.size(1)) {
-                throw std::invalid_argument(
-                    "reanalysis_frames has an invalid shape"
-                );
-            }
+        require_cpu(job.reanalysis_frames, "reanalysis_frames");
+        if (job.reanalysis_frames.dim() != 5
+            || job.reanalysis_frames.size(0) != job.frames.size(0)
+            || job.reanalysis_frames.size(1) < job.frames.size(1)
+            || (job.value_bootstrap_frames
+                && job.reanalysis_frames.size(1)
+                    < job.value_bootstrap_frames->size(1))) {
+            throw std::invalid_argument(
+                "reanalysis_frames has an invalid shape"
+            );
         }
         if (job.value_bootstrap_mask) {
             require_cpu(*job.value_bootstrap_mask, "value_bootstrap_mask");
@@ -737,27 +744,20 @@ private:
         const torch::Tensor& search_value_available_mask,
         const std::optional<torch::Tensor>& bootstrap_mask
     ) {
-        torch::Tensor device_frames;
+        torch::Tensor combined = job->reanalysis_frames.to(device_);
+        torch::Tensor device_frames = combined.narrow(
+            1, 0, job->frames.size(1)
+        );
         std::optional<torch::Tensor> device_bootstrap_frames;
         std::int64_t bootstrap_policy_offset = -1;
-        if (job->reanalysis_frames) {
-            torch::Tensor combined = job->reanalysis_frames->to(device_);
-            device_frames = combined.narrow(1, 0, job->frames.size(1));
-            if (job->value_bootstrap_frames) {
-                bootstrap_policy_offset = combined.size(1)
-                    - job->value_bootstrap_frames->size(1);
-                device_bootstrap_frames = combined.narrow(
-                    1,
-                    bootstrap_policy_offset,
-                    job->value_bootstrap_frames->size(1)
-                );
-            }
-        } else {
-            device_frames = job->frames.to(device_);
-            if (job->value_bootstrap_frames) {
-                device_bootstrap_frames =
-                    job->value_bootstrap_frames->to(device_);
-            }
+        if (job->value_bootstrap_frames) {
+            bootstrap_policy_offset = combined.size(1)
+                - job->value_bootstrap_frames->size(1);
+            device_bootstrap_frames = combined.narrow(
+                1,
+                bootstrap_policy_offset,
+                job->value_bootstrap_frames->size(1)
+            );
         }
 
         // Search policy roots first so overlapping TD endpoints can reuse the
@@ -901,7 +901,7 @@ private:
         job->cached_bootstrap_search_values.reset();
         job->cached_bootstrap_search_value_mask.reset();
         job->value_bootstrap_frames.reset();
-        job->reanalysis_frames.reset();
+        job->reanalysis_frames = torch::Tensor();
         job->value_bootstrap_values.reset();
         job->value_bootstrap_discounts.reset();
         job->value_bootstrap_mask.reset();
