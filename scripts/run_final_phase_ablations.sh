@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Run three independent final-phase ablations from the same 100k pre-final
-# snapshot. All arms use the current V1-style PER and target interval 1000.
-#
-# Relative to the normal final-phase settings, the arms independently:
-#   1. increase mixed_value_threshold from 5000 to 20000;
-#   2. preserve EfficientZero V2 replay freshness during learner-only updates;
-#   3. disable reanalysis target caching.
+# Run three final-phase experiments from the same 100k pre-final snapshot:
+# the normal current-commit baseline and MCTS-bootstrap variants with
+# mixed-value thresholds 5000 and 20000. All use the current V1-style PER,
+# cached targets, and target interval 1000.
 #
 # Each invocation creates a new W&B run. The resumed 100k checkpoint is
 # evaluated before training, followed by evaluations every 5k updates at
@@ -57,6 +54,7 @@ run_ablation() {
     local cache_targets="$2"
     local mixed_value_threshold="$3"
     local preserve_mixed_value_freshness="$4"
+    local mcts_bootstrap_final_phase="$5"
     local target_update_interval=1000
     local output_dir="$RUN_ROOT/$name"
     local evaluation_path="$output_dir/evaluations/agent_evaluations.json"
@@ -85,6 +83,7 @@ run_ablation() {
         "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
         "reanalysis.cache_targets=$cache_targets"
         "reanalysis.target_update_interval=$target_update_interval"
+        "reanalysis.mcts_bootstrap_final_phase=$mcts_bootstrap_final_phase"
         "training.mixed_value_threshold=$mixed_value_threshold"
         "training.preserve_mixed_value_freshness=$preserve_mixed_value_freshness"
         "training.progress_mode=always"
@@ -99,8 +98,9 @@ run_ablation() {
     printf '\n=== %s ===\n' "$name"
     printf 'cache_targets=%s target_update_interval=%s ' \
         "$cache_targets" "$target_update_interval"
-    printf 'mixed_value_threshold=%s preserve_mixed_value_freshness=%s\n' \
+    printf 'mixed_value_threshold=%s preserve_mixed_value_freshness=%s ' \
         "$mixed_value_threshold" "$preserve_mixed_value_freshness"
+    printf 'mcts_bootstrap_final_phase=%s\n' "$mcts_bootstrap_final_phase"
     printf 'output=%s\n' "$output_dir"
     printf 'command:'
     printf ' %q' "${command[@]}"
@@ -113,16 +113,15 @@ run_ablation() {
     "${command[@]}" 2>&1 | tee "$output_dir/training.log"
 }
 
-# Keep replay samples on TD values longer, while retaining current final-phase
-# age advancement.
-run_ablation "mixed-threshold-20000" true 20000 false
+# Replace mixed SVE/search targets with td_steps returns whose stale endpoint
+# values are supplied by MCTS throughout the learner-only final phase.
+run_ablation "mcts-bootstrap-final-phase" true 5000 false true
 
-# Keep the original 5000-transition threshold, but do not increase transition
-# ages merely because learner-only updates elapsed.
-run_ablation "preserve-v2-freshness" true 5000 true
+# Keep a larger recent region on direct target-network endpoint values before
+# switching stale bootstrap endpoints to MCTS values.
+run_ablation "mcts-bootstrap-threshold-20000" true 20000 false true
 
-# Re-run no-cache with the current V1-style PER; this is the clean cache
-# comparison that the old-PER no-cache run could not provide.
-run_ablation "no-cache-current-per" false 5000 false
+# Run the unchanged control at the current commit for a clean comparison.
+run_ablation "baseline-current-commit" true 5000 false false
 
-printf '\nAll final-phase ablations completed. Results: %s\n' "$RUN_ROOT"
+printf '\nAll final-phase experiments completed. Results: %s\n' "$RUN_ROOT"
