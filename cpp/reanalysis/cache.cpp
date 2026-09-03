@@ -2,31 +2,165 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace atariagent::native {
 namespace {
-
-template <typename T>
-torch::Tensor vector_tensor(
-    const std::vector<T>& values,
-    torch::ScalarType dtype
-) {
-    return torch::from_blob(
-        const_cast<T*>(values.data()),
-        {static_cast<std::int64_t>(values.size())},
-        torch::TensorOptions().dtype(dtype)
-    ).clone();
-}
 
 struct CacheEntry {
     float value = 0.0F;
     float search_value = 0.0F;
     std::vector<float> policy;
     std::int64_t created_step = 0;
+};
+
+// Engine validation and the contiguous temporaries below establish the flat
+// CPU layout before these spans are created.
+template <typename T>
+std::span<T> tensor_span(torch::Tensor& tensor) {
+    return {
+        tensor.data_ptr<T>(),
+        static_cast<std::size_t>(tensor.numel()),
+    };
+}
+
+template <typename T>
+std::span<const T> tensor_span(const torch::Tensor& tensor) {
+    return {
+        tensor.data_ptr<T>(),
+        static_cast<std::size_t>(tensor.numel()),
+    };
+}
+
+class TargetWriter {
+public:
+    TargetWriter(
+        torch::Tensor& values,
+        torch::Tensor& search_values,
+        torch::Tensor& policies
+    )
+        : values_(tensor_span<float>(values)),
+          search_values_(tensor_span<float>(search_values)),
+          policies_(tensor_span<float>(policies)),
+          action_count_(static_cast<std::size_t>(policies.size(2))) {}
+
+    float value(std::size_t position) const { return values_[position]; }
+
+    float search_value(std::size_t position) const {
+        return search_values_[position];
+    }
+
+    std::span<const float> policy(std::size_t position) const {
+        return policies_.subspan(
+            position * action_count_, action_count_
+        );
+    }
+
+    void copy_entry(std::size_t position, const CacheEntry& entry) {
+        if (entry.policy.size() != action_count_) {
+            throw std::runtime_error(
+                "cached policy has an incompatible action count"
+            );
+        }
+        values_[position] = entry.value;
+        search_values_[position] = entry.search_value;
+        std::copy_n(
+            entry.policy.data(),
+            action_count_,
+            mutable_policy(position).data()
+        );
+    }
+
+private:
+    std::span<float> mutable_policy(std::size_t position) {
+        return policies_.subspan(
+            position * action_count_, action_count_
+        );
+    }
+
+    std::span<float> values_;
+    std::span<float> search_values_;
+    std::span<float> policies_;
+    std::size_t action_count_;
+};
+
+class PreparationWriter {
+public:
+    PreparationWriter(
+        const torch::Tensor& source_values,
+        const torch::Tensor& source_policies,
+        torch::Tensor& values,
+        torch::Tensor& search_values,
+        torch::Tensor& policies,
+        torch::Tensor& miss_mask,
+        torch::Tensor& search_value_available_mask
+    )
+        : source_values_(tensor_span<float>(source_values)),
+          source_policies_(tensor_span<float>(source_policies)),
+          values_(tensor_span<float>(values)),
+          search_values_(tensor_span<float>(search_values)),
+          policies_(tensor_span<float>(policies)),
+          miss_mask_(tensor_span<bool>(miss_mask)),
+          search_value_available_mask_(
+              tensor_span<bool>(search_value_available_mask)
+          ),
+          action_count_(
+              static_cast<std::size_t>(source_policies.size(2))
+          ) {}
+
+    void copy_original(std::size_t position) {
+        values_[position] = source_values_[position];
+        const auto source = source_policy(position);
+        std::copy_n(
+            source.data(), action_count_, policy(position).data()
+        );
+    }
+
+    void copy_hit(std::size_t position, const CacheEntry& entry) {
+        if (entry.policy.size() != action_count_) {
+            throw std::runtime_error(
+                "cached policy has an incompatible action count"
+            );
+        }
+        values_[position] = entry.value;
+        search_values_[position] = entry.search_value;
+        std::copy_n(
+            entry.policy.data(),
+            action_count_,
+            policy(position).data()
+        );
+        search_value_available_mask_[position] = true;
+    }
+
+    void mark_miss(std::size_t position) {
+        miss_mask_[position] = true;
+        search_value_available_mask_[position] = true;
+    }
+
+private:
+    std::span<const float> source_policy(std::size_t position) const {
+        return source_policies_.subspan(
+            position * action_count_, action_count_
+        );
+    }
+
+    std::span<float> policy(std::size_t position) {
+        return policies_.subspan(
+            position * action_count_, action_count_
+        );
+    }
+
+    std::span<const float> source_values_;
+    std::span<const float> source_policies_;
+    std::span<float> values_;
+    std::span<float> search_values_;
+    std::span<float> policies_;
+    std::span<bool> miss_mask_;
+    std::span<bool> search_value_available_mask_;
+    std::size_t action_count_;
 };
 
 }  // namespace
@@ -47,33 +181,58 @@ public:
         if (target_ttl < 0) {
             throw std::invalid_argument("target_ttl must be non-negative");
         }
-        const torch::Tensor positions = torch::nonzero(policy_mask).contiguous();
+        const torch::Tensor contiguous_mask = policy_mask.contiguous();
         const torch::Tensor contiguous_state_ids = state_ids.contiguous();
-        const auto* position_data = positions.data_ptr<std::int64_t>();
-        const auto* state_id_data = contiguous_state_ids.data_ptr<std::int64_t>();
-        const auto state_count = policy_targets.size(1);
-        const auto action_count = policy_targets.size(2);
-        std::unordered_map<std::int64_t, std::size_t> miss_lookup;
-        std::vector<std::pair<std::int64_t, const CacheEntry*>> hits;
+        const auto mask = tensor_span<bool>(contiguous_mask);
+        const auto state_id_data = tensor_span<std::int64_t>(
+            contiguous_state_ids
+        );
+        const auto position_count = static_cast<std::size_t>(
+            value_targets.numel()
+        );
+
+        // Assemble the contiguous CPU outputs directly. Materializing hit
+        // vectors as temporary tensors makes cached requests much more costly
+        // than the map lookups themselves.
         CachePreparation result;
-        for (std::int64_t row = 0; row < positions.size(0); ++row) {
-            const auto sample = position_data[row * 2];
-            const auto offset = position_data[row * 2 + 1];
-            const auto flat = sample * state_count + offset;
+        result.value_targets = torch::empty_like(value_targets);
+        result.search_value_targets = torch::zeros_like(value_targets);
+        result.policy_targets = torch::empty_like(policy_targets);
+        result.miss_mask = torch::zeros_like(contiguous_mask);
+        result.search_value_available_mask = torch::zeros_like(
+            contiguous_mask
+        );
+        PreparationWriter targets(
+            value_targets,
+            policy_targets,
+            result.value_targets,
+            result.search_value_targets,
+            result.policy_targets,
+            result.miss_mask,
+            result.search_value_available_mask
+        );
+
+        std::unordered_map<std::int64_t, std::size_t> miss_lookup;
+        for (std::size_t flat = 0; flat < position_count; ++flat) {
+            if (!mask[flat]) {
+                targets.copy_original(flat);
+                continue;
+            }
+
             const auto state_id = state_id_data[flat];
             if (state_id < 0) {
                 throw std::invalid_argument(
                     "active reanalysis state IDs must be non-negative"
                 );
             }
-            auto existing = miss_lookup.find(state_id);
+            const auto existing = miss_lookup.find(state_id);
             if (existing != miss_lookup.end()) {
-                result.misses[existing->second].positions.push_back(
-                    static_cast<std::size_t>(flat)
-                );
+                result.misses[existing->second].positions.push_back(flat);
+                targets.copy_original(flat);
                 continue;
             }
-            auto cached = entries_.find(state_id);
+
+            const auto cached = entries_.find(state_id);
             if (cached != entries_.end()) {
                 const auto age = current_step - cached->second.created_step;
                 if (age < 0) {
@@ -83,7 +242,7 @@ public:
                 }
                 const bool expired = target_ttl > 0 && age >= target_ttl;
                 if (!expired) {
-                    hits.emplace_back(flat, &cached->second);
+                    targets.copy_hit(flat, cached->second);
                     ++result.cache_hits;
                     result.cache_target_age_sum += static_cast<double>(age);
                     result.cache_target_age_max = std::max(
@@ -92,34 +251,20 @@ public:
                     continue;
                 }
             }
+
             const auto index = result.misses.size();
-            miss_lookup[state_id] = index;
+            miss_lookup.emplace(state_id, index);
             result.misses.push_back(CacheMiss{
                 state_id,
-                static_cast<std::size_t>(flat),
-                {static_cast<std::size_t>(flat)},
+                flat,
+                {flat},
             });
+            targets.copy_original(flat);
+            targets.mark_miss(flat);
         }
         result.roots_searched = static_cast<std::int64_t>(
             result.misses.size()
         );
-        result.value_targets = value_targets.clone();
-        result.search_value_targets = torch::zeros_like(value_targets);
-        result.policy_targets = policy_targets.clone();
-        apply_hits(hits, action_count, result);
-        result.miss_mask = make_miss_mask(policy_mask, result.misses);
-        result.search_value_available_mask = result.miss_mask.clone();
-        if (!hits.empty()) {
-            std::vector<std::int64_t> hit_indices;
-            hit_indices.reserve(hits.size());
-            for (const auto& [flat, entry] : hits) {
-                (void)entry;
-                hit_indices.push_back(flat);
-            }
-            result.search_value_available_mask.view({-1}).index_fill_(
-                0, vector_tensor(hit_indices, torch::kLong), true
-            );
-        }
         return result;
     }
 
@@ -133,60 +278,32 @@ public:
         if (current_step < 0) {
             throw std::invalid_argument("current_step must be non-negative");
         }
-        const auto action_count = policy_targets.size(2);
-        std::vector<std::int64_t> source_indices;
-        source_indices.reserve(misses.size());
-        for (const CacheMiss& miss : misses) {
-            source_indices.push_back(static_cast<std::int64_t>(miss.source));
-        }
-        const torch::Tensor source_tensor = vector_tensor(
-            source_indices, torch::kLong
+        // Miss sources and their duplicate destinations are already flat
+        // positions in these contiguous output tensors.
+        TargetWriter targets(
+            value_targets, search_value_targets, policy_targets
         );
-        const torch::Tensor miss_values = value_targets.view({-1})
-            .index_select(0, source_tensor)
-            .contiguous();
-        const torch::Tensor miss_search_values = search_value_targets
-            .view({-1}).index_select(0, source_tensor).contiguous();
-        const torch::Tensor miss_policies = policy_targets
-            .view({-1, action_count})
-            .index_select(0, source_tensor)
-            .contiguous();
-        const auto* value_data = miss_values.data_ptr<float>();
-        const auto* search_value_data = miss_search_values.data_ptr<float>();
-        const auto* policy_data = miss_policies.data_ptr<float>();
-        std::vector<std::int64_t> duplicate_indices;
-        std::vector<float> duplicate_values;
-        std::vector<float> duplicate_search_values;
-        std::vector<float> duplicate_policies;
-        for (std::size_t index = 0; index < misses.size(); ++index) {
-            CacheEntry entry;
-            entry.value = value_data[index];
-            entry.search_value = search_value_data[index];
+        for (const CacheMiss& miss : misses) {
+            auto [entry_position, inserted] = entries_.try_emplace(
+                miss.state_id
+            );
+            (void)inserted;
+            CacheEntry& entry = entry_position->second;
+            entry.value = targets.value(miss.source);
+            entry.search_value = targets.search_value(miss.source);
+            const auto source_policy = targets.policy(miss.source);
             entry.policy.assign(
-                policy_data + index * action_count,
-                policy_data + (index + 1) * action_count
+                source_policy.begin(), source_policy.end()
             );
             entry.created_step = current_step;
-            append_duplicates(
-                misses[index],
-                entry,
-                duplicate_indices,
-                duplicate_values,
-                duplicate_search_values,
-                duplicate_policies
-            );
-            entries_[misses[index].state_id] = std::move(entry);
+            for (std::size_t duplicate = 1;
+                 duplicate < miss.positions.size();
+                 ++duplicate) {
+                targets.copy_entry(
+                    miss.positions[duplicate], entry
+                );
+            }
         }
-        apply_duplicates(
-            duplicate_indices,
-            duplicate_values,
-            duplicate_search_values,
-            duplicate_policies,
-            action_count,
-            value_targets,
-            search_value_targets,
-            policy_targets
-        );
     }
 
     SearchValueLookup lookup_search_values(
@@ -201,26 +318,25 @@ public:
         if (target_ttl < 0) {
             throw std::invalid_argument("target_ttl must be non-negative");
         }
-        SearchValueLookup result{
-            torch::zeros(mask.sizes(), mask.options().dtype(torch::kFloat)),
-            torch::zeros_like(mask),
-        };
-        const torch::Tensor positions = torch::nonzero(mask).contiguous();
-        if (positions.size(0) == 0) {
-            return result;
-        }
+        const torch::Tensor contiguous_mask = mask.contiguous();
         const torch::Tensor contiguous_state_ids = state_ids.contiguous();
-        const auto* position_data = positions.data_ptr<std::int64_t>();
-        const auto* state_id_data =
-            contiguous_state_ids.data_ptr<std::int64_t>();
-        const auto state_count = state_ids.size(1);
-        std::vector<std::int64_t> hit_indices;
-        std::vector<float> hit_values;
-        hit_indices.reserve(static_cast<std::size_t>(positions.size(0)));
-        hit_values.reserve(static_cast<std::size_t>(positions.size(0)));
-        for (std::int64_t row = 0; row < positions.size(0); ++row) {
-            const auto flat = position_data[row * 2] * state_count
-                + position_data[row * 2 + 1];
+        SearchValueLookup result{
+            torch::zeros(
+                contiguous_mask.sizes(),
+                contiguous_mask.options().dtype(torch::kFloat)
+            ),
+            torch::zeros_like(contiguous_mask),
+        };
+        const auto mask_data = tensor_span<bool>(contiguous_mask);
+        const auto state_id_data = tensor_span<std::int64_t>(
+            contiguous_state_ids
+        );
+        auto value_data = tensor_span<float>(result.values);
+        auto available_data = tensor_span<bool>(result.available_mask);
+        for (std::size_t flat = 0; flat < mask_data.size(); ++flat) {
+            if (!mask_data[flat]) {
+                continue;
+            }
             const auto state_id = state_id_data[flat];
             if (state_id < 0) {
                 throw std::invalid_argument(
@@ -238,22 +354,10 @@ public:
                 );
             }
             const bool expired = target_ttl > 0 && age >= target_ttl;
-            if (expired) {
-                continue;
+            if (!expired) {
+                value_data[flat] = cached->second.search_value;
+                available_data[flat] = true;
             }
-            hit_indices.push_back(flat);
-            hit_values.push_back(cached->second.search_value);
-        }
-        if (!hit_indices.empty()) {
-            const torch::Tensor indices = vector_tensor(
-                hit_indices, torch::kLong
-            );
-            result.values.view({-1}).index_put_(
-                {indices}, vector_tensor(hit_values, torch::kFloat)
-            );
-            result.available_mask.view({-1}).index_fill_(
-                0, indices, true
-            );
         }
         return result;
     }
@@ -262,123 +366,6 @@ public:
     std::size_t size() const { return entries_.size(); }
 
 private:
-    static void apply_hits(
-        const std::vector<std::pair<std::int64_t, const CacheEntry*>>& hits,
-        std::int64_t action_count,
-        CachePreparation& result
-    ) {
-        if (hits.empty()) {
-            return;
-        }
-        std::vector<std::int64_t> hit_indices;
-        std::vector<float> hit_values;
-        std::vector<float> hit_search_values;
-        std::vector<float> hit_policies;
-        hit_indices.reserve(hits.size());
-        hit_values.reserve(hits.size());
-        hit_search_values.reserve(hits.size());
-        hit_policies.reserve(hits.size() * action_count);
-        for (const auto& [flat, entry] : hits) {
-            hit_indices.push_back(flat);
-            hit_values.push_back(entry->value);
-            hit_search_values.push_back(entry->search_value);
-            hit_policies.insert(
-                hit_policies.end(), entry->policy.begin(), entry->policy.end()
-            );
-        }
-        const torch::Tensor hit_index_tensor = vector_tensor(
-            hit_indices, torch::kLong
-        );
-        result.value_targets.view({-1}).index_put_(
-            {hit_index_tensor}, vector_tensor(hit_values, torch::kFloat)
-        );
-        result.search_value_targets.view({-1}).index_put_(
-            {hit_index_tensor},
-            vector_tensor(hit_search_values, torch::kFloat)
-        );
-        result.policy_targets.view({-1, action_count}).index_put_(
-            {hit_index_tensor},
-            torch::from_blob(
-                hit_policies.data(),
-                {static_cast<std::int64_t>(hits.size()), action_count},
-                torch::TensorOptions().dtype(torch::kFloat)
-            ).clone()
-        );
-    }
-
-    static torch::Tensor make_miss_mask(
-        const torch::Tensor& policy_mask,
-        const std::vector<CacheMiss>& misses
-    ) {
-        torch::Tensor miss_mask = torch::zeros_like(policy_mask);
-        if (misses.empty()) {
-            return miss_mask;
-        }
-        std::vector<std::int64_t> miss_indices;
-        miss_indices.reserve(misses.size());
-        for (const CacheMiss& miss : misses) {
-            miss_indices.push_back(static_cast<std::int64_t>(miss.source));
-        }
-        miss_mask.view({-1}).index_fill_(
-            0, vector_tensor(miss_indices, torch::kLong), true
-        );
-        return miss_mask;
-    }
-
-    static void append_duplicates(
-        const CacheMiss& miss,
-        const CacheEntry& entry,
-        std::vector<std::int64_t>& indices,
-        std::vector<float>& values,
-        std::vector<float>& search_values,
-        std::vector<float>& policies
-    ) {
-        for (std::size_t duplicate = 1;
-             duplicate < miss.positions.size();
-             ++duplicate) {
-            indices.push_back(static_cast<std::int64_t>(
-                miss.positions[duplicate]
-            ));
-            values.push_back(entry.value);
-            search_values.push_back(entry.search_value);
-            policies.insert(
-                policies.end(), entry.policy.begin(), entry.policy.end()
-            );
-        }
-    }
-
-    static void apply_duplicates(
-        const std::vector<std::int64_t>& indices,
-        const std::vector<float>& values,
-        const std::vector<float>& search_values,
-        const std::vector<float>& policies,
-        std::int64_t action_count,
-        torch::Tensor& value_targets,
-        torch::Tensor& search_value_targets,
-        torch::Tensor& policy_targets
-    ) {
-        if (indices.empty()) {
-            return;
-        }
-        const torch::Tensor index_tensor = vector_tensor(
-            indices, torch::kLong
-        );
-        value_targets.view({-1}).index_put_(
-            {index_tensor}, vector_tensor(values, torch::kFloat)
-        );
-        search_value_targets.view({-1}).index_put_(
-            {index_tensor}, vector_tensor(search_values, torch::kFloat)
-        );
-        policy_targets.view({-1, action_count}).index_put_(
-            {index_tensor},
-            torch::from_blob(
-                const_cast<float*>(policies.data()),
-                {static_cast<std::int64_t>(indices.size()), action_count},
-                torch::TensorOptions().dtype(torch::kFloat)
-            ).clone()
-        );
-    }
-
     std::unordered_map<std::int64_t, CacheEntry> entries_;
 };
 
