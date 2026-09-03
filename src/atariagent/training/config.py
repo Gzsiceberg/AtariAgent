@@ -64,6 +64,7 @@ class TrainingConfig:
     value_target: str = "mixed"
     mixed_value_start_step: int = 30_000
     mixed_value_threshold: int = 5_000
+    preserve_mixed_value_freshness: bool = False
     batch_max_in_flight: int = 3
     batch_ready_prefetch: int = 2
     batch_worker_timeout_seconds: float = 600.0

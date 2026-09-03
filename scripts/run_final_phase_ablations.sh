@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Run a baseline and target-update-interval final-phase ablation from the
-# same 100k pre-final snapshot.
+# Run three independent final-phase ablations from the same 100k pre-final
+# snapshot. All arms use the current V1-style PER and target interval 1000.
 #
-# The ablation changes only target publication frequency:
-#   cache_targets=true, target_update_interval=200
-# Baseline keeps the normal final-phase settings:
-#   cache_targets=true, target_update_interval=1000
+# Relative to the normal final-phase settings, the arms independently:
+#   1. increase mixed_value_threshold from 5000 to 20000;
+#   2. preserve EfficientZero V2 replay freshness during learner-only updates;
+#   3. disable reanalysis target caching.
 #
 # Each invocation creates a new W&B run. The resumed 100k checkpoint is
 # evaluated before training, followed by evaluations every 5k updates at
@@ -53,7 +53,9 @@ is_completed() {
 run_ablation() {
     local name="$1"
     local cache_targets="$2"
-    local target_update_interval="$3"
+    local mixed_value_threshold="$3"
+    local preserve_mixed_value_freshness="$4"
+    local target_update_interval=1000
     local output_dir="$RUN_ROOT/$name"
     local evaluation_path="$output_dir/evaluations/agent_evaluations.json"
     local wandb_entity_override="wandb.entity=null"
@@ -81,6 +83,8 @@ run_ablation() {
         "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
         "reanalysis.cache_targets=$cache_targets"
         "reanalysis.target_update_interval=$target_update_interval"
+        "training.mixed_value_threshold=$mixed_value_threshold"
+        "training.preserve_mixed_value_freshness=$preserve_mixed_value_freshness"
         "training.progress_mode=always"
         "training.progress_interval_seconds=10"
         "wandb.enabled=true"
@@ -90,8 +94,10 @@ run_ablation() {
     )
 
     printf '\n=== %s ===\n' "$name"
-    printf 'cache_targets=%s target_update_interval=%s\n' \
+    printf 'cache_targets=%s target_update_interval=%s ' \
         "$cache_targets" "$target_update_interval"
+    printf 'mixed_value_threshold=%s preserve_mixed_value_freshness=%s\n' \
+        "$mixed_value_threshold" "$preserve_mixed_value_freshness"
     printf 'output=%s\n' "$output_dir"
     printf 'command:'
     printf ' %q' "${command[@]}"
@@ -104,10 +110,16 @@ run_ablation() {
     "${command[@]}" 2>&1 | tee "$output_dir/training.log"
 }
 
-# Independent one-factor ablation: only target update frequency differs.
-run_ablation "target-interval-200" true 200
+# Keep replay samples on TD values longer, while retaining current final-phase
+# age advancement.
+run_ablation "mixed-threshold-20000" true 20000 false
 
-# Run the unchanged control last to measure normal resumed behavior.
-run_ablation "baseline" true 1000
+# Keep the original 5000-transition threshold, but do not increase transition
+# ages merely because learner-only updates elapsed.
+run_ablation "preserve-v2-freshness" true 5000 true
+
+# Re-run no-cache with the current V1-style PER; this is the clean cache
+# comparison that the old-PER no-cache run could not provide.
+run_ablation "no-cache-current-per" false 5000 false
 
 printf '\nAll final-phase ablations completed. Results: %s\n' "$RUN_ROOT"

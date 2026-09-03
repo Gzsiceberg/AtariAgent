@@ -74,6 +74,9 @@ training:
   value_target: mixed
   mixed_value_start_step: 30000
   mixed_value_threshold: 5000
+  # When enabled, learner-only updates do not make replay samples artificially
+  # older, preserving EfficientZero V2's newest TD-target region.
+  preserve_mixed_value_freshness: false
   # Bound threaded sampling, reanalysis, H2D transfer, and ready GPU batches.
   batch_max_in_flight: 3
   # Keep at most two transferred GPU batches waiting ahead of the learner.
