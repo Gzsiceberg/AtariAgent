@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from queue import Empty, Full, Queue, SimpleQueue
 from threading import Event, Lock, Semaphore, Thread
 from time import perf_counter
@@ -34,6 +34,7 @@ class ReadyBatch:
     worker_duration_ms: float | None = None
     policy_roots_requested: int = 0
     policy_roots_searched: int = 0
+    bootstrap_roots_searched: int = 0
     cache_hits: int = 0
     cache_target_age_mean: float = 0.0
     cache_target_age_max: int = 0
@@ -392,6 +393,28 @@ class BatchWorker:
                     self._last_reanalysis_cache_clear_step = submitted_step
                 token, batch, sample_ms = self._sample(True, submitted_step)
                 try:
+                    if (
+                        pipeline.uses_mcts_bootstrap(submitted_step)
+                        and batch.value_bootstrap_mask is not None
+                    ):
+                        # Every valid state uses an l=k TD target. Fresh replay
+                        # states retain the direct endpoint value, while stale
+                        # states replace that endpoint with an MCTS root value.
+                        if batch.transition_ages is None:
+                            raise ValueError(
+                                "MCTS bootstrapping requires replay transition ages"
+                            )
+                        stale_samples = (
+                            batch.transition_ages >= self.mixed_value_threshold
+                        )
+                        batch = replace(
+                            batch,
+                            mcts_bootstrap_mask=(
+                                batch.value_bootstrap_mask
+                                & batch.value_mask
+                                & stale_samples[:, None]
+                            ),
+                        )
                     request_id = pipeline.submit(
                         batch,
                         trained_steps=submitted_step,
@@ -422,6 +445,9 @@ class BatchWorker:
                     worker_duration_ms=result.worker_duration_ms,
                     policy_roots_requested=result.policy_roots_requested,
                     policy_roots_searched=result.policy_roots_searched,
+                    bootstrap_roots_searched=(
+                        result.bootstrap_roots_searched
+                    ),
                     cache_hits=result.cache_hits,
                     cache_target_age_mean=result.cache_target_age_mean,
                     cache_target_age_max=result.cache_target_age_max,
@@ -480,13 +506,20 @@ class BatchWorker:
         worker_duration_ms: float | None = None,
         policy_roots_requested: int = 0,
         policy_roots_searched: int = 0,
+        bootstrap_roots_searched: int = 0,
         cache_hits: int = 0,
         cache_target_age_mean: float = 0.0,
         cache_target_age_max: int = 0,
     ) -> ReadyBatch:
         started = perf_counter()
+        effective_value_target = self.value_target
+        if (
+            self.reanalysis_pipeline is not None
+            and self.reanalysis_pipeline.uses_mcts_bootstrap(sample_step)
+        ):
+            effective_value_target = "td"
         cpu_batch = cpu_batch.with_selected_value_targets(
-            mode=self.value_target,
+            mode=effective_value_target,
             learner_step=sample_step,
             collection_steps=self.collection_steps,
             mixed_start_step=self.mixed_value_start_step,
@@ -520,6 +553,7 @@ class BatchWorker:
             worker_duration_ms=worker_duration_ms,
             policy_roots_requested=policy_roots_requested,
             policy_roots_searched=policy_roots_searched,
+            bootstrap_roots_searched=bootstrap_roots_searched,
             cache_hits=cache_hits,
             cache_target_age_mean=cache_target_age_mean,
             cache_target_age_max=cache_target_age_max,

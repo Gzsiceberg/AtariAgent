@@ -183,8 +183,9 @@ def test_worker_propagates_sampling_failure() -> None:
 
 
 class _FakeReanalysisPipeline:
-    def __init__(self) -> None:
+    def __init__(self, mcts_bootstrap_start_step: int | None = None) -> None:
         self.prefetch_batches = 2
+        self.mcts_bootstrap_start_step = mcts_bootstrap_start_step
         self.pending: list[tuple[int, ReplayBatch]] = []
         self.next_request_id = 0
         self.published_versions: list[int] = []
@@ -195,6 +196,12 @@ class _FakeReanalysisPipeline:
     @property
     def needs_prefetch(self) -> bool:
         return len(self.pending) < self.prefetch_batches
+
+    def uses_mcts_bootstrap(self, trained_steps: int) -> bool:
+        return (
+            self.mcts_bootstrap_start_step is not None
+            and trained_steps >= self.mcts_bootstrap_start_step
+        )
 
     def submit(self, batch: ReplayBatch, *, trained_steps: int = 0) -> int:
         self.submitted_steps.append(trained_steps)
@@ -262,6 +269,54 @@ def test_worker_applies_mixed_values_before_learner_transfer() -> None:
         assert ready.gpu_batch.transition_ages is None
         worker.complete(ready, torch.ones(2))
         worker.wait_idle()
+
+
+def test_worker_mcts_bootstrap_overrides_mixed_targets_with_td() -> None:
+    pipeline = _FakeReanalysisPipeline(mcts_bootstrap_start_step=100)
+    submitted_masks: list[torch.Tensor] = []
+    original_submit = pipeline.submit
+
+    def submit(batch: ReplayBatch, *, trained_steps: int = 0) -> int:
+        assert batch.mcts_bootstrap_mask is not None
+        submitted_masks.append(batch.mcts_bootstrap_mask.clone())
+        return original_submit(batch, trained_steps=trained_steps)
+
+    pipeline.submit = submit  # type: ignore[method-assign]
+
+    def sample(include: bool):
+        assert include
+        return replace(
+            _batch(),
+            search_value_targets=torch.ones(2, 2),
+            transition_ages=torch.tensor([0, 5_000]),
+        )
+
+    with BatchWorker(
+        _FakeReplay(sample),  # type: ignore[arg-type]
+        batch_size=2,
+        device="cpu",
+        reanalysis_pipeline=pipeline,  # type: ignore[arg-type]
+        value_target="mixed",
+        collection_steps=100,
+        mixed_value_start_step=30,
+        mixed_value_threshold=5_000,
+        max_in_flight=1,
+        ready_prefetch=1,
+        timeout_seconds=2.0,
+    ) as worker:
+        worker.start(100, 1)
+        ready = worker.next_ready()
+        torch.testing.assert_close(
+            ready.gpu_batch.value_targets,
+            torch.zeros(2, 2),
+        )
+        worker.complete(ready, torch.ones(2))
+        worker.wait_idle()
+
+    torch.testing.assert_close(
+        submitted_masks[0],
+        torch.tensor([[False, False], [True, True]]),
+    )
 
 
 def test_worker_reanalyzes_in_order_and_ramps_cache_clearing() -> None:

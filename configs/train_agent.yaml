@@ -55,6 +55,10 @@ reanalysis:
   worker_num_threads: 4
   # Keep delayed-target hard copies on a fixed learner-update interval.
   target_update_interval: 1000
+  # Ablation: during learner-only final updates, train every valid state on
+  # k-step TD and disable SVE selection. Recent samples keep a direct endpoint
+  # value; samples beyond mixed_value_threshold use an MCTS endpoint value.
+  mcts_bootstrap_final_phase: false
 
 training:
   device: auto

@@ -17,6 +17,7 @@ struct CacheMiss {
 
 struct CachePreparation {
     torch::Tensor miss_mask;
+    torch::Tensor search_value_available_mask;
     torch::Tensor value_targets;
     torch::Tensor search_value_targets;
     torch::Tensor policy_targets;
@@ -25,6 +26,11 @@ struct CachePreparation {
     std::int64_t cache_hits = 0;
     double cache_target_age_sum = 0.0;
     std::int64_t cache_target_age_max = 0;
+};
+
+struct SearchValueLookup {
+    torch::Tensor values;
+    torch::Tensor available_mask;
 };
 
 class ReanalysisCache {
@@ -50,6 +56,12 @@ public:
         torch::Tensor& policy_targets,
         std::int64_t current_step
     );
+    SearchValueLookup lookup_search_values(
+        const torch::Tensor& mask,
+        const torch::Tensor& state_ids,
+        std::int64_t current_step,
+        std::int64_t target_ttl
+    ) const;
     void clear();
     std::size_t size() const;
 

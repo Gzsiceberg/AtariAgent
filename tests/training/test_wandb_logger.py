@@ -105,6 +105,7 @@ def test_wandb_logger_emits_reanalysis_metrics() -> None:
         update=10,
         policy_roots_requested=100,
         policy_roots_searched=25,
+        bootstrap_roots_searched=20,
         cache_hits=75,
         cache_target_age_mean=12.5,
         cache_target_age_max=30,
@@ -115,6 +116,7 @@ def test_wandb_logger_emits_reanalysis_metrics() -> None:
     assert run.logged[0]["reanalysis/cache_hit_rate"] == pytest.approx(0.75)
     assert run.logged[0]["reanalysis/cache_target_age_mean_updates"] == 12.5
     assert run.logged[0]["reanalysis/cache_target_age_max_updates"] == 30
+    assert run.logged[0]["reanalysis/bootstrap_roots_searched"] == 20
 
 
 def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:

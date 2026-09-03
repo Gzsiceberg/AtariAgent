@@ -108,6 +108,18 @@ public:
         result.policy_targets = policy_targets.clone();
         apply_hits(hits, action_count, result);
         result.miss_mask = make_miss_mask(policy_mask, result.misses);
+        result.search_value_available_mask = result.miss_mask.clone();
+        if (!hits.empty()) {
+            std::vector<std::int64_t> hit_indices;
+            hit_indices.reserve(hits.size());
+            for (const auto& [flat, entry] : hits) {
+                (void)entry;
+                hit_indices.push_back(flat);
+            }
+            result.search_value_available_mask.view({-1}).index_fill_(
+                0, vector_tensor(hit_indices, torch::kLong), true
+            );
+        }
         return result;
     }
 
@@ -175,6 +187,75 @@ public:
             search_value_targets,
             policy_targets
         );
+    }
+
+    SearchValueLookup lookup_search_values(
+        const torch::Tensor& mask,
+        const torch::Tensor& state_ids,
+        std::int64_t current_step,
+        std::int64_t target_ttl
+    ) const {
+        if (current_step < 0) {
+            throw std::invalid_argument("current_step must be non-negative");
+        }
+        if (target_ttl < 0) {
+            throw std::invalid_argument("target_ttl must be non-negative");
+        }
+        SearchValueLookup result{
+            torch::zeros(mask.sizes(), mask.options().dtype(torch::kFloat)),
+            torch::zeros_like(mask),
+        };
+        const torch::Tensor positions = torch::nonzero(mask).contiguous();
+        if (positions.size(0) == 0) {
+            return result;
+        }
+        const torch::Tensor contiguous_state_ids = state_ids.contiguous();
+        const auto* position_data = positions.data_ptr<std::int64_t>();
+        const auto* state_id_data =
+            contiguous_state_ids.data_ptr<std::int64_t>();
+        const auto state_count = state_ids.size(1);
+        std::vector<std::int64_t> hit_indices;
+        std::vector<float> hit_values;
+        hit_indices.reserve(static_cast<std::size_t>(positions.size(0)));
+        hit_values.reserve(static_cast<std::size_t>(positions.size(0)));
+        for (std::int64_t row = 0; row < positions.size(0); ++row) {
+            const auto flat = position_data[row * 2] * state_count
+                + position_data[row * 2 + 1];
+            const auto state_id = state_id_data[flat];
+            if (state_id < 0) {
+                throw std::invalid_argument(
+                    "active bootstrap state IDs must be non-negative"
+                );
+            }
+            const auto cached = entries_.find(state_id);
+            if (cached == entries_.end()) {
+                continue;
+            }
+            const auto age = current_step - cached->second.created_step;
+            if (age < 0) {
+                throw std::runtime_error(
+                    "cache entry was created after the current step"
+                );
+            }
+            const bool expired = target_ttl > 0 && age >= target_ttl;
+            if (expired) {
+                continue;
+            }
+            hit_indices.push_back(flat);
+            hit_values.push_back(cached->second.search_value);
+        }
+        if (!hit_indices.empty()) {
+            const torch::Tensor indices = vector_tensor(
+                hit_indices, torch::kLong
+            );
+            result.values.view({-1}).index_put_(
+                {indices}, vector_tensor(hit_values, torch::kFloat)
+            );
+            result.available_mask.view({-1}).index_fill_(
+                0, indices, true
+            );
+        }
+        return result;
     }
 
     void clear() { entries_.clear(); }
@@ -335,6 +416,17 @@ void ReanalysisCache::resolve(
         search_value_targets,
         policy_targets,
         current_step
+    );
+}
+
+SearchValueLookup ReanalysisCache::lookup_search_values(
+    const torch::Tensor& mask,
+    const torch::Tensor& state_ids,
+    std::int64_t current_step,
+    std::int64_t target_ttl
+) const {
+    return impl_->lookup_search_values(
+        mask, state_ids, current_step, target_ttl
     );
 }
 

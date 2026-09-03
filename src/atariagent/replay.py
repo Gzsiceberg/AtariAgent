@@ -708,6 +708,10 @@ class FIFOReplayBuffer:
                 (batch_size, states),
                 np.dtype(np.bool_),
             ),
+            "value_bootstrap_state_ids": (
+                (batch_size, states),
+                np.dtype(np.int64),
+            ),
             "indices": ((batch_size,), np.dtype(np.int64)),
             "importance_weights": ((batch_size,), np.dtype(np.float32)),
             "transition_ages": ((batch_size,), np.dtype(np.int64)),
@@ -724,6 +728,7 @@ class FIFOReplayBuffer:
                 "value_bootstrap_values",
                 "value_bootstrap_discounts",
                 "value_bootstrap_mask",
+                "value_bootstrap_state_ids",
             ):
                 del specs[name]
         return specs
@@ -798,6 +803,9 @@ class FIFOReplayBuffer:
             value_bootstrap_values=optional_tensor("value_bootstrap_values"),
             value_bootstrap_discounts=optional_tensor("value_bootstrap_discounts"),
             value_bootstrap_mask=optional_tensor("value_bootstrap_mask"),
+            value_bootstrap_state_ids=optional_tensor(
+                "value_bootstrap_state_ids"
+            ),
             reanalysis_frames=shared_frames,
             transition_ages=torch.from_numpy(arrays["transition_ages"]),
             reanalysis_state_ids=torch.from_numpy(
@@ -859,6 +867,7 @@ class FIFOReplayBuffer:
         value_bootstrap_values = arrays.get("value_bootstrap_values")
         value_bootstrap_discounts = arrays.get("value_bootstrap_discounts")
         value_bootstrap_mask = arrays.get("value_bootstrap_mask")
+        value_bootstrap_state_ids = arrays.get("value_bootstrap_state_ids")
         reanalysis_state_ids = arrays["reanalysis_state_ids"]
 
         for batch_index, (trajectory, trajectory_state_ids, start) in enumerate(
@@ -933,6 +942,7 @@ class FIFOReplayBuffer:
                 assert value_bootstrap_values is not None
                 assert value_bootstrap_discounts is not None
                 assert value_bootstrap_mask is not None
+                assert value_bootstrap_state_ids is not None
                 bootstrap_start = start + self.td_steps
                 bootstrap_count = min(
                     state_count, max(0, stored_count - bootstrap_start)
@@ -945,6 +955,7 @@ class FIFOReplayBuffer:
                     and bootstrap_frame_count < full_frame_count
                 ):
                     value_bootstrap_frames[batch_index].fill(0)
+                value_bootstrap_state_ids[batch_index].fill(-1)
                 if bootstrap_count < state_count:
                     value_bootstrap_values[batch_index].fill(0)
                     value_bootstrap_discounts[batch_index].fill(0)
@@ -967,6 +978,11 @@ class FIFOReplayBuffer:
                             bootstrap_start : bootstrap_start + bootstrap_count
                         ]
                     )
+                    value_bootstrap_state_ids[
+                        batch_index, :bootstrap_count
+                    ] = trajectory_state_ids[
+                        bootstrap_start : bootstrap_start + bootstrap_count
+                    ]
                     if bootstrap_count < state_count:
                         value_bootstrap_discounts[batch_index, :bootstrap_count] = (
                             self._bootstrap_discount

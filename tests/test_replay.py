@@ -152,6 +152,9 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.value_bootstrap_discounts.shape == (3, 6)
     assert batch.value_bootstrap_mask is not None
     assert batch.value_bootstrap_mask.shape == (3, 6)
+    assert batch.value_bootstrap_state_ids is not None
+    assert batch.value_bootstrap_state_ids.shape == (3, 6)
+    assert batch.value_bootstrap_state_ids.dtype == torch.long
     assert batch.indices.shape == (3,)
     assert batch.indices.dtype == torch.long
     assert batch.importance_weights.shape == (3,)
@@ -207,6 +210,7 @@ def test_replay_can_skip_target_network_bootstrap_metadata() -> None:
     assert batch.value_bootstrap_values is None
     assert batch.value_bootstrap_discounts is None
     assert batch.value_bootstrap_mask is None
+    assert batch.value_bootstrap_state_ids is None
 
 
 def test_reanalysis_state_ids_share_real_states_across_block_overlap() -> None:
@@ -237,6 +241,7 @@ def test_reanalysis_state_ids_share_real_states_across_block_overlap() -> None:
 
     batch = replay.sample(batch_size=11)
     assert batch.reanalysis_state_ids is not None
+    assert batch.value_bootstrap_state_ids is not None
     root_values = batch.frames[:, 0, 0, 0, 0]
     first_block_tail = int((root_values == 4).nonzero().item())
     matching_roots = (root_values == 5).nonzero().flatten()
@@ -257,6 +262,12 @@ def test_reanalysis_state_ids_share_real_states_across_block_overlap() -> None:
     assert (
         batch.reanalysis_state_ids[first_block_tail, 1]
         != batch.reanalysis_state_ids[other_environment, 0]
+    )
+    first_root = int((root_values == 0).nonzero().item())
+    first_bootstrap_root = int((root_values == 2).nonzero().item())
+    assert (
+        batch.value_bootstrap_state_ids[first_root, 0]
+        == batch.reanalysis_state_ids[first_bootstrap_root, 0]
     )
 
 
