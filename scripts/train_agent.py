@@ -445,8 +445,10 @@ def main(config: TrainAgentConfig) -> None:
         raise TypeError("loss.consistency_enabled must be a boolean")
     if config.loss.consistency_weight < 0.0:
         raise ValueError("loss.consistency_weight must be non-negative")
-    if config.checkpoint.keep_representative <= 0:
-        raise ValueError("checkpoint.keep_representative must be positive")
+    if config.checkpoint.collection_interval <= 0:
+        raise ValueError("checkpoint.collection_interval must be positive")
+    if config.checkpoint.final_interval <= 0:
+        raise ValueError("checkpoint.final_interval must be positive")
     for value, name in (
         (
             config.checkpoint.pre_final_snapshot_path,
@@ -681,7 +683,10 @@ def main(config: TrainAgentConfig) -> None:
         total_updates = config.training.steps + config.training.final_steps
         representative_updates = set(
             representative_checkpoint_updates(
-                total_updates, config.checkpoint.keep_representative
+                config.training.steps,
+                config.training.final_steps,
+                collection_interval=config.checkpoint.collection_interval,
+                final_interval=config.checkpoint.final_interval,
             )
         )
         evaluation_records: list[EvaluationRecord] = []

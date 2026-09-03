@@ -92,7 +92,6 @@ uv run python scripts/train_agent.py \
     training.updates_per_iteration=10 \
     training.batch_size=32 \
     training.compile_model=false \
-    checkpoint.keep_representative=1 \
     checkpoint.path=/tmp/atariagent-smoke/agent_latest.pt \
     checkpoint.pre_final_snapshot_path=/tmp/atariagent-smoke/agent_pre_final.pt \
     evaluation.enabled=false

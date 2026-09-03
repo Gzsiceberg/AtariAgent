@@ -127,7 +127,8 @@ class CheckpointConfig:
     """Checkpoint and resumable pre-final snapshot settings."""
 
     path: str = "checkpoints/${environment_slug:${environment.id}}/agent_latest.pt"
-    keep_representative: int = 10
+    collection_interval: int = 10_000
+    final_interval: int = 5_000
     pre_final_snapshot_path: str | None = (
         "checkpoints/${environment_slug:${environment.id}}/agent_pre_final.pt"
     )

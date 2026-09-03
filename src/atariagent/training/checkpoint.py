@@ -6,19 +6,43 @@ from pathlib import Path
 
 
 def representative_checkpoint_updates(
-    total_updates: int, count: int = 10
+    collection_updates: int,
+    final_updates: int,
+    *,
+    collection_interval: int = 10_000,
+    final_interval: int = 5_000,
 ) -> tuple[int, ...]:
-    """Return up to ``count`` evenly spaced updates, always including the end."""
-    if total_updates <= 0:
-        raise ValueError("total_updates must be positive")
-    if count <= 0:
-        raise ValueError("count must be positive")
-    return tuple(
-        dict.fromkeys(
-            (index * total_updates + count - 1) // count
-            for index in range(1, count + 1)
+    """Schedule checkpoints independently for collection and final phases.
+
+    Each non-empty phase includes its endpoint even when its length is not an
+    exact multiple of the configured interval.
+    """
+    if collection_updates <= 0:
+        raise ValueError("collection_updates must be positive")
+    if final_updates < 0:
+        raise ValueError("final_updates must be non-negative")
+    if collection_interval <= 0:
+        raise ValueError("collection_interval must be positive")
+    if final_interval <= 0:
+        raise ValueError("final_interval must be positive")
+
+    collection = list(
+        range(collection_interval, collection_updates + 1, collection_interval)
+    )
+    if not collection or collection[-1] != collection_updates:
+        collection.append(collection_updates)
+
+    total_updates = collection_updates + final_updates
+    final = list(
+        range(
+            collection_updates + final_interval,
+            total_updates + 1,
+            final_interval,
         )
     )
+    if final_updates > 0 and (not final or final[-1] != total_updates):
+        final.append(total_updates)
+    return tuple(collection + final)
 
 
 def representative_checkpoint_path(latest_path: str | Path, update: int) -> Path:

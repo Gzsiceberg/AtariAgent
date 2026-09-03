@@ -128,8 +128,10 @@ loss:
 
 checkpoint:
   path: checkpoints/${environment_slug:${environment.id}}/agent_latest.pt
-  # Keep model-only checkpoints at twelve evenly spaced points.
-  keep_representative: 12
+  # Keep model-only checkpoints and evaluate every 10k collection updates,
+  # then every 5k learner-only updates.
+  collection_interval: 10000
+  final_interval: 5000
   # Save replay, optimizer, targets, and RNG state immediately before the
   # learner-only phase. Set to null to disable the (roughly 3 GB) snapshot.
   pre_final_snapshot_path: checkpoints/${environment_slug:${environment.id}}/agent_pre_final.pt
