@@ -666,11 +666,11 @@ private:
             search_value_available_mask = std::move(
                 prepared.search_value_available_mask
             );
-            effective_policy_mask = job->policy_mask & prepared.miss_mask;
             if (job->value_bootstrap_mask) {
                 effective_bootstrap_mask = *job->value_bootstrap_mask
                     & prepared.miss_mask;
             }
+            effective_policy_mask = std::move(prepared.miss_mask);
             if (job->use_mcts_bootstrap
                 && effective_bootstrap_mask
                 && job->value_bootstrap_state_ids) {
