@@ -406,6 +406,14 @@ def test_native_pipeline_validates_native_batch_tensor_contract() -> None:
             )
         with pytest.raises(ValueError, match="reanalysis_frames"):
             pipeline.submit(replace(_batch(), reanalysis_frames=None))
+        for field_name in (
+            "value_bootstrap_frames",
+            "value_bootstrap_values",
+            "value_bootstrap_discounts",
+            "value_bootstrap_mask",
+        ):
+            with pytest.raises(ValueError, match=field_name):
+                pipeline.submit(replace(_batch(), **{field_name: None}))
         with pytest.raises(ValueError, match="reanalysis_state_ids"):
             pipeline.submit(replace(_batch(), reanalysis_state_ids=None))
         with pytest.raises(ValueError, match="reanalysis_state_ids"):
