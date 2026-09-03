@@ -145,29 +145,12 @@ public:
         job->reanalysis_state_ids = optional_tensor_attribute(
             job->original_batch, "reanalysis_state_ids"
         );
-        job->value_bootstrap_state_ids = optional_tensor_attribute(
-            job->original_batch, "value_bootstrap_state_ids"
-        );
+        job->bootstrap = bootstrap_attributes(job->original_batch);
         job->stack_size = py::cast<std::int64_t>(
             job->original_batch.attr("stack_size")
         );
-        job->value_bootstrap_frames = tensor_attribute(
-            job->original_batch, "value_bootstrap_frames"
-        );
         job->reanalysis_frames = tensor_attribute(
             job->original_batch, "reanalysis_frames"
-        );
-        job->value_bootstrap_values = tensor_attribute(
-            job->original_batch, "value_bootstrap_values"
-        );
-        job->value_bootstrap_discounts = tensor_attribute(
-            job->original_batch, "value_bootstrap_discounts"
-        );
-        job->value_bootstrap_mask = tensor_attribute(
-            job->original_batch, "value_bootstrap_mask"
-        );
-        job->mcts_bootstrap_mask = optional_tensor_attribute(
-            job->original_batch, "mcts_bootstrap_mask"
         );
         validate_batch(*job);
         if (cache_targets_ && !job->reanalysis_state_ids) {
@@ -326,6 +309,17 @@ private:
     using Clock = std::chrono::steady_clock;
     enum class Kind { Request, Weights, CacheClear };
 
+    struct BootstrapData {
+        torch::Tensor frames;
+        torch::Tensor values;
+        torch::Tensor discounts;
+        torch::Tensor mask;
+        std::optional<torch::Tensor> state_ids;
+        std::optional<torch::Tensor> mcts_mask;
+        std::optional<torch::Tensor> cached_search_values;
+        std::optional<torch::Tensor> cached_search_value_mask;
+    };
+
     struct Job {
         Kind kind = Kind::Request;
         std::int64_t request_id = -1;
@@ -338,15 +332,8 @@ private:
         torch::Tensor search_value_targets;
         torch::Tensor indices;
         std::optional<torch::Tensor> reanalysis_state_ids;
-        std::optional<torch::Tensor> value_bootstrap_state_ids;
-        std::optional<torch::Tensor> cached_bootstrap_search_values;
-        std::optional<torch::Tensor> cached_bootstrap_search_value_mask;
-        torch::Tensor value_bootstrap_frames;
+        BootstrapData bootstrap;
         torch::Tensor reanalysis_frames;
-        torch::Tensor value_bootstrap_values;
-        torch::Tensor value_bootstrap_discounts;
-        torch::Tensor value_bootstrap_mask;
-        std::optional<torch::Tensor> mcts_bootstrap_mask;
         std::int64_t stack_size = 0;
         TensorState representation;
         TensorState prediction;
@@ -394,6 +381,19 @@ private:
             return std::nullopt;
         }
         return py::cast<torch::Tensor>(value);
+    }
+
+    static BootstrapData bootstrap_attributes(const py::object& object) {
+        return BootstrapData{
+            tensor_attribute(object, "value_bootstrap_frames"),
+            tensor_attribute(object, "value_bootstrap_values"),
+            tensor_attribute(object, "value_bootstrap_discounts"),
+            tensor_attribute(object, "value_bootstrap_mask"),
+            optional_tensor_attribute(object, "value_bootstrap_state_ids"),
+            optional_tensor_attribute(object, "mcts_bootstrap_mask"),
+            std::nullopt,
+            std::nullopt,
+        };
     }
 
     static void require_cpu(const torch::Tensor& tensor, const char* name) {
@@ -455,15 +455,12 @@ private:
                 );
             }
         }
-        if (job.value_bootstrap_state_ids) {
-            require_cpu(
-                *job.value_bootstrap_state_ids,
-                "value_bootstrap_state_ids"
-            );
-            if (job.value_bootstrap_state_ids->scalar_type() != torch::kLong
-                || job.value_bootstrap_state_ids->sizes()
-                    != job.policy_mask.sizes()
-                || !job.value_bootstrap_state_ids->is_contiguous()) {
+        const BootstrapData& bootstrap = job.bootstrap;
+        if (bootstrap.state_ids) {
+            require_cpu(*bootstrap.state_ids, "value_bootstrap_state_ids");
+            if (bootstrap.state_ids->scalar_type() != torch::kLong
+                || bootstrap.state_ids->sizes() != job.policy_mask.sizes()
+                || !bootstrap.state_ids->is_contiguous()) {
                 throw std::invalid_argument(
                     "value_bootstrap_state_ids must be a contiguous int64 "
                     "tensor matching policy_mask"
@@ -474,37 +471,32 @@ private:
         if (job.reanalysis_frames.dim() != 5
             || job.reanalysis_frames.size(0) != job.frames.size(0)
             || job.reanalysis_frames.size(1) < job.frames.size(1)
-            || job.reanalysis_frames.size(1)
-                < job.value_bootstrap_frames.size(1)) {
+            || job.reanalysis_frames.size(1) < bootstrap.frames.size(1)) {
             throw std::invalid_argument(
                 "reanalysis_frames has an invalid shape"
             );
         }
-        require_cpu(job.value_bootstrap_mask, "value_bootstrap_mask");
-        if (job.value_bootstrap_mask.scalar_type() != torch::kBool
-            || job.value_bootstrap_mask.sizes() != job.policy_mask.sizes()) {
+        require_cpu(bootstrap.mask, "value_bootstrap_mask");
+        if (bootstrap.mask.scalar_type() != torch::kBool
+            || bootstrap.mask.sizes() != job.policy_mask.sizes()) {
             throw std::invalid_argument(
                 "value_bootstrap_mask must match policy_mask"
             );
         }
-        if (job.mcts_bootstrap_mask) {
-            require_cpu(*job.mcts_bootstrap_mask, "mcts_bootstrap_mask");
-            if (job.mcts_bootstrap_mask->scalar_type() != torch::kBool
-                || job.mcts_bootstrap_mask->sizes()
-                    != job.policy_mask.sizes()
-                || !job.mcts_bootstrap_mask->is_contiguous()) {
+        if (bootstrap.mcts_mask) {
+            require_cpu(*bootstrap.mcts_mask, "mcts_bootstrap_mask");
+            if (bootstrap.mcts_mask->scalar_type() != torch::kBool
+                || bootstrap.mcts_mask->sizes() != job.policy_mask.sizes()
+                || !bootstrap.mcts_mask->is_contiguous()) {
                 throw std::invalid_argument(
                     "mcts_bootstrap_mask must be a contiguous bool tensor "
                     "matching policy_mask"
                 );
             }
         }
-        require_cpu(job.value_bootstrap_frames, "value_bootstrap_frames");
-        require_cpu(job.value_bootstrap_values, "value_bootstrap_values");
-        require_cpu(
-            job.value_bootstrap_discounts,
-            "value_bootstrap_discounts"
-        );
+        require_cpu(bootstrap.frames, "value_bootstrap_frames");
+        require_cpu(bootstrap.values, "value_bootstrap_values");
+        require_cpu(bootstrap.discounts, "value_bootstrap_discounts");
         if (job.stack_size <= 0) {
             throw std::invalid_argument("stack_size must be positive");
         }
@@ -624,9 +616,10 @@ private:
         const auto started = Clock::now();
         reset_peak_memory();
 
+        BootstrapData& bootstrap = job->bootstrap;
         torch::Tensor effective_policy_mask = job->policy_mask;
         torch::Tensor search_value_available_mask = job->policy_mask;
-        torch::Tensor effective_bootstrap_mask = job->value_bootstrap_mask;
+        torch::Tensor effective_bootstrap_mask = bootstrap.mask;
         if (cache_targets_) {
             CachePreparation prepared = cache_.prepare(
                 job->policy_mask,
@@ -649,25 +642,21 @@ private:
             search_value_available_mask = std::move(
                 prepared.search_value_available_mask
             );
-            effective_bootstrap_mask = job->value_bootstrap_mask
-                & prepared.miss_mask;
+            effective_bootstrap_mask = bootstrap.mask & prepared.miss_mask;
             effective_policy_mask = std::move(prepared.miss_mask);
-            if (job->use_mcts_bootstrap
-                && job->value_bootstrap_state_ids) {
+            if (job->use_mcts_bootstrap && bootstrap.state_ids) {
                 torch::Tensor lookup_mask = effective_bootstrap_mask.clone();
-                if (job->mcts_bootstrap_mask) {
-                    lookup_mask &= *job->mcts_bootstrap_mask;
+                if (bootstrap.mcts_mask) {
+                    lookup_mask &= *bootstrap.mcts_mask;
                 }
                 SearchValueLookup lookup = cache_.lookup_search_values(
                     lookup_mask,
-                    *job->value_bootstrap_state_ids,
+                    *bootstrap.state_ids,
                     job->trained_step,
                     cache_target_ttl_
                 );
-                job->cached_bootstrap_search_values = std::move(
-                    lookup.values
-                );
-                job->cached_bootstrap_search_value_mask = std::move(
+                bootstrap.cached_search_values = std::move(lookup.values);
+                bootstrap.cached_search_value_mask = std::move(
                     lookup.available_mask
                 );
             }
@@ -712,16 +701,17 @@ private:
         const torch::Tensor& search_value_available_mask,
         const torch::Tensor& bootstrap_mask
     ) {
+        BootstrapData& bootstrap = job->bootstrap;
         torch::Tensor combined = job->reanalysis_frames.to(device_);
         torch::Tensor device_frames = combined.narrow(
             1, 0, job->frames.size(1)
         );
         const auto bootstrap_policy_offset = combined.size(1)
-            - job->value_bootstrap_frames.size(1);
+            - bootstrap.frames.size(1);
         torch::Tensor device_bootstrap_frames = combined.narrow(
             1,
             bootstrap_policy_offset,
-            job->value_bootstrap_frames.size(1)
+            bootstrap.frames.size(1)
         );
 
         // Search policy roots first so overlapping TD endpoints can reuse the
@@ -765,16 +755,16 @@ private:
 
         torch::Tensor mcts_bootstrap_mask = torch::zeros_like(bootstrap_mask);
         if (job->use_mcts_bootstrap) {
-            mcts_bootstrap_mask = job->mcts_bootstrap_mask
-                ? *job->mcts_bootstrap_mask & bootstrap_mask
+            mcts_bootstrap_mask = bootstrap.mcts_mask
+                ? *bootstrap.mcts_mask & bootstrap_mask
                 : bootstrap_mask.clone();
         }
 
         torch::Tensor reused_mask = torch::zeros_like(bootstrap_mask);
         torch::Tensor reused_values = torch::zeros_like(job->value_targets);
-        if (job->cached_bootstrap_search_value_mask) {
-            reused_mask.copy_(*job->cached_bootstrap_search_value_mask);
-            reused_values.copy_(*job->cached_bootstrap_search_values);
+        if (bootstrap.cached_search_value_mask) {
+            reused_mask.copy_(*bootstrap.cached_search_value_mask);
+            reused_values.copy_(*bootstrap.cached_search_values);
         }
         if (bootstrap_policy_offset >= 0
             && bootstrap_policy_offset < state_count) {
@@ -802,8 +792,8 @@ private:
             if (has_reused_values) {
                 torch::Tensor corrected_targets = job->value_targets
                     + (
-                        reused_values - job->value_bootstrap_values
-                    ) * job->value_bootstrap_discounts;
+                        reused_values - bootstrap.values
+                    ) * bootstrap.discounts;
                 job->value_targets.copy_(torch::where(
                     reused_mask,
                     corrected_targets,
@@ -813,10 +803,9 @@ private:
             return;
         }
 
-        torch::Tensor device_bootstrap_values =
-            job->value_bootstrap_values.to(device_);
+        torch::Tensor device_bootstrap_values = bootstrap.values.to(device_);
         torch::Tensor device_bootstrap_discounts =
-            job->value_bootstrap_discounts.to(device_);
+            bootstrap.discounts.to(device_);
         torch::Tensor device_value_targets = job->value_targets.to(device_);
         if (has_reused_values) {
             torch::Tensor corrected_targets = device_value_targets
@@ -848,15 +837,8 @@ private:
         job->policy_mask = torch::Tensor();
         job->indices = torch::Tensor();
         job->reanalysis_state_ids.reset();
-        job->value_bootstrap_state_ids.reset();
-        job->cached_bootstrap_search_values.reset();
-        job->cached_bootstrap_search_value_mask.reset();
-        job->value_bootstrap_frames = torch::Tensor();
+        job->bootstrap = BootstrapData{};
         job->reanalysis_frames = torch::Tensor();
-        job->value_bootstrap_values = torch::Tensor();
-        job->value_bootstrap_discounts = torch::Tensor();
-        job->value_bootstrap_mask = torch::Tensor();
-        job->mcts_bootstrap_mask.reset();
     }
 
     void reset_peak_memory() const {
