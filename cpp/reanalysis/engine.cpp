@@ -320,6 +320,22 @@ private:
         std::optional<torch::Tensor> cached_search_value_mask;
     };
 
+    struct DeviceFrameViews {
+        torch::Tensor policy_frames;
+        torch::Tensor bootstrap_frames;
+        std::int64_t bootstrap_policy_offset = -1;
+    };
+
+    struct BootstrapPlan {
+        torch::Tensor remaining_mask;
+        torch::Tensor mcts_mask;
+        torch::Tensor reused_mask;
+        torch::Tensor reused_values;
+        std::int64_t roots_searched = 0;
+        bool has_remaining_values = false;
+        bool has_reused_values = false;
+    };
+
     struct Job {
         Kind kind = Kind::Request;
         std::int64_t request_id = -1;
@@ -695,27 +711,26 @@ private:
         release_request_inputs(job.get());
     }
 
-    void run_target(
-        Job* job,
-        const torch::Tensor& policy_mask,
-        const torch::Tensor& search_value_available_mask,
-        const torch::Tensor& bootstrap_mask
-    ) {
-        BootstrapData& bootstrap = job->bootstrap;
-        torch::Tensor combined = job->reanalysis_frames.to(device_);
-        torch::Tensor device_frames = combined.narrow(
-            1, 0, job->frames.size(1)
-        );
+    DeviceFrameViews transfer_frames(const Job& job) const {
+        torch::Tensor combined = job.reanalysis_frames.to(device_);
         const auto bootstrap_policy_offset = combined.size(1)
-            - bootstrap.frames.size(1);
-        torch::Tensor device_bootstrap_frames = combined.narrow(
-            1,
+            - job.bootstrap.frames.size(1);
+        return DeviceFrameViews{
+            combined.narrow(1, 0, job.frames.size(1)),
+            combined.narrow(
+                1,
+                bootstrap_policy_offset,
+                job.bootstrap.frames.size(1)
+            ),
             bootstrap_policy_offset,
-            bootstrap.frames.size(1)
-        );
+        };
+    }
 
-        // Search policy roots first so overlapping TD endpoints can reuse the
-        // root values rather than launching the same search a second time.
+    void reanalyze_policy_roots(
+        Job* job,
+        const torch::Tensor& device_frames,
+        const torch::Tensor& policy_mask
+    ) {
         auto [positions, policies, search_values] =
             target_->policy_reanalysis_outputs(
                 device_frames,
@@ -752,50 +767,69 @@ private:
             );
             target_search_value_data[flat] = search_value_data[root];
         }
+    }
 
-        torch::Tensor mcts_bootstrap_mask = torch::zeros_like(bootstrap_mask);
-        if (job->use_mcts_bootstrap) {
-            mcts_bootstrap_mask = bootstrap.mcts_mask
+    static BootstrapPlan plan_bootstrap(
+        const Job& job,
+        const torch::Tensor& bootstrap_mask,
+        const torch::Tensor& search_value_available_mask,
+        std::int64_t bootstrap_policy_offset
+    ) {
+        const BootstrapData& bootstrap = job.bootstrap;
+        BootstrapPlan plan;
+        plan.mcts_mask = torch::zeros_like(bootstrap_mask);
+        if (job.use_mcts_bootstrap) {
+            plan.mcts_mask = bootstrap.mcts_mask
                 ? *bootstrap.mcts_mask & bootstrap_mask
                 : bootstrap_mask.clone();
         }
 
-        torch::Tensor reused_mask = torch::zeros_like(bootstrap_mask);
-        torch::Tensor reused_values = torch::zeros_like(job->value_targets);
+        plan.reused_mask = torch::zeros_like(bootstrap_mask);
+        plan.reused_values = torch::zeros_like(job.value_targets);
         if (bootstrap.cached_search_value_mask) {
-            reused_mask.copy_(*bootstrap.cached_search_value_mask);
-            reused_values.copy_(*bootstrap.cached_search_values);
+            plan.reused_mask.copy_(*bootstrap.cached_search_value_mask);
+            plan.reused_values.copy_(*bootstrap.cached_search_values);
         }
+
+        const auto state_count = job.policy_targets.size(1);
         if (bootstrap_policy_offset >= 0
             && bootstrap_policy_offset < state_count) {
             const auto overlap = state_count - bootstrap_policy_offset;
-            torch::Tensor overlap_mask = mcts_bootstrap_mask.narrow(
+            torch::Tensor overlap_mask = plan.mcts_mask.narrow(
                 1, 0, overlap
             ) & search_value_available_mask.narrow(
                 1, bootstrap_policy_offset, overlap
             );
-            reused_mask.narrow(1, 0, overlap).copy_(overlap_mask);
-            reused_values.narrow(1, 0, overlap).copy_(
-                job->search_value_targets.narrow(
+            plan.reused_mask.narrow(1, 0, overlap).copy_(overlap_mask);
+            plan.reused_values.narrow(1, 0, overlap).copy_(
+                job.search_value_targets.narrow(
                     1, bootstrap_policy_offset, overlap
                 )
             );
         }
 
-        mcts_bootstrap_mask &= ~reused_mask;
-        job->bootstrap_roots_searched =
-            mcts_bootstrap_mask.sum().item<std::int64_t>();
-        torch::Tensor remaining_bootstrap_mask =
-            bootstrap_mask & ~reused_mask;
-        const bool has_reused_values = reused_mask.any().item<bool>();
-        if (!remaining_bootstrap_mask.any().item<bool>()) {
-            if (has_reused_values) {
+        plan.mcts_mask &= ~plan.reused_mask;
+        plan.remaining_mask = bootstrap_mask & ~plan.reused_mask;
+        plan.roots_searched = plan.mcts_mask.sum().item<std::int64_t>();
+        plan.has_remaining_values = plan.remaining_mask.any().item<bool>();
+        plan.has_reused_values = plan.reused_mask.any().item<bool>();
+        return plan;
+    }
+
+    void reanalyze_bootstrap_values(
+        Job* job,
+        const torch::Tensor& device_bootstrap_frames,
+        const BootstrapPlan& plan
+    ) {
+        BootstrapData& bootstrap = job->bootstrap;
+        if (!plan.has_remaining_values) {
+            if (plan.has_reused_values) {
                 torch::Tensor corrected_targets = job->value_targets
                     + (
-                        reused_values - bootstrap.values
+                        plan.reused_values - bootstrap.values
                     ) * bootstrap.discounts;
                 job->value_targets.copy_(torch::where(
-                    reused_mask,
+                    plan.reused_mask,
                     corrected_targets,
                     job->value_targets
                 ));
@@ -807,21 +841,21 @@ private:
         torch::Tensor device_bootstrap_discounts =
             bootstrap.discounts.to(device_);
         torch::Tensor device_value_targets = job->value_targets.to(device_);
-        if (has_reused_values) {
+        if (plan.has_reused_values) {
             torch::Tensor corrected_targets = device_value_targets
                 + (
-                    reused_values.to(device_) - device_bootstrap_values
+                    plan.reused_values.to(device_) - device_bootstrap_values
                 ) * device_bootstrap_discounts;
             device_value_targets = torch::where(
-                reused_mask.to(device_),
+                plan.reused_mask.to(device_),
                 corrected_targets,
                 device_value_targets
             );
         }
         torch::Tensor reanalyzed_values = target_->reanalyze_values(
             device_bootstrap_frames,
-            remaining_bootstrap_mask.to(device_),
-            mcts_bootstrap_mask.to(device_),
+            plan.remaining_mask.to(device_),
+            plan.mcts_mask.to(device_),
             device_bootstrap_values,
             device_bootstrap_discounts,
             device_value_targets,
@@ -830,6 +864,32 @@ private:
             job->gumbel_sampling
         );
         job->value_targets.copy_(reanalyzed_values.cpu().contiguous());
+    }
+
+    void run_target(
+        Job* job,
+        const torch::Tensor& policy_mask,
+        const torch::Tensor& search_value_available_mask,
+        const torch::Tensor& bootstrap_mask
+    ) {
+        DeviceFrameViews frames = transfer_frames(*job);
+
+        // Search policy roots first so overlapping TD endpoints can reuse the
+        // root values rather than launching the same search a second time.
+        reanalyze_policy_roots(job, frames.policy_frames, policy_mask);
+
+        BootstrapPlan bootstrap_plan = plan_bootstrap(
+            *job,
+            bootstrap_mask,
+            search_value_available_mask,
+            frames.bootstrap_policy_offset
+        );
+        job->bootstrap_roots_searched = bootstrap_plan.roots_searched;
+        reanalyze_bootstrap_values(
+            job,
+            frames.bootstrap_frames,
+            bootstrap_plan
+        );
     }
 
     static void release_request_inputs(Job* job) {
