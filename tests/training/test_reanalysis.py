@@ -261,6 +261,40 @@ def test_mcts_bootstrap_reuses_nonoverlapping_cached_search_values() -> None:
         pipeline.close()
 
 
+def test_mcts_bootstrap_handles_fully_cached_search_values() -> None:
+    pipeline = _pipeline(
+        prefetch_batches=1,
+        mcts_bootstrap_start_step=0,
+    )
+    try:
+        pipeline.submit(_batch(), trained_steps=0)
+        seeded = pipeline.wait_next()
+
+        batch = replace(
+            _batch(),
+            reanalysis_state_ids=torch.tensor([[10, 11], [12, 13]]),
+            value_bootstrap_state_ids=torch.tensor([[0, 1], [1, 2]]),
+            mcts_bootstrap_mask=torch.ones(2, 2, dtype=torch.bool),
+        )
+        pipeline.submit(batch, trained_steps=0)
+        ready = pipeline.wait_next()
+
+        assert ready.policy_roots_searched == 4
+        assert ready.bootstrap_roots_searched == 0
+        assert seeded.batch.search_value_targets is not None
+        expected_bootstraps = torch.stack(
+            (
+                seeded.batch.search_value_targets[0],
+                seeded.batch.search_value_targets[1],
+            )
+        )
+        torch.testing.assert_close(
+            ready.batch.value_targets, expected_bootstraps - 1.0
+        )
+    finally:
+        pipeline.close()
+
+
 def test_native_pipeline_uses_explicit_state_ids_instead_of_id_arithmetic() -> None:
     pipeline = _pipeline(prefetch_batches=1)
     batch = replace(

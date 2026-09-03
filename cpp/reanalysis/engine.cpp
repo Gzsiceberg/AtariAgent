@@ -842,17 +842,35 @@ private:
                 mcts_bootstrap_mask.sum().item<std::int64_t>();
             torch::Tensor remaining_bootstrap_mask =
                 *bootstrap_mask & ~reused_mask;
+            const bool has_reused_values = reused_mask.any().item<bool>();
+            if (!remaining_bootstrap_mask.any().item<bool>()) {
+                if (has_reused_values) {
+                    torch::Tensor corrected_targets = job->value_targets
+                        + (
+                            reused_values - *job->value_bootstrap_values
+                        ) * *job->value_bootstrap_discounts;
+                    job->value_targets.copy_(torch::where(
+                        reused_mask,
+                        corrected_targets,
+                        job->value_targets
+                    ));
+                }
+                return;
+            }
+
+            torch::Tensor device_bootstrap_values =
+                job->value_bootstrap_values->to(device_);
+            torch::Tensor device_bootstrap_discounts =
+                job->value_bootstrap_discounts->to(device_);
             torch::Tensor device_value_targets =
                 job->value_targets.to(device_);
-            if (reused_mask.any().item<bool>()) {
-                torch::Tensor device_reused_mask = reused_mask.to(device_);
+            if (has_reused_values) {
                 torch::Tensor corrected_targets = device_value_targets
                     + (
-                        reused_values.to(device_)
-                        - job->value_bootstrap_values->to(device_)
-                    ) * job->value_bootstrap_discounts->to(device_);
+                        reused_values.to(device_) - device_bootstrap_values
+                    ) * device_bootstrap_discounts;
                 device_value_targets = torch::where(
-                    device_reused_mask,
+                    reused_mask.to(device_),
                     corrected_targets,
                     device_value_targets
                 );
@@ -861,8 +879,8 @@ private:
                 *device_bootstrap_frames,
                 remaining_bootstrap_mask.to(device_),
                 mcts_bootstrap_mask.to(device_),
-                job->value_bootstrap_values->to(device_),
-                job->value_bootstrap_discounts->to(device_),
+                device_bootstrap_values,
+                device_bootstrap_discounts,
                 device_value_targets,
                 job->stack_size,
                 job->root_noise_temperature,
