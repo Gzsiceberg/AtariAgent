@@ -232,6 +232,10 @@ class ReanalysisPipeline:
     def submit(self, batch: ReplayBatch, *, trained_steps: int = 0) -> int:
         """Queue a batch containing consolidated reanalysis frames."""
         self._require_open()
+        if isinstance(trained_steps, bool) or not isinstance(trained_steps, int):
+            raise TypeError("trained_steps must be an integer")
+        if trained_steps < 0:
+            raise ValueError("trained_steps must be non-negative")
         request_id = int(
             self._engine.submit(
                 batch,

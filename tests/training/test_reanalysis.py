@@ -252,6 +252,20 @@ def test_native_pipeline_expires_cached_targets_at_ttl() -> None:
         pipeline.close()
 
 
+def test_native_pipeline_validates_trained_steps() -> None:
+    pipeline = _pipeline(prefetch_batches=1)
+    try:
+        for trained_steps in (True, 1.0):
+            with pytest.raises(TypeError, match="trained_steps must be an integer"):
+                pipeline.submit(
+                    _batch(), trained_steps=trained_steps  # type: ignore[arg-type]
+                )
+        with pytest.raises(ValueError, match="trained_steps must be non-negative"):
+            pipeline.submit(_batch(), trained_steps=-1)
+    finally:
+        pipeline.close()
+
+
 def test_native_pipeline_validates_native_batch_tensor_contract() -> None:
     pipeline = _pipeline(prefetch_batches=1)
     try:
