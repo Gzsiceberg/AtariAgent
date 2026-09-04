@@ -170,11 +170,7 @@ def save_checkpoint(
         "representation": agent.representation_network.state_dict(),
         "dynamics": agent.dynamics_network.state_dict(),
         "prediction": agent.prediction_network.state_dict(),
-        "consistency": (
-            trainer.consistency_network.state_dict()
-            if trainer.consistency_network is not None
-            else None
-        ),
+        "consistency": trainer.consistency_network.state_dict(),
         "target_network": dict(target_state),
         "target_version": target_version,
         "optimizer": trainer.optimizer.state_dict(),
@@ -227,11 +223,7 @@ def save_pre_final_snapshot(
         "representation": agent.representation_network.state_dict(),
         "dynamics": agent.dynamics_network.state_dict(),
         "prediction": agent.prediction_network.state_dict(),
-        "consistency": (
-            trainer.consistency_network.state_dict()
-            if trainer.consistency_network is not None
-            else None
-        ),
+        "consistency": trainer.consistency_network.state_dict(),
         "trainer": trainer.training_state_dict(),
         "target_network": dict(target_state),
         "target_version": target_version,
@@ -293,13 +285,9 @@ def load_pre_final_snapshot(
             raise TypeError(f"snapshot {name} state must be a mapping")
         network.load_state_dict(state)
     consistency_state = snapshot.get("consistency")
-    if trainer.consistency_network is None:
-        if consistency_state is not None:
-            raise ValueError("snapshot uses a consistency network")
-    else:
-        if not isinstance(consistency_state, Mapping):
-            raise ValueError("snapshot has no consistency-network state")
-        trainer.consistency_network.load_state_dict(consistency_state)
+    if not isinstance(consistency_state, Mapping):
+        raise TypeError("snapshot consistency state must be a mapping")
+    trainer.consistency_network.load_state_dict(consistency_state)
 
     trainer_state = snapshot.get("trainer")
     replay_state = snapshot.get("replay")
@@ -436,8 +424,6 @@ def main(config: TrainAgentConfig) -> None:
         raise ValueError("augmentation.intensity_scale must be non-negative")
     if config.augmentation.enabled and not config.augmentation.transforms:
         raise ValueError("augmentation.transforms must not be empty when enabled")
-    if not isinstance(config.loss.consistency_enabled, bool):
-        raise TypeError("loss.consistency_enabled must be a boolean")
     if config.loss.consistency_weight < 0.0:
         raise ValueError("loss.consistency_weight must be non-negative")
     if config.checkpoint.collection_interval <= 0:
@@ -560,16 +546,11 @@ def main(config: TrainAgentConfig) -> None:
             ),
             search_rng=random.Random(config.seed),
         ).to(device)
-        consistency_network = (
-            ConsistencyNetwork().to(device)
-            if config.loss.consistency_enabled
-            else None
-        )
         trainer = Trainer(
             agent.representation_network,
             agent.dynamics_network,
             agent.prediction_network,
-            consistency_network=consistency_network,
+            consistency_network=ConsistencyNetwork().to(device),
             augmentation=(
                 config.augmentation.transforms
                 if config.augmentation.enabled

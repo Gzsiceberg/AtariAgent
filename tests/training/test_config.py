@@ -134,7 +134,6 @@ def test_wandb_is_disabled_by_default() -> None:
 def test_consistency_loss_uses_efficientzero_defaults() -> None:
     config = LossConfig()
 
-    assert config.consistency_enabled
     assert config.consistency_weight == pytest.approx(5.0)
 
 

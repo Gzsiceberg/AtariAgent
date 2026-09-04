@@ -11,7 +11,12 @@ from time import perf_counter
 
 import torch
 
-from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
+from atariagent.models import (
+    ConsistencyNetwork,
+    DynamicsNetwork,
+    PredictionNetwork,
+    RepresentationNetwork,
+)
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import SearchConfig
 from atariagent.training import (
@@ -67,6 +72,7 @@ def main() -> None:
     prediction = PredictionNetwork(3).to(device)
     trainer = Trainer(
         representation, dynamics, prediction,
+        consistency_network=ConsistencyNetwork().to(device),
         unroll_steps=1, lstm_horizon=1,
     )
     pipeline = ReanalysisPipeline(

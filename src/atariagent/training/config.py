@@ -118,7 +118,6 @@ class LossConfig:
     policy_weight: float = 1.0
     value_weight: float = 0.25
     reward_weight: float = 1.0
-    consistency_enabled: bool = True
     consistency_weight: float = 5.0
 
 

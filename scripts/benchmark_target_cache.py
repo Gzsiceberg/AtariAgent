@@ -14,7 +14,12 @@ import numpy as np
 import torch
 from benchmark_reanalysis_pool import make_batch
 
-from atariagent.models import DynamicsNetwork, PredictionNetwork, RepresentationNetwork
+from atariagent.models import (
+    ConsistencyNetwork,
+    DynamicsNetwork,
+    PredictionNetwork,
+    RepresentationNetwork,
+)
 from atariagent.search import SearchConfig
 from atariagent.training import (
     ReanalysisPipeline,
@@ -108,6 +113,7 @@ def main() -> None:
     dynamics = DynamicsNetwork(args.action_space_size).to(device)
     trainer = Trainer(
         representation, dynamics, prediction,
+        consistency_network=ConsistencyNetwork().to(device),
         unroll_steps=args.unroll_steps, lstm_horizon=5,
         precision=args.precision, compile_model=True,
     )

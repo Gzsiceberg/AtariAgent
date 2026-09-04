@@ -14,6 +14,19 @@ from atariagent.replay_batch import ReplayBatch
 from atariagent.training import Trainer
 
 
+class _ZeroConsistency(torch.nn.Module):
+    """Keep consistency mandatory without affecting unrelated loss tests."""
+
+    def forward(
+        self,
+        predicted_state: torch.Tensor,
+        target_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        prediction = predicted_state.flatten(1)[:, :1] * 0.0
+        target = target_state.flatten(1)[:, :1].detach() * 0.0
+        return prediction, target
+
+
 def test_scalar_categorical_loss_interpolates_transformed_target() -> None:
     logits = torch.randn(2, 601)
     targets = torch.tensor([0.0, 1.0])
@@ -249,8 +262,10 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
     representation = _ScalarRepresentation()
     dynamics = _RewardIdentityDynamics()
     prediction = _ScalarPrediction()
+    consistency = _ZeroConsistency()
     compiled_modules = tuple(
-        deepcopy(module) for module in (representation, dynamics, prediction)
+        deepcopy(module)
+        for module in (representation, dynamics, prediction, consistency)
     )
     trainer_arguments = dict(
         learning_rate=0.1,
@@ -266,10 +281,12 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         representation,
         dynamics,
         prediction,
+        consistency_network=consistency,
         **trainer_arguments,
     )
     compiled = Trainer(
-        *compiled_modules,
+        *compiled_modules[:3],
+        consistency_network=compiled_modules[3],
         compile_model=True,
         **trainer_arguments,
     )
@@ -331,6 +348,7 @@ def test_agent_requires_dynamics_gradient_scaling() -> None:
             _ScalarRepresentation(),
             _IdentityDynamics(scale_state_gradient=False),
             _ScalarPrediction(),
+            consistency_network=_ZeroConsistency(),
         )
 
 
@@ -340,6 +358,7 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
         representation,
         _IdentityDynamics(),
         _ScalarPrediction(),
+        consistency_network=_ZeroConsistency(),
         learning_rate=0.1,
         unroll_steps=2,
         lstm_horizon=2,
@@ -378,6 +397,7 @@ def test_agent_scales_root_and_recurrent_losses_together() -> None:
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),
+        consistency_network=_ZeroConsistency(),
         unroll_steps=2,
         lstm_horizon=2,
     )
@@ -421,6 +441,7 @@ def test_fp16_precision_is_not_supported() -> None:
             RepresentationNetwork(4),
             DynamicsNetwork(action_space_size=3),
             PredictionNetwork(action_space_size=3),
+            consistency_network=_ZeroConsistency(),
             precision="fp16",  # type: ignore[arg-type]
         )
 
@@ -431,6 +452,7 @@ def test_bf16_precision_requires_cuda() -> None:
             RepresentationNetwork(4),
             DynamicsNetwork(action_space_size=3),
             PredictionNetwork(action_space_size=3),
+            consistency_network=_ZeroConsistency(),
             precision="bf16",
         )
 
@@ -440,6 +462,7 @@ def test_agent_trainer_defaults_to_adam() -> None:
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),
+        consistency_network=_ZeroConsistency(),
     )
 
     assert isinstance(trainer.optimizer, torch.optim.Adam)
@@ -460,6 +483,7 @@ def test_agent_trainer_preserves_sgd_and_step_learning_rate_schedule() -> None:
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),
+        consistency_network=_ZeroConsistency(),
         optimizer="sgd",
         learning_rate=0.2,
         momentum=0.9,

@@ -57,7 +57,7 @@ class _LearnerUnroll(nn.Module):
         representation: nn.Module,
         dynamics: nn.Module,
         prediction: nn.Module,
-        consistency_network: nn.Module | None,
+        consistency_network: nn.Module,
         augmentation: Transforms | None,
         *,
         observation_dtype: torch.dtype,
@@ -173,7 +173,7 @@ class _LearnerUnroll(nn.Module):
 
     def _prepare_observations(
         self, frames: Tensor
-    ) -> tuple[Tensor, Tensor | None]:
+    ) -> tuple[Tensor, Tensor]:
         """Normalize and independently augment root and target observations."""
         batch_size, frame_count, channels, height, width = frames.shape
         stack_size = frame_count - self.unroll_steps
@@ -185,9 +185,6 @@ class _LearnerUnroll(nn.Module):
         ).to(dtype=self.observation_dtype).div(255.0)
         if self.augmentation is not None:
             observations = self.augmentation(observations)
-
-        if self.consistency_network is None:
-            return observations, None
 
         # Packing time into channels gives every target stack one shared
         # spatial shift and intensity draw, independently of the root draw.
@@ -294,24 +291,22 @@ class _LearnerUnroll(nn.Module):
                 policy_mask[:, step + 1],
             )
 
-            if self.consistency_network is not None:
-                assert target_frames is not None
-                target_observations = target_frames[
-                    :, step : step + stack_size
-                ].reshape(
-                    batch_size,
-                    observations.shape[1],
-                    target_frames.shape[3],
-                    target_frames.shape[4],
-                )
-                with torch.no_grad():
-                    target_state = self.representation(target_observations)
-                predicted_projection, target_projection = (
-                    self.consistency_network(state, target_state)
-                )
-                recurrent_consistency_loss += consist_loss_func(
-                    predicted_projection, target_projection
-                ) * action_mask[:, step].to(predicted_projection.dtype)
+            target_observations = target_frames[
+                :, step : step + stack_size
+            ].reshape(
+                batch_size,
+                observations.shape[1],
+                target_frames.shape[3],
+                target_frames.shape[4],
+            )
+            with torch.no_grad():
+                target_state = self.representation(target_observations)
+            predicted_projection, target_projection = self.consistency_network(
+                state, target_state
+            )
+            recurrent_consistency_loss += consist_loss_func(
+                predicted_projection, target_projection
+            ) * action_mask[:, step].to(predicted_projection.dtype)
 
             if (step + 1) % self.lstm_horizon == 0:
                 hidden = None
@@ -365,9 +360,9 @@ class Trainer:
     Root and recurrent losses are summed and scaled by ``1 / unroll_steps``.
     Recurrent latent-state gradients are halved following EfficientZero.
     Replay batches already contain asynchronously refreshed value and policy
-    targets. When a consistency network is supplied, recurrent dynamics states
-    are aligned with stop-gradient representation states from the corresponding
-    observations. The default Atari loss coefficients are policy 1, value 0.25,
+    targets. Recurrent dynamics states are aligned with stop-gradient
+    representation states from the corresponding observations. The default
+    Atari loss coefficients are policy 1, value 0.25,
     value-prefix reward 1, and consistency 5.
     """
 
@@ -377,7 +372,7 @@ class Trainer:
         dynamics: nn.Module,
         prediction: nn.Module,
         *,
-        consistency_network: nn.Module | None = None,
+        consistency_network: nn.Module,
         augmentation: Sequence[str] | None = None,
         augmentation_shift_delta: int = 4,
         augmentation_intensity_scale: float = 0.05,
@@ -452,15 +447,11 @@ class Trainer:
             if weight < 0.0:
                 raise ValueError(f"{name} must be non-negative")
 
-        original_modules = tuple(
-            module
-            for module in (
-                representation,
-                dynamics,
-                prediction,
-                consistency_network,
-            )
-            if module is not None
+        original_modules = (
+            representation,
+            dynamics,
+            prediction,
+            consistency_network,
         )
         parameters = [
             parameter
@@ -676,20 +667,16 @@ class Trainer:
     @torch.no_grad()
     def _prepare_observations(
         self, frames: Tensor
-    ) -> tuple[Tensor, Tensor | None]:
+    ) -> tuple[Tensor, Tensor]:
         """Prepare observations through the same path as the learner graph."""
         return self._uncompiled_unroll._prepare_observations(frames)
 
     def _original_modules(self) -> tuple[nn.Module, ...]:
-        return tuple(
-            module
-            for module in (
-                self.original_representation,
-                self.original_dynamics,
-                self.original_prediction,
-                self.original_consistency_network,
-            )
-            if module is not None
+        return (
+            self.original_representation,
+            self.original_dynamics,
+            self.original_prediction,
+            self.original_consistency_network,
         )
 
     def _adjust_learning_rate(self) -> float:
