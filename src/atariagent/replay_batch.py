@@ -23,7 +23,7 @@ class ReplayBatch:
     be computed; a true terminal state has a valid zero-value target without
     an MCTS policy. Value-bootstrap fields carry compact real observations,
     stored bootstrap terms, and logical endpoint IDs so reanalysis can refresh
-    TD endpoints without changing replay. Search values and zero-based
+    and cache TD endpoint predictions without changing replay. Search values and zero-based
     transition ages (the number of newer replay transitions) are
     temporary metadata used to select
     EfficientZero V2's mixed value target before training. Reanalysis state
@@ -47,6 +47,7 @@ class ReplayBatch:
     value_bootstrap_values: Float[Tensor, "batch states"] | None = None
     value_bootstrap_discounts: Float[Tensor, "batch states"] | None = None
     value_bootstrap_mask: Bool[Tensor, "batch states"] | None = None
+    value_bootstrap_state_ids: Int[Tensor, "batch states"] | None = None
     reanalysis_frames: (
         UInt8[Tensor, "batch reanalysis_frames channels height width"] | None
     ) = None
@@ -228,6 +229,7 @@ class ReplayBatch:
             value_bootstrap_values=None,
             value_bootstrap_discounts=None,
             value_bootstrap_mask=None,
+            value_bootstrap_state_ids=None,
         )
 
     def without_reanalysis_metadata(self) -> ReplayBatch:

@@ -149,12 +149,10 @@ void ValueTargetNetwork::synchronize(
     );
 }
 
-torch::Tensor ValueTargetNetwork::reanalyze_values(
+std::tuple<torch::Tensor, torch::Tensor>
+ValueTargetNetwork::value_predictions(
     const torch::Tensor& bootstrap_frames,
     const torch::Tensor& bootstrap_mask,
-    const torch::Tensor& stored_bootstrap_values,
-    const torch::Tensor& bootstrap_discounts,
-    const torch::Tensor& value_targets,
     std::int64_t stack_size
 ) {
     c10::InferenceMode inference_guard;
@@ -163,9 +161,17 @@ torch::Tensor ValueTargetNetwork::reanalyze_values(
     );
     torch::Tensor positions = torch::nonzero(bootstrap_mask).contiguous();
     if (positions.size(0) == 0) {
-        return value_targets;
+        return {
+            positions.cpu(),
+            torch::empty({0}, torch::kFloat32),
+        };
     }
-    torch::Tensor fresh_values = stored_bootstrap_values.clone();
+    std::vector<torch::Tensor> value_chunks;
+    value_chunks.reserve(
+        static_cast<std::size_t>(
+            (positions.size(0) + chunk_size_ - 1) / chunk_size_
+        )
+    );
     using namespace torch::indexing;
     for (std::int64_t start = 0; start < positions.size(0);
          start += chunk_size_) {
@@ -177,20 +183,16 @@ torch::Tensor ValueTargetNetwork::reanalyze_values(
         );
         torch::Tensor states = representation_->forward(observations);
         auto prediction = prediction_->forward(states);
-        torch::Tensor values = categorical_to_scalar(
+        value_chunks.push_back(categorical_to_scalar(
             std::get<1>(prediction).to(torch::kFloat32),
             support_min_,
             support_max_
-        );
-        fresh_values.index_put_(
-            {chunk.select(1, 0), chunk.select(1, 1)}, values
-        );
+        ));
     }
-    torch::Tensor delta = (fresh_values - stored_bootstrap_values)
-        * bootstrap_discounts;
-    return torch::where(
-        bootstrap_mask, value_targets + delta, value_targets
-    );
+    return {
+        positions.cpu().contiguous(),
+        torch::cat(value_chunks, 0).cpu().contiguous(),
+    };
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>

@@ -45,6 +45,7 @@ public:
     std::size_t pending_count() const;
     std::size_t max_pending() const;
     std::size_t cache_size() const;
+    std::size_t value_cache_size() const;
     std::int64_t weight_version() const;
 
 private:

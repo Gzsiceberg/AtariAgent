@@ -346,13 +346,10 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("dynamics")
         )
         .def(
-            "reanalyze_values",
-            &ValueTargetNetwork::reanalyze_values,
+            "value_predictions",
+            &ValueTargetNetwork::value_predictions,
             py::arg("bootstrap_frames"),
             py::arg("bootstrap_mask"),
-            py::arg("stored_bootstrap_values"),
-            py::arg("bootstrap_discounts"),
-            py::arg("value_targets"),
             py::arg("stack_size")
         );
 
@@ -402,6 +399,9 @@ PYBIND11_MODULE(_models_native, module) {
         )
         .def_property_readonly(
             "cache_size", &NativeReanalysisEngine::cache_size
+        )
+        .def_property_readonly(
+            "value_cache_size", &NativeReanalysisEngine::value_cache_size
         )
         .def_property_readonly(
             "weight_version", &NativeReanalysisEngine::weight_version

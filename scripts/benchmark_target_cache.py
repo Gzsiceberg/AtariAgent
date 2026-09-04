@@ -105,6 +105,11 @@ def main() -> None:
             base_batch,
             indices=starts,
             reanalysis_state_ids=starts[:, None] + state_offsets[None, :],
+            value_bootstrap_state_ids=(
+                starts[:, None]
+                + args.unroll_steps
+                + state_offsets[None, :]
+            ),
         )
         for starts in sampled_starts
     )
@@ -151,6 +156,7 @@ def main() -> None:
             wait=True,
         )
         submitted = completed = requested = searched = 0
+        value_requested = value_searched = value_hits = 0
         worker_ms = 0.0
         cache_samples: list[tuple[float, float]] = []
         started = perf_counter()
@@ -161,6 +167,9 @@ def main() -> None:
             ready = pipeline.wait_next()
             requested += ready.policy_roots_requested
             searched += ready.policy_roots_searched
+            value_requested += ready.value_roots_requested
+            value_searched += ready.value_roots_searched
+            value_hits += ready.value_cache_hits
             worker_ms += ready.worker_duration_ms
             hit_fraction = 1.0 - (
                 ready.policy_roots_searched / ready.policy_roots_requested
@@ -175,6 +184,7 @@ def main() -> None:
         elapsed = perf_counter() - started
 
         cache_size_before_publication = pipeline.cache_size
+        value_cache_size_before_publication = pipeline.value_cache_size
         snapshot_ms: list[float] = []
         publication_ms: list[float] = []
         for repetition in range(args.publication_repetitions):
@@ -209,6 +219,10 @@ def main() -> None:
             "policy_roots_requested": requested,
             "policy_roots_searched": searched,
             "policy_search_reduction": requested / searched,
+            "value_roots_requested": value_requested,
+            "value_roots_searched": value_searched,
+            "value_cache_hits": value_hits,
+            "value_cache_size": value_cache_size_before_publication,
             "cache_size": cache_size_before_publication,
             "cache_size_before_publication_profile": (
                 cache_size_before_publication

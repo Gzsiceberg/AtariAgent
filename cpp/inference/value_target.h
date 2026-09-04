@@ -51,12 +51,9 @@ public:
         const pybind11::dict& prediction,
         const pybind11::dict& dynamics
     );
-    torch::Tensor reanalyze_values(
+    std::tuple<torch::Tensor, torch::Tensor> value_predictions(
         const torch::Tensor& bootstrap_frames,
         const torch::Tensor& bootstrap_mask,
-        const torch::Tensor& stored_bootstrap_values,
-        const torch::Tensor& bootstrap_discounts,
-        const torch::Tensor& value_targets,
         std::int64_t stack_size
     );
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>

@@ -156,6 +156,11 @@ public:
                 "cached reanalysis requires reanalysis_state_ids"
             );
         }
+        if (cache_targets_ && !job->bootstrap.state_ids) {
+            throw std::invalid_argument(
+                "cached reanalysis requires value_bootstrap_state_ids"
+            );
+        }
         job->submitted = Clock::now();
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -247,6 +252,9 @@ public:
         result["policy_roots_requested"] = job->roots_requested;
         result["policy_roots_searched"] = job->roots_searched;
         result["cache_hits"] = job->cache_hits;
+        result["value_roots_requested"] = job->value_roots_requested;
+        result["value_roots_searched"] = job->value_roots_searched;
+        result["value_cache_hits"] = job->value_cache_hits;
         result["cache_target_age_mean"] = job->cache_hits > 0
             ? job->cache_target_age_sum
                 / static_cast<double>(job->cache_hits)
@@ -297,6 +305,11 @@ public:
         return cache_size_;
     }
 
+    std::size_t value_cache_size() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return value_cache_size_;
+    }
+
     std::int64_t weight_version() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return published_version_;
@@ -311,6 +324,7 @@ private:
         torch::Tensor values;
         torch::Tensor discounts;
         torch::Tensor mask;
+        std::optional<torch::Tensor> state_ids;
     };
 
     struct DeviceFrameViews {
@@ -337,6 +351,8 @@ private:
         TensorState prediction;
         TensorState dynamics;
         std::vector<CacheMiss> cache_misses;
+        std::vector<CacheMiss> value_cache_misses;
+        torch::Tensor fresh_bootstrap_values;
         Clock::time_point submitted;
         double queue_wait_ms = 0.0;
         double worker_duration_ms = 0.0;
@@ -344,6 +360,9 @@ private:
         std::int64_t roots_requested = 0;
         std::int64_t roots_searched = 0;
         std::int64_t cache_hits = 0;
+        std::int64_t value_roots_requested = 0;
+        std::int64_t value_roots_searched = 0;
+        std::int64_t value_cache_hits = 0;
         double cache_target_age_sum = 0.0;
         std::int64_t cache_target_age_max = 0;
         std::int64_t trained_step = 0;
@@ -385,6 +404,7 @@ private:
             tensor_attribute(object, "value_bootstrap_values"),
             tensor_attribute(object, "value_bootstrap_discounts"),
             tensor_attribute(object, "value_bootstrap_mask"),
+            optional_tensor_attribute(object, "value_bootstrap_state_ids"),
         };
     }
 
@@ -464,6 +484,17 @@ private:
                 "value_bootstrap_mask must match policy_mask"
             );
         }
+        if (bootstrap.state_ids) {
+            require_cpu(*bootstrap.state_ids, "value_bootstrap_state_ids");
+            if (bootstrap.state_ids->scalar_type() != torch::kLong
+                || bootstrap.state_ids->sizes() != job.policy_mask.sizes()
+                || !bootstrap.state_ids->is_contiguous()) {
+                throw std::invalid_argument(
+                    "value_bootstrap_state_ids must be a contiguous int64 "
+                    "tensor matching policy_mask"
+                );
+            }
+        }
         require_cpu(bootstrap.frames, "value_bootstrap_frames");
         require_cpu(bootstrap.values, "value_bootstrap_values");
         require_cpu(bootstrap.discounts, "value_bootstrap_discounts");
@@ -518,7 +549,7 @@ private:
                 if (job->kind == Kind::Weights) {
                     process_weights(job);
                 } else if (job->kind == Kind::CacheClear) {
-                    process_cache_clear();
+                    process_policy_cache_clear();
                 } else {
                     process_request(job);
                 }
@@ -560,17 +591,24 @@ private:
             job->prediction,
             job->dynamics
         );
-        process_cache_clear();
+        process_all_cache_clear();
         active_version_ = job->version;
         job->representation.clear();
         job->prediction.clear();
         job->dynamics.clear();
     }
 
-    void process_cache_clear() {
-        cache_.clear();
+    void process_policy_cache_clear() {
+        cache_.clear_policy();
         std::lock_guard<std::mutex> lock(mutex_);
         cache_size_ = 0;
+    }
+
+    void process_all_cache_clear() {
+        cache_.clear_all();
+        std::lock_guard<std::mutex> lock(mutex_);
+        cache_size_ = 0;
+        value_cache_size_ = 0;
     }
 
     void process_request(const std::shared_ptr<Job>& job) {
@@ -583,17 +621,19 @@ private:
             Clock::now() - job->submitted
         ).count();
         job->roots_requested = job->policy_mask.sum().item<std::int64_t>();
+        job->value_roots_requested = job->bootstrap.mask.sum()
+            .item<std::int64_t>();
         const auto started = Clock::now();
         reset_peak_memory();
 
         BootstrapData& bootstrap = job->bootstrap;
         torch::Tensor effective_policy_mask = job->policy_mask;
-        torch::Tensor effective_bootstrap_mask = bootstrap.mask;
+        torch::Tensor effective_value_mask = bootstrap.mask;
+        job->value_targets = job->value_targets.clone();
         if (cache_targets_) {
-            CachePreparation prepared = cache_.prepare(
+            CachePreparation prepared = cache_.prepare_policy(
                 job->policy_mask,
                 job->policy_targets,
-                job->value_targets,
                 *job->reanalysis_state_ids,
                 job->trained_step,
                 cache_target_ttl_
@@ -603,39 +643,67 @@ private:
             job->cache_hits = prepared.cache_hits;
             job->cache_target_age_sum = prepared.cache_target_age_sum;
             job->cache_target_age_max = prepared.cache_target_age_max;
-            job->value_targets = std::move(prepared.value_targets);
             job->search_value_targets = std::move(
                 prepared.search_value_targets
             );
             job->policy_targets = std::move(prepared.policy_targets);
-            effective_bootstrap_mask = bootstrap.mask & prepared.miss_mask;
             effective_policy_mask = std::move(prepared.miss_mask);
+
+            // Cache only the deterministic raw endpoint prediction. Corrected
+            // TD targets remain occurrence-specific because masks, stored
+            // bootstrap terms, and discounts can differ for the same state.
+            ValueCachePreparation values = cache_.prepare_values(
+                bootstrap.mask,
+                *bootstrap.state_ids
+            );
+            job->value_cache_misses = std::move(values.misses);
+            job->value_roots_searched = values.roots_searched;
+            job->value_cache_hits = values.cache_hits;
+            job->fresh_bootstrap_values = std::move(values.values);
+            effective_value_mask = std::move(values.miss_mask);
         } else {
             job->roots_searched = job->roots_requested;
-            job->value_targets = job->value_targets.clone();
+            job->value_roots_searched = job->value_roots_requested;
             job->search_value_targets = torch::zeros_like(
                 job->value_targets
             );
             job->policy_targets = job->policy_targets.clone();
+            job->fresh_bootstrap_values = torch::zeros_like(
+                bootstrap.values
+            );
         }
 
-        if (job->roots_searched > 0) {
+        if (job->roots_searched > 0 || job->value_roots_searched > 0) {
             run_target(
                 job.get(),
                 effective_policy_mask,
-                effective_bootstrap_mask
+                effective_value_mask
             );
-            if (cache_targets_) {
-                cache_.resolve(
-                    job->cache_misses,
-                    job->value_targets,
-                    job->search_value_targets,
-                    job->policy_targets,
-                    job->trained_step
-                );
-                std::lock_guard<std::mutex> lock(mutex_);
-                cache_size_ = cache_.size();
-            }
+        }
+        if (cache_targets_) {
+            cache_.resolve_policy(
+                job->cache_misses,
+                job->search_value_targets,
+                job->policy_targets,
+                job->trained_step
+            );
+            cache_.resolve_values(
+                job->value_cache_misses,
+                job->fresh_bootstrap_values
+            );
+            std::lock_guard<std::mutex> lock(mutex_);
+            cache_size_ = cache_.policy_size();
+            value_cache_size_ = cache_.value_size();
+        }
+        if (job->value_roots_requested > 0) {
+            torch::Tensor delta = (
+                job->fresh_bootstrap_values - bootstrap.values
+            ) * bootstrap.discounts;
+            job->value_targets = torch::where(
+                bootstrap.mask,
+                job->value_targets + delta,
+                job->value_targets
+            );
         }
         job->worker_duration_ms = std::chrono::duration<double, std::milli>(
             Clock::now() - started
@@ -701,35 +769,50 @@ private:
         }
     }
 
-    void reanalyze_bootstrap_values(
+    void predict_bootstrap_values(
         Job* job,
         const torch::Tensor& device_bootstrap_frames,
         const torch::Tensor& bootstrap_mask
     ) {
-        BootstrapData& bootstrap = job->bootstrap;
-        torch::Tensor reanalyzed_values = target_->reanalyze_values(
+        auto [positions, values] = target_->value_predictions(
             device_bootstrap_frames,
             bootstrap_mask.to(device_),
-            bootstrap.values.to(device_),
-            bootstrap.discounts.to(device_),
-            job->value_targets.to(device_),
             job->stack_size
         );
-        job->value_targets.copy_(reanalyzed_values.cpu().contiguous());
+        const auto root_count = positions.size(0);
+        if (values.sizes() != torch::IntArrayRef({root_count})) {
+            throw std::runtime_error(
+                "value reanalysis returned incompatible outputs"
+            );
+        }
+        const auto state_count = job->fresh_bootstrap_values.size(1);
+        const auto* position_data = positions.data_ptr<std::int64_t>();
+        const auto* value_data = values.data_ptr<float>();
+        auto* fresh_value_data =
+            job->fresh_bootstrap_values.data_ptr<float>();
+        for (std::int64_t root = 0; root < root_count; ++root) {
+            const auto flat = position_data[root * 2] * state_count
+                + position_data[root * 2 + 1];
+            fresh_value_data[flat] = value_data[root];
+        }
     }
 
     void run_target(
         Job* job,
         const torch::Tensor& policy_mask,
-        const torch::Tensor& bootstrap_mask
+        const torch::Tensor& value_mask
     ) {
         DeviceFrameViews frames = transfer_frames(*job);
-        reanalyze_policy_roots(job, frames.policy_frames, policy_mask);
-        reanalyze_bootstrap_values(
-            job,
-            frames.bootstrap_frames,
-            bootstrap_mask
-        );
+        if (job->roots_searched > 0) {
+            reanalyze_policy_roots(job, frames.policy_frames, policy_mask);
+        }
+        if (job->value_roots_searched > 0) {
+            predict_bootstrap_values(
+                job,
+                frames.bootstrap_frames,
+                value_mask
+            );
+        }
     }
 
     static void release_request_inputs(Job* job) {
@@ -739,6 +822,9 @@ private:
         job->reanalysis_state_ids.reset();
         job->bootstrap = BootstrapData{};
         job->reanalysis_frames = torch::Tensor();
+        job->fresh_bootstrap_values = torch::Tensor();
+        job->cache_misses.clear();
+        job->value_cache_misses.clear();
     }
 
     void reset_peak_memory() const {
@@ -787,7 +873,7 @@ private:
         jobs_.clear();
         completed_.clear();
         pending_count_ = 0;
-        cache_.clear();
+        cache_.clear_all();
         target_.reset();
     }
 
@@ -815,6 +901,7 @@ private:
     std::size_t pending_count_ = 0;
     std::size_t max_pending_ = 0;
     std::size_t cache_size_ = 0;
+    std::size_t value_cache_size_ = 0;
 };
 
 NativeReanalysisEngine::NativeReanalysisEngine(
@@ -882,6 +969,10 @@ std::size_t NativeReanalysisEngine::max_pending() const {
 
 std::size_t NativeReanalysisEngine::cache_size() const {
     return impl_->cache_size();
+}
+
+std::size_t NativeReanalysisEngine::value_cache_size() const {
+    return impl_->value_cache_size();
 }
 
 std::int64_t NativeReanalysisEngine::weight_version() const {

@@ -37,6 +37,9 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
         value_bootstrap_values=torch.ones(batch_size, 2),
         value_bootstrap_discounts=torch.ones(batch_size, 2),
         value_bootstrap_mask=torch.ones(batch_size, 2, dtype=torch.bool),
+        value_bootstrap_state_ids=(
+            torch.arange(batch_size * 2).view(batch_size, 2) + 100
+        ),
         reanalysis_state_ids=(
             torch.arange(batch_size)[:, None] + torch.arange(2)[None, :]
         ),
@@ -155,6 +158,60 @@ def test_native_pipeline_uses_consolidated_reanalysis_frames() -> None:
         pipeline.close()
 
 
+def test_cache_does_not_copy_an_invalid_value_to_a_valid_duplicate() -> None:
+    pipeline = _pipeline(prefetch_batches=1)
+    batch = replace(
+        _batch(),
+        policy_mask=torch.tensor([[True, False], [True, False]]),
+        value_mask=torch.tensor([[False, False], [True, False]]),
+        value_targets=torch.tensor([[0.0, 0.0], [10.0, 0.0]]),
+        value_bootstrap_mask=torch.zeros(2, 2, dtype=torch.bool),
+        reanalysis_state_ids=torch.tensor([[7, -1], [7, -1]]),
+    )
+    try:
+        pipeline.submit(batch)
+        ready = pipeline.wait_next()
+
+        assert ready.policy_roots_searched == 1
+        assert ready.batch.value_targets[1, 0] == 10.0
+    finally:
+        pipeline.close()
+
+
+def test_value_cache_reuses_raw_predictions_for_occurrence_specific_targets() -> None:
+    pipeline = _pipeline(prefetch_batches=1)
+    batch = replace(
+        _batch(),
+        value_targets=torch.tensor([[10.0, 0.0], [20.0, 0.0]]),
+        value_bootstrap_values=torch.tensor([[1.0, 0.0], [3.0, 0.0]]),
+        value_bootstrap_discounts=torch.tensor([[1.0, 0.0], [0.5, 0.0]]),
+        value_bootstrap_mask=torch.tensor(
+            [[True, False], [True, False]]
+        ),
+        value_bootstrap_state_ids=torch.tensor([[9, -1], [9, -1]]),
+    )
+    try:
+        pipeline.submit(batch)
+        first = pipeline.wait_next()
+        pipeline.submit(batch)
+        cached = pipeline.wait_next()
+
+        assert first.value_roots_requested == 2
+        assert first.value_roots_searched == 1
+        assert cached.value_roots_searched == 0
+        assert cached.value_cache_hits == 2
+        torch.testing.assert_close(
+            first.batch.value_targets[1, 0],
+            14.0 + 0.5 * first.batch.value_targets[0, 0],
+        )
+        torch.testing.assert_close(
+            cached.batch.value_targets,
+            first.batch.value_targets,
+        )
+    finally:
+        pipeline.close()
+
+
 def test_native_pipeline_uses_explicit_state_ids_instead_of_id_arithmetic() -> None:
     pipeline = _pipeline(prefetch_batches=1)
     batch = replace(
@@ -191,6 +248,13 @@ def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
         assert first.policy_roots_searched == 3
         assert cached.policy_roots_searched == 0
         assert cached.cache_hits == 4
+        assert first.value_roots_requested == 4
+        assert first.value_roots_searched == 4
+        assert first.value_cache_hits == 0
+        assert cached.value_roots_requested == 4
+        assert cached.value_roots_searched == 0
+        assert cached.value_cache_hits == 4
+        assert pipeline.value_cache_size == 4
         assert cached.cache_target_age_mean == pytest.approx(0.0)
         assert cached.cache_target_age_max == 0
         assert pipeline.cache_size == 3
@@ -213,7 +277,10 @@ def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
         pipeline.submit(batch)
         refreshed = pipeline.wait_next()
         assert refreshed.policy_roots_searched == 3
+        assert refreshed.value_roots_searched == 0
+        assert refreshed.value_cache_hits == 4
         assert pipeline.cache_size == 3
+        assert pipeline.value_cache_size == 4
 
         representation = RepresentationNetwork(4)
         prediction = PredictionNetwork(2)
@@ -223,6 +290,7 @@ def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
             make_target_state(representation, prediction, dynamics),
         )
         assert pipeline.cache_size == 0
+        assert pipeline.value_cache_size == 0
         assert pipeline.weight_version == 1
     finally:
         pipeline.close()
@@ -248,6 +316,8 @@ def test_native_pipeline_expires_cached_targets_at_ttl() -> None:
         assert cached.cache_target_age_max == 199
         assert expired.policy_roots_searched == 3
         assert expired.cache_hits == 0
+        assert expired.value_roots_searched == 0
+        assert expired.value_cache_hits == 4
     finally:
         pipeline.close()
 
@@ -284,6 +354,7 @@ def test_native_pipeline_validates_native_batch_tensor_contract() -> None:
             "value_bootstrap_values",
             "value_bootstrap_discounts",
             "value_bootstrap_mask",
+            "value_bootstrap_state_ids",
         ):
             with pytest.raises(ValueError, match=field_name):
                 pipeline.submit(replace(_batch(), **{field_name: None}))

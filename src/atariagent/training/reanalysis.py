@@ -39,6 +39,9 @@ class ReadyReanalysis:
     policy_roots_requested: int = 0
     policy_roots_searched: int = 0
     cache_hits: int = 0
+    value_roots_requested: int = 0
+    value_roots_searched: int = 0
+    value_cache_hits: int = 0
     cache_target_age_mean: float = 0.0
     cache_target_age_max: int = 0
 
@@ -193,6 +196,10 @@ class ReanalysisPipeline:
         return int(self._engine.cache_size)
 
     @property
+    def value_cache_size(self) -> int:
+        return int(self._engine.value_cache_size)
+
+    @property
     def weight_version(self) -> int:
         return int(self._engine.weight_version)
 
@@ -219,7 +226,7 @@ class ReanalysisPipeline:
         self._latest_target_state = dict(state)
 
     def clear_cache(self) -> None:
-        """Queue a cache clear after all previously submitted requests."""
+        """Queue a policy-cache clear after all previously submitted requests."""
         self._require_open()
         self._engine.clear_cache()
 
@@ -270,6 +277,9 @@ class ReanalysisPipeline:
             policy_roots_requested=int(result["policy_roots_requested"]),
             policy_roots_searched=int(result["policy_roots_searched"]),
             cache_hits=int(result["cache_hits"]),
+            value_roots_requested=int(result["value_roots_requested"]),
+            value_roots_searched=int(result["value_roots_searched"]),
+            value_cache_hits=int(result["value_cache_hits"]),
             cache_target_age_mean=float(result["cache_target_age_mean"]),
             cache_target_age_max=int(result["cache_target_age_max"]),
         )

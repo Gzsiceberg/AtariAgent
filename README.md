@@ -33,13 +33,13 @@ On `ALE/Alien-v5`, the optimized Gumbel configuration completed **100,000 enviro
 | --- | --- | --- | --- | --- |
 | NVIDIA GeForce RTX 3060 Ti (8 GB), Intel Core i9-13900KF | Gumbel, 16 simulations | No periodic clearing | BF16 | 2:55:39 |
 
-This is one historical systems result, not a throughput guarantee. Wall-clock time varies by game, search budget, cache freshness, CPU, and software version. The measured run disabled periodic cache clearing; current training instead ramps full-cache clearing from 100 to 1,000 learner updates over the first half of collection. For comparison, a measured 50-simulation PUCT run on the same machine took approximately 4 hours 6 minutes.
+This is one historical systems result, not a throughput guarantee. Wall-clock time varies by game, search budget, cache freshness, CPU, and software version. The measured run disabled periodic cache clearing; current training instead ramps policy-cache clearing from 100 to 1,000 learner updates over the first half of collection. For comparison, a measured 50-simulation PUCT run on the same machine took approximately 4 hours 6 minutes.
 
 ## Why AtariAgent?
 
 - **Single-process, single-GPU training.** No Ray, DDP, or multi-GPU worker topology is required.
 - **Native search and reanalysis.** Batched PUCT/Gumbel tree traversal and target-network inference run through an asynchronous in-process C++/LibTorch pipeline, reducing Python serialization, tensor copies, and CPU/GPU synchronization.
-- **Replay-state reanalysis cache.** Corrected TD values, search values, and policies are cached by replay state. Repeated replay samples search only cache misses.
+- **Replay-state reanalysis cache.** Search values and policies are cached with bounded age, while deterministic target-network bootstrap predictions are cached until the next model publication. Repeated replay samples evaluate only cache misses.
 - **Explicit freshness/throughput trade-off.** Hydra settings control periodic cache clearing, allowing experiments to choose between fresher targets and higher throughput.
 - **V1/V2 search comparison.** Conventional PUCT and EfficientZero V2-style Gumbel top-*m* sequential halving are available in the same implementation.
 - **Modern experiment tooling.** Typed Hydra configuration, `uv`, BF16, `torch.compile`, bounded asynchronous prefetching, checkpoints, parallel evaluation, and tests are included.
@@ -235,7 +235,7 @@ AtariAgent retains the central EfficientZero learning ideas while redesigning th
 | Hardware objective | Official README recommends four RTX 3090 GPUs for high-throughput training | Official example launches with two GPUs and supports broader workloads | Consumer single-GPU experiments |
 | License | GPL-3.0 | GPL-3.0 | MIT |
 
-Target-network publication always clears the cache on its fixed 1,000-update schedule. Independently, `reanalysis.cache_target_ttl` expires individual entries after a bounded number of learner updates (200 by default). Full-cache clearing starts every `reanalysis.initial_cache_clear_interval` updates (100 by default), then linearly ramps to the target-update interval over the first half of collection-phase training.
+Target-network publication clears both policy and value caches on its fixed 1,000-update schedule. Independently, `reanalysis.cache_target_ttl` expires policy/search entries after a bounded number of learner updates (200 by default). Policy-cache clearing starts every `reanalysis.initial_cache_clear_interval` updates (100 by default), then linearly ramps to the target-update interval over the first half of collection-phase training. Raw bootstrap values need no TTL because they are deterministic for fixed target-network weights.
 
 ## Scope and limitations
 
