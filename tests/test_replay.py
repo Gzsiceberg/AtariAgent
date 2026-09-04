@@ -529,6 +529,31 @@ def test_prioritized_replay_matches_efficientzero_v1_atari() -> None:
     assert counts[2] > counts[1] > counts[0]
 
 
+def test_prioritized_replay_can_reproduce_old_atariagent_behavior() -> None:
+    replay = FIFOReplayBuffer(
+        max_transitions=10,
+        unroll_steps=1,
+        td_steps=1,
+        per_mode="v2",
+        seed=4,
+    )
+    replay.add(make_trajectory(3, terminated=True))
+    replay.update_priorities(np.array([0, 1, 2]), np.array([1.0, 4.0, 16.0]))
+
+    # V2 mode forces alpha=beta=1 and floors normalized IS weights at 0.1,
+    # even when the V1 beta schedule is supplied by BatchWorker.
+    batch = replay.sample(batch_size=3, priority_beta=0.4)
+    probabilities = np.array([1.0, 4.0, 16.0])
+    probabilities /= probabilities.sum()
+    expected_weights = (3 * probabilities[batch.indices.numpy()]) ** -1.0
+    expected_weights /= expected_weights.max()
+    expected_weights = expected_weights.clip(0.1, 1.0)
+    np.testing.assert_allclose(
+        batch.importance_weights.numpy(), expected_weights, rtol=1e-6
+    )
+    assert batch.importance_weights.min() == pytest.approx(0.1)
+
+
 def test_new_replay_transitions_use_current_maximum_priority() -> None:
     replay = FIFOReplayBuffer(max_transitions=10, priority_epsilon=1e-6)
     replay.add(make_trajectory(2, terminated=True))
@@ -545,6 +570,27 @@ def test_new_replay_transitions_use_current_maximum_priority() -> None:
     )
 
     np.testing.assert_allclose(replay.priorities, np.array([2.0, 5.0, 5.0]))
+
+
+def test_old_per_new_transitions_can_use_prediction_error_priority() -> None:
+    replay = FIFOReplayBuffer(
+        max_transitions=10,
+        unroll_steps=1,
+        td_steps=1,
+        discount=0.5,
+        per_mode="v2",
+        priority_epsilon=1e-6,
+    )
+    replay.add(
+        make_trajectory(
+            3,
+            lookahead_steps=1,
+            predicted_values=(10.0, 20.0, 30.0),
+        )
+    )
+
+    # Prediction-bootstrapped targets are [11, 17], giving errors [1, 3].
+    np.testing.assert_allclose(replay.priorities, np.full(2, 3.000001))
 
 
 def test_first_replay_transitions_use_unit_priority() -> None:
@@ -589,6 +635,8 @@ def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
         ("discount", -0.1, ValueError),
         ("discount", 1.1, ValueError),
         ("discount", float("nan"), ValueError),
+        ("per_mode", None, TypeError),
+        ("per_mode", "invalid", ValueError),
         ("priority_alpha", -0.1, ValueError),
         ("priority_alpha", 1.1, ValueError),
         ("priority_beta", -0.1, ValueError),

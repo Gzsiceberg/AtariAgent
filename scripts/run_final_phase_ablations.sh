@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Run three final-phase experiments from the same 100k pre-final snapshot:
-# the normal current-commit baseline and MCTS-bootstrap variants with
-# mixed-value thresholds 5000 and 20000. All use the current V1-style PER,
-# cached targets, and target interval 1000.
+# Run V2 PER during the cached-target final phase from the 100k pre-final
+# snapshot. Existing runs already cover the V1 cached-target baseline.
+#
+# V2 reproduces old AtariAgent PER: alpha=beta=1 and a normalized importance-
+# sampling weight floor of 0.1. This tests whether V2 PER reproduces the severe
+# collapse in the current code.
 #
 # Each invocation creates a new W&B run. The resumed 100k checkpoint is
 # evaluated before training, followed by evaluations every 5k updates at
@@ -44,18 +46,18 @@ mkdir -p "$RUN_ROOT"
 
 is_completed() {
     local evaluation_path="$1"
-    uv run python scripts/summarize_game_experiments.py is-complete \
-        "$evaluation_path" \
-        --expected-final-update "$EXPECTED_FINAL_UPDATE"
+    [[ -f "$evaluation_path" ]] && \
+        uv run python scripts/summarize_game_experiments.py is-complete \
+            "$evaluation_path" \
+            --expected-final-update "$EXPECTED_FINAL_UPDATE"
 }
 
 run_ablation() {
     local name="$1"
-    local cache_targets="$2"
-    local mixed_value_threshold="$3"
-    local preserve_mixed_value_freshness="$4"
-    local mcts_bootstrap_final_phase="$5"
+    local per_mode="$2"
+    local cache_targets="$3"
     local target_update_interval=1000
+    local mixed_value_threshold=5000
     local output_dir="$RUN_ROOT/$name"
     local evaluation_path="$output_dir/evaluations/agent_evaluations.json"
     local wandb_entity_override="wandb.entity=null"
@@ -81,11 +83,13 @@ run_ablation() {
         "evaluation.evaluate_on_resume=true"
         "evaluation.data_path=$evaluation_path"
         "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
+        "replay.per_mode=$per_mode"
         "reanalysis.cache_targets=$cache_targets"
         "reanalysis.target_update_interval=$target_update_interval"
-        "reanalysis.mcts_bootstrap_final_phase=$mcts_bootstrap_final_phase"
+        "reanalysis.mcts_bootstrap_final_phase=false"
+        "training.value_target=mixed"
         "training.mixed_value_threshold=$mixed_value_threshold"
-        "training.preserve_mixed_value_freshness=$preserve_mixed_value_freshness"
+        "training.preserve_mixed_value_freshness=false"
         "training.progress_mode=always"
         "training.progress_interval_seconds=10"
         "wandb.enabled=true"
@@ -96,11 +100,10 @@ run_ablation() {
     )
 
     printf '\n=== %s ===\n' "$name"
-    printf 'cache_targets=%s target_update_interval=%s ' \
-        "$cache_targets" "$target_update_interval"
-    printf 'mixed_value_threshold=%s preserve_mixed_value_freshness=%s ' \
-        "$mixed_value_threshold" "$preserve_mixed_value_freshness"
-    printf 'mcts_bootstrap_final_phase=%s\n' "$mcts_bootstrap_final_phase"
+    printf 'per_mode=%s cache_targets=%s target_update_interval=%s ' \
+        "$per_mode" "$cache_targets" "$target_update_interval"
+    printf 'mixed_value_threshold=%s mcts_bootstrap_final_phase=false\n' \
+        "$mixed_value_threshold"
     printf 'output=%s\n' "$output_dir"
     printf 'command:'
     printf ' %q' "${command[@]}"
@@ -113,15 +116,6 @@ run_ablation() {
     "${command[@]}" 2>&1 | tee "$output_dir/training.log"
 }
 
-# Replace mixed SVE/search targets with td_steps returns whose stale endpoint
-# values are supplied by MCTS throughout the learner-only final phase.
-run_ablation "mcts-bootstrap-final-phase" true 5000 false true
+run_ablation "v2-per-cached" v2 true
 
-# Keep a larger recent region on direct target-network endpoint values before
-# switching stale bootstrap endpoints to MCTS values.
-run_ablation "mcts-bootstrap-threshold-20000" true 20000 false true
-
-# Run the unchanged control at the current commit for a clean comparison.
-run_ablation "baseline-current-commit" true 5000 false false
-
-printf '\nAll final-phase experiments completed. Results: %s\n' "$RUN_ROOT"
+printf '\nV2 cached-target experiment completed. Results: %s\n' "$RUN_ROOT"

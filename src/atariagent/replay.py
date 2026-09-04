@@ -57,10 +57,11 @@ class _StoredTrajectory:
 class FIFOReplayBuffer:
     """Store prepared trajectories with FIFO prioritized sampling.
 
-    Target horizons and discount are fixed for the buffer lifetime. New
-    sampleable transitions receive the current maximum priority; trailing
-    lookahead transitions remain local target context and are not replay starts.
-    Reanalysis remains outside this buffer.
+    Target horizons, discount, and PER mode are fixed for the buffer lifetime.
+    V1 mode uses softened priorities and unfloored importance weights; V2 mode
+    reproduces AtariAgent's old direct-priority, full-beta, 0.1-floor behavior.
+    Trailing lookahead transitions remain local target context and are not
+    replay starts. Reanalysis remains outside this buffer.
     """
 
     def __init__(
@@ -70,6 +71,7 @@ class FIFOReplayBuffer:
         unroll_steps: int = 5,
         td_steps: int = 5,
         discount: float = 0.997,
+        per_mode: str = "v1",
         priority_alpha: float = 0.6,
         priority_beta: float = 0.4,
         priority_epsilon: float = 1e-6,
@@ -89,6 +91,10 @@ class FIFOReplayBuffer:
                 raise ValueError(f"{name} must be positive")
         if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be finite and in [0, 1]")
+        if not isinstance(per_mode, str):
+            raise TypeError("per_mode must be a string")
+        if per_mode not in {"v1", "v2"}:
+            raise ValueError("per_mode must be v1 or v2")
         for value, name in (
             (priority_alpha, "priority_alpha"),
             (priority_beta, "priority_beta"),
@@ -102,8 +108,13 @@ class FIFOReplayBuffer:
         self._unroll_steps = unroll_steps
         self._td_steps = td_steps
         self._discount = float(discount)
-        self._priority_alpha = float(priority_alpha)
-        self._priority_beta = float(priority_beta)
+        self._per_mode = per_mode
+        self._priority_alpha = (
+            1.0 if per_mode == "v2" else float(priority_alpha)
+        )
+        self._priority_beta = (
+            1.0 if per_mode == "v2" else float(priority_beta)
+        )
         self._priority_epsilon = float(priority_epsilon)
         self._reward_discounts = self.discount ** np.arange(
             self.td_steps, dtype=np.float64
@@ -340,12 +351,14 @@ class FIFOReplayBuffer:
             self._transition_ids = self._transition_ids[evicted_transitions:]
             self._priorities = self._priorities[evicted_transitions:]
 
-        # EfficientZero V1's --use_max_priority mode assigns every newly
-        # collected transition the current replay maximum, independent of its
+        # V1 PER matches EfficientZero V1's --use_max_priority behavior.
+        # V2-style old AtariAgent PER also raised the maximum to a trajectory's
         # insertion-time prediction error.
         maximum_priority = (
             float(self._priorities.max()) if self._priorities.size else 1.0
         )
+        if self._per_mode == "v2":
+            maximum_priority = max(maximum_priority, stored.initial_priority)
         transition_ids = np.arange(
             self._next_transition_id,
             self._next_transition_id + trajectory_length,
@@ -408,13 +421,18 @@ class FIFOReplayBuffer:
             raise TypeError("include_value_bootstraps must be a boolean")
         if not isinstance(pin_memory, bool):
             raise TypeError("pin_memory must be a boolean")
-        resolved_beta = self._priority_beta if priority_beta is None else priority_beta
-        if not np.isfinite(resolved_beta) or not 0.0 <= resolved_beta <= 1.0:
+        requested_beta = self._priority_beta if priority_beta is None else priority_beta
+        if not np.isfinite(requested_beta) or not 0.0 <= requested_beta <= 1.0:
             raise ValueError("priority_beta must be finite and in [0, 1]")
+        resolved_beta = (
+            self._priority_beta
+            if self._per_mode == "v2"
+            else float(requested_beta)
+        )
         assert self._action_space_size is not None
 
         locations, transition_ids, importance_weights = self._sample_context(
-            batch_size, priority_beta=float(resolved_beta)
+            batch_size, priority_beta=resolved_beta
         )
         arrays = self._allocate_batch_arrays(
             batch_size,
@@ -640,9 +658,11 @@ class FIFOReplayBuffer:
         importance_weights = (
             self._transition_count * sampled_probabilities
         ) ** -resolved_beta
-        # EfficientZero V1 normalizes by the largest weight in this sampled
-        # batch and does not floor the result.
         importance_weights /= importance_weights.max()
+        if self._per_mode == "v2":
+            # Old AtariAgent/EfficientZero V2 Atari behavior prevented highly
+            # probable samples from receiving less than 10% of full weight.
+            np.clip(importance_weights, 0.1, 1.0, out=importance_weights)
         return (
             self._locations_for_indices(flat_indices),
             self._transition_ids[flat_indices],

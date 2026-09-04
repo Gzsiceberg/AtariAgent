@@ -39,12 +39,26 @@ def test_output_paths_are_derived_from_environment_id() -> None:
 def test_replay_uses_efficientzero_v1_per_defaults() -> None:
     config = ReplayConfig()
 
+    assert config.per_mode == "v1"
     assert config.priority_alpha == pytest.approx(0.6)
     assert config.priority_beta_initial == pytest.approx(0.4)
     assert config.priority_beta_final == pytest.approx(1.0)
     assert linear_priority_beta(0, 120_000) == pytest.approx(0.4)
     assert linear_priority_beta(100_000, 120_000) == pytest.approx(0.9)
     assert linear_priority_beta(120_000, 120_000) == pytest.approx(1.0)
+
+
+def test_replay_per_mode_can_select_v2() -> None:
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        config = compose(
+            config_name="train_agent",
+            overrides=["replay.per_mode=v2"],
+        )
+
+    assert config.replay.per_mode == "v2"
 
 
 def test_augmentation_uses_efficientzero_atari_defaults() -> None:

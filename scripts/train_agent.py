@@ -339,6 +339,8 @@ def main(config: TrainAgentConfig) -> None:
     )
     if config.training.batch_size < 2:
         raise ValueError("batch_size must be at least 2 for batch normalization")
+    if config.replay.per_mode not in {"v1", "v2"}:
+        raise ValueError("replay.per_mode must be v1 or v2")
     if not 0.0 <= config.replay.priority_alpha <= 1.0:
         raise ValueError("replay.priority_alpha must be in [0, 1]")
     if not (
@@ -626,6 +628,7 @@ def main(config: TrainAgentConfig) -> None:
             unroll_steps=config.training.unroll_steps,
             td_steps=config.training.td_steps,
             discount=discount,
+            per_mode=config.replay.per_mode,
             priority_alpha=config.replay.priority_alpha,
             priority_beta=config.replay.priority_beta_initial,
             priority_epsilon=config.replay.priority_epsilon,
@@ -747,6 +750,7 @@ def main(config: TrainAgentConfig) -> None:
             "[bold cyan]AtariAgent training started[/bold cyan] "
             f"[dim]env={config.environment.id} device={device} "
             f"precision={config.training.precision} "
+            f"per={config.replay.per_mode} "
             f"deterministic={config.training.deterministic} "
             f"compile={config.training.compile_model} "
             f"transitions={config.self_play.total_transitions:,} "

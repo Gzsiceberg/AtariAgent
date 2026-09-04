@@ -28,7 +28,11 @@ self_play:
 replay:
   max_transitions: 100000
   warmup_transitions: 2000
-  # EfficientZero V1 samples with priority**0.6 and linearly anneals the
+  # "v1" uses EfficientZero V1-style PER below. "v2" reproduces the old
+  # EfficientZero V2-style AtariAgent behavior: alpha=beta=1, a 0.1 normalized
+  # importance-weight floor, and prediction-error-aware initial priorities.
+  per_mode: v1  # v1 or v2
+  # V1 mode samples with priority**0.6 and linearly anneals the
   # importance-sampling exponent from 0.4 to 1.0 over all learner updates.
   priority_alpha: 0.6
   priority_beta_initial: 0.4

@@ -76,6 +76,7 @@ run_experiment() {
         "evaluation.evaluate_on_resume=true"
         "evaluation.data_path=$evaluation_path"
         "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
+        "replay.per_mode=v1"
         "replay.priority_alpha=0.6"
         "replay.priority_beta_initial=0.4"
         "replay.priority_beta_final=1.0"
