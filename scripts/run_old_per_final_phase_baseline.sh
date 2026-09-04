@@ -37,6 +37,13 @@ else
     RESTORE_REF="$(git rev-parse HEAD)"
 fi
 CHECKED_OUT_HISTORICAL_COMMIT=0
+REBUILD_PROJECT_ON_RESTORE=0
+
+reinstall_project() {
+    local checkout_name="$1"
+    printf '\n=== Building native extensions for %s ===\n' "$checkout_name"
+    uv sync --locked --extra wandb --reinstall-package atariagent
+}
 
 restore_checkout() {
     local exit_status=$?
@@ -47,6 +54,11 @@ restore_checkout() {
         if ! git checkout "$RESTORE_REF"; then
             printf 'Failed to restore checkout to %s. Restore it manually.\n' \
                 "$RESTORE_REF" >&2
+            exit 1
+        fi
+        if [[ "$REBUILD_PROJECT_ON_RESTORE" == "1" ]] \
+            && ! reinstall_project "$RESTORE_REF"; then
+            printf 'Checkout restored, but rebuilding atariagent failed.\n' >&2
             exit 1
         fi
     fi
@@ -121,6 +133,12 @@ printf ' %q' "${command[@]}"
 printf '\n'
 
 if [[ "$DRY_RUN" != "1" ]]; then
+    # uv's editable install keeps compiled extensions in site-packages. Merely
+    # switching Git revisions changes the Python sources but does not rebuild
+    # those extensions, which can leave the historical ReplayBatch API paired
+    # with a newer native reanalysis engine. Reinstall at both revision changes.
+    REBUILD_PROJECT_ON_RESTORE=1
+    reinstall_project "$COMMIT_HASH"
     "${command[@]}" 2>&1 | tee "$RUN_ROOT/training.log"
 fi
 
