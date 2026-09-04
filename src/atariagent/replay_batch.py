@@ -105,13 +105,10 @@ class ReplayBatch:
         collection_steps: int,
         mixed_start_step: int,
         freshness_threshold: int,
-        preserve_mixed_value_freshness: bool = False,
     ) -> ReplayBatch:
         """Select EfficientZero V2 TD or search values for training."""
         if mode not in {"td", "search", "mixed"}:
             raise ValueError("value target mode must be td, search, or mixed")
-        if not isinstance(preserve_mixed_value_freshness, bool):
-            raise TypeError("preserve_mixed_value_freshness must be a boolean")
         for value, name in (
             (learner_step, "learner_step"),
             (collection_steps, "collection_steps"),
@@ -136,7 +133,6 @@ class ReplayBatch:
             effective_ages = self.effective_transition_ages(
                 learner_step=learner_step,
                 collection_steps=collection_steps,
-                advance_during_final=not preserve_mixed_value_freshness,
             )
             sample_uses_search = effective_ages >= freshness_threshold
             search_mask = search_mask & sample_uses_search[:, None]
@@ -152,11 +148,8 @@ class ReplayBatch:
         *,
         learner_step: int,
         collection_steps: int,
-        advance_during_final: bool = True,
     ) -> Tensor:
-        """Optionally add learner-only updates to each replay-transition age."""
-        if not isinstance(advance_during_final, bool):
-            raise TypeError("advance_during_final must be a boolean")
+        """Add learner-only updates to each replay-transition age."""
         for value, name in (
             (learner_step, "learner_step"),
             (collection_steps, "collection_steps"),
@@ -171,8 +164,6 @@ class ReplayBatch:
             raise ValueError("transition ages have an invalid shape")
         if torch.any(self.transition_ages < 0):
             raise ValueError("transition ages must be non-negative")
-        if not advance_during_final:
-            return self.transition_ages
         final_update_steps = max(learner_step - collection_steps, 0)
         return self.transition_ages + final_update_steps
 

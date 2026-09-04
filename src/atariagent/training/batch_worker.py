@@ -87,7 +87,6 @@ class BatchWorker:
         collection_steps: int = 100_000,
         mixed_value_start_step: int = 30_000,
         mixed_value_threshold: int = 5_000,
-        preserve_mixed_value_freshness: bool = False,
         priority_beta_initial: float = 0.4,
         priority_beta_final: float = 1.0,
         priority_beta_steps: int = 120_000,
@@ -98,8 +97,6 @@ class BatchWorker:
         ready_prefetch: int = 1,
         timeout_seconds: float = 600.0,
     ) -> None:
-        if not isinstance(preserve_mixed_value_freshness, bool):
-            raise TypeError("preserve_mixed_value_freshness must be a boolean")
         for value, name in (
             (batch_size, "batch_size"),
             (collection_steps, "collection_steps"),
@@ -167,7 +164,6 @@ class BatchWorker:
         self.collection_steps = collection_steps
         self.mixed_value_start_step = mixed_value_start_step
         self.mixed_value_threshold = mixed_value_threshold
-        self.preserve_mixed_value_freshness = preserve_mixed_value_freshness
         self.priority_beta_initial = priority_beta_initial
         self.priority_beta_final = priority_beta_final
         self.priority_beta_steps = priority_beta_steps
@@ -524,7 +520,6 @@ class BatchWorker:
             collection_steps=self.collection_steps,
             mixed_start_step=self.mixed_value_start_step,
             freshness_threshold=self.mixed_value_threshold,
-            preserve_mixed_value_freshness=(self.preserve_mixed_value_freshness),
         ).without_reanalysis_metadata()
         ready_event: torch.cuda.Event | None = None
         if self._transfer_stream is None:

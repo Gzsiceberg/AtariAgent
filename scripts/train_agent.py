@@ -366,8 +366,6 @@ def main(config: TrainAgentConfig) -> None:
         raise ValueError("training.progress_interval_seconds must be positive")
     if config.training.value_target not in {"td", "search", "mixed"}:
         raise ValueError("training.value_target must be td, search, or mixed")
-    if not isinstance(config.training.preserve_mixed_value_freshness, bool):
-        raise TypeError("training.preserve_mixed_value_freshness must be a boolean")
     for value, name in (
         (
             config.training.mixed_value_start_step,
@@ -829,9 +827,6 @@ def main(config: TrainAgentConfig) -> None:
                 collection_steps=config.training.steps,
                 mixed_value_start_step=(config.training.mixed_value_start_step),
                 mixed_value_threshold=config.training.mixed_value_threshold,
-                preserve_mixed_value_freshness=(
-                    config.training.preserve_mixed_value_freshness
-                ),
                 priority_beta_initial=config.replay.priority_beta_initial,
                 priority_beta_final=config.replay.priority_beta_final,
                 priority_beta_steps=(

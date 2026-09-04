@@ -89,7 +89,6 @@ run_ablation() {
         "reanalysis.mcts_bootstrap_final_phase=false"
         "training.value_target=mixed"
         "training.mixed_value_threshold=$mixed_value_threshold"
-        "training.preserve_mixed_value_freshness=false"
         "training.progress_mode=always"
         "training.progress_interval_seconds=10"
         "wandb.enabled=true"

@@ -85,27 +85,6 @@ def test_mixed_values_add_final_updates_to_transition_ages() -> None:
     )
 
 
-def test_mixed_values_can_preserve_v2_freshness_during_final_updates() -> None:
-    batch = replace(
-        _batch(),
-        transition_ages=torch.tensor([0, 4_999]),
-    )
-
-    selected = batch.with_selected_value_targets(
-        mode="mixed",
-        learner_step=105_000,
-        collection_steps=100_000,
-        mixed_start_step=30_000,
-        freshness_threshold=5_000,
-        preserve_mixed_value_freshness=True,
-    )
-
-    torch.testing.assert_close(
-        selected.value_targets,
-        torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
-    )
-
-
 def test_search_values_fall_back_to_td_without_a_valid_search_root() -> None:
     batch = _batch()
 
