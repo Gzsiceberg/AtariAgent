@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Run V2 PER during the cached-target final phase from the 100k pre-final
-# snapshot. Existing runs already cover the V1 cached-target baseline.
+# Compare V1 and V2 PER with mixed-value thresholds of 5,000 and 20,000
+# during the cached-target final phase from the 100k pre-final snapshot.
 #
-# V2 reproduces old AtariAgent PER: alpha=beta=1 and a normalized importance-
-# sampling weight floor of 0.1. This tests whether V2 PER reproduces the severe
-# collapse in the current code.
+# These runs repeat the key 2x2 comparison after the value- and policy-cache
+# separation fix. All arms use cached reanalysis and target interval 1,000.
 #
 # Each invocation creates a new W&B run. The resumed 100k checkpoint is
 # evaluated before training, followed by evaluations every 5k updates at
@@ -56,8 +55,8 @@ run_ablation() {
     local name="$1"
     local per_mode="$2"
     local cache_targets="$3"
+    local mixed_value_threshold="$4"
     local target_update_interval=1000
-    local mixed_value_threshold=5000
     local output_dir="$RUN_ROOT/$name"
     local evaluation_path="$output_dir/evaluations/agent_evaluations.json"
     local wandb_entity_override="wandb.entity=null"
@@ -113,6 +112,9 @@ run_ablation() {
     "${command[@]}" 2>&1 | tee "$output_dir/training.log"
 }
 
-run_ablation "v2-per-cached" v2 true
+run_ablation "v1-threshold-5000" v1 true 5000
+run_ablation "v1-threshold-20000" v1 true 20000
+run_ablation "v2-threshold-5000" v2 true 5000
+run_ablation "v2-threshold-20000" v2 true 20000
 
-printf '\nV2 cached-target experiment completed. Results: %s\n' "$RUN_ROOT"
+printf '\nFinal-phase PER experiments completed. Results: %s\n' "$RUN_ROOT"
