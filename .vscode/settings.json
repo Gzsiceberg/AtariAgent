@@ -7,5 +7,10 @@
         // "**/runs": true,
         "**/checkpoints": true,
         "**/outputs": true
-    }
+    },
+    "markdown.styles": [
+        "markdown-preview.css"
+    ],
+    "markdown.preview.fontSize": 18,
+    "markdown.preview.lineHeight": 1.8
 }
