@@ -102,7 +102,7 @@ printf 'Environment: %s\n' "$ENVIRONMENT_ID"
 
 run_experiment alpha-0.6-beta-1-v1 v1 0.6 1.0 1.0 5000
 # run_experiment alpha-1-beta-annealed-v1 v1 1.0 0.4 1.0 5000
-# run_experiment alpha-1-beta-1-threshold-20000-v1 v1 1.0 1.0 1.0 20000
+run_experiment alpha-1-beta-1-threshold-20000-v1 v1 1.0 1.0 1.0 20000
 # run_experiment threshold-20000-v2 v2 1.0 1.0 1.0 20000
 run_experiment v2 v2 1.0 1.0 1.0 5000
 
