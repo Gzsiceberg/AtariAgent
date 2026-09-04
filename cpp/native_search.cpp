@@ -268,7 +268,14 @@ void RootTree::expand_probabilities(
     initialize_children(node_index, state_slot, value_prefix, reset);
     const int child_depth = nodes_[node_index].depth + 1;
     for (int action = 0; action < action_count_; ++action) {
-        append_child(node_index, action, priors[action], child_depth);
+        const float prior = priors[action];
+        append_child(
+            node_index,
+            action,
+            prior,
+            std::log(std::max(prior, std::numeric_limits<float>::min())),
+            child_depth
+        );
     }
 }
 
@@ -289,18 +296,35 @@ void RootTree::expand_logits(
         }
         maximum = std::max(maximum, logit);
     }
-    float total = 0.0F;
-    for (const float logit : logits) {
-        total += std::exp(logit - maximum);
-    }
+
     initialize_children(node_index, state_slot, value_prefix, reset);
     const int child_depth = nodes_[node_index].depth + 1;
+    float total = 0.0F;
     for (int action = 0; action < action_count_; ++action) {
+        const float log_weight = logits[action] - maximum;
+        const float weight = std::exp(log_weight);
+        total += weight;
         append_child(
             node_index,
             action,
-            std::exp(logits[action] - maximum) / total,
+            weight,
+            log_weight,
             child_depth
+        );
+    }
+
+    const float inverse_total = 1.0F / total;
+    const float log_total = std::log(total);
+    const float minimum_log_prior = std::log(
+        std::numeric_limits<float>::min()
+    );
+    const int first_child = nodes_[node_index].first_child;
+    for (int action = 0; action < action_count_; ++action) {
+        SearchNode& child = nodes_[first_child + action];
+        child.prior *= inverse_total;
+        child.log_prior = std::max(
+            child.log_prior - log_total,
+            minimum_log_prior
         );
     }
 }
@@ -327,14 +351,12 @@ void RootTree::append_child(
     int node_index,
     int action,
     float prior,
+    float log_prior,
     int depth
 ) {
     SearchNode child;
     child.prior = prior;
-    child.log_prior = std::log(std::max(
-        prior,
-        std::numeric_limits<float>::min()
-    ));
+    child.log_prior = log_prior;
     child.parent = node_index;
     child.action = action;
     child.depth = depth;

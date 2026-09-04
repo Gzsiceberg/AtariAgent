@@ -96,7 +96,13 @@ private:
         float value_prefix,
         bool reset
     );
-    void append_child(int node_index, int action, float prior, int depth);
+    void append_child(
+        int node_index,
+        int action,
+        float prior,
+        float log_prior,
+        int depth
+    );
     float reward(int node_index) const;
     float q_value(int node_index) const;
     float node_mean_q(
