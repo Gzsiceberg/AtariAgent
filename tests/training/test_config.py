@@ -179,7 +179,6 @@ def test_progress_can_be_forced_for_redirected_batch_output() -> None:
 def test_reanalysis_uses_target_network_defaults() -> None:
     config = ReanalysisConfig()
 
-    assert config.enabled
     assert config.policy_chunk_size == 768
     assert config.cache_targets
     assert config.initial_cache_clear_interval == 100

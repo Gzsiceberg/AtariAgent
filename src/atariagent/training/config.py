@@ -91,7 +91,6 @@ class TrainingConfig:
 class ReanalysisConfig:
     """Target-network reanalysis and native-search settings."""
 
-    enabled: bool = True
     policy_chunk_size: int = 768
     cache_targets: bool = True
     initial_cache_clear_interval: int = 100

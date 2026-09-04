@@ -380,13 +380,6 @@ def main(config: TrainAgentConfig) -> None:
             raise TypeError(f"training.{name} must be an integer")
         if value < 0:
             raise ValueError(f"training.{name} must be non-negative")
-    if not isinstance(config.reanalysis.enabled, bool):
-        raise TypeError("reanalysis.enabled must be a boolean")
-    if (
-        config.training.value_target in {"search", "mixed"}
-        and not config.reanalysis.enabled
-    ):
-        raise ValueError("search value targets require target reanalysis")
     for value, name in (
         (
             config.reanalysis.initial_cache_clear_interval,
@@ -516,7 +509,6 @@ def main(config: TrainAgentConfig) -> None:
     wandb_exit_code = 1
 
     try:
-        target_reanalysis_enabled = config.reanalysis.enabled
         environments = create_environments(config)
         action_space_size = int(environments[0].action_space.n)
         if any(
@@ -626,11 +618,7 @@ def main(config: TrainAgentConfig) -> None:
         target_state = make_target_state(
             agent.representation_network,
             agent.prediction_network,
-            (
-                agent.dynamics_network
-                if target_reanalysis_enabled
-                else None
-            ),
+            agent.dynamics_network,
         )
         target_version = 0
         update = 0
@@ -654,9 +642,7 @@ def main(config: TrainAgentConfig) -> None:
                 f"path={resume_path}[/dim]"
             )
 
-        def create_reanalysis_pipeline() -> ReanalysisPipeline | None:
-            if not target_reanalysis_enabled:
-                return None
+        def create_reanalysis_pipeline() -> ReanalysisPipeline:
             pipeline = ReanalysisPipeline(
                 in_channels=config.environment.frame_stack * image_channels,
                 action_space_size=action_space_size,
@@ -853,11 +839,7 @@ def main(config: TrainAgentConfig) -> None:
                 target_state = make_target_state(
                     agent.representation_network,
                     agent.prediction_network,
-                    (
-                        agent.dynamics_network
-                        if target_reanalysis_enabled
-                        else None
-                    ),
+                    agent.dynamics_network,
                 )
                 target_version = update
                 batch_worker.publish_weights(update, target_state)
@@ -1131,9 +1113,7 @@ def main(config: TrainAgentConfig) -> None:
             # and seeded native-search state that a resumed run will use.
             batch_worker.close()
             batch_worker = None
-            if reanalysis_pipeline is not None:
-                reanalysis_pipeline.close()
-                reanalysis_pipeline = None
+            reanalysis_pipeline.close()
             reanalysis_pipeline = create_reanalysis_pipeline()
             batch_worker = create_batch_worker()
             restore_rng_state(pre_final_rng_state)

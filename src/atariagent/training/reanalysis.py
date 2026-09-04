@@ -59,7 +59,7 @@ def replay_batch_nbytes(batch: ReplayBatch) -> int:
 def make_target_state(
     representation: nn.Module,
     prediction: nn.Module,
-    dynamics: nn.Module | None,
+    dynamics: nn.Module,
 ) -> TargetState:
     """Copy online module state for checkpoints and target publication."""
     state: TargetState = {}
@@ -68,8 +68,6 @@ def make_target_state(
         ("prediction", prediction),
         ("dynamics", dynamics),
     ):
-        if module is None:
-            continue
         for name, value in module.state_dict().items():
             state[f"{prefix}.{name}"] = value.detach().cpu().clone()
     return state
