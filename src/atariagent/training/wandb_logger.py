@@ -97,7 +97,6 @@ class WandbLogger:
         update: int,
         policy_roots_requested: int = 0,
         policy_roots_searched: int = 0,
-        bootstrap_roots_searched: int = 0,
         cache_hits: int = 0,
         cache_target_age_mean: float = 0.0,
         cache_target_age_max: int = 0,
@@ -147,9 +146,6 @@ class WandbLogger:
                     ),
                     "reanalysis/policy_roots_searched": (
                         policy_roots_searched
-                    ),
-                    "reanalysis/bootstrap_roots_searched": (
-                        bootstrap_roots_searched
                     ),
                 }
             )

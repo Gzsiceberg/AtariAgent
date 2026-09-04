@@ -86,7 +86,6 @@ run_ablation() {
         "replay.per_mode=$per_mode"
         "reanalysis.cache_targets=$cache_targets"
         "reanalysis.target_update_interval=$target_update_interval"
-        "reanalysis.mcts_bootstrap_final_phase=false"
         "training.value_target=mixed"
         "training.mixed_value_threshold=$mixed_value_threshold"
         "training.progress_mode=always"
@@ -101,8 +100,7 @@ run_ablation() {
     printf '\n=== %s ===\n' "$name"
     printf 'per_mode=%s cache_targets=%s target_update_interval=%s ' \
         "$per_mode" "$cache_targets" "$target_update_interval"
-    printf 'mixed_value_threshold=%s mcts_bootstrap_final_phase=false\n' \
-        "$mixed_value_threshold"
+    printf 'mixed_value_threshold=%s\n' "$mixed_value_threshold"
     printf 'output=%s\n' "$output_dir"
     printf 'command:'
     printf ' %q' "${command[@]}"

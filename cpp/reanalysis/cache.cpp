@@ -95,8 +95,7 @@ public:
         torch::Tensor& values,
         torch::Tensor& search_values,
         torch::Tensor& policies,
-        torch::Tensor& miss_mask,
-        torch::Tensor& search_value_available_mask
+        torch::Tensor& miss_mask
     )
         : source_values_(tensor_span<float>(source_values)),
           source_policies_(tensor_span<float>(source_policies)),
@@ -104,9 +103,6 @@ public:
           search_values_(tensor_span<float>(search_values)),
           policies_(tensor_span<float>(policies)),
           miss_mask_(tensor_span<bool>(miss_mask)),
-          search_value_available_mask_(
-              tensor_span<bool>(search_value_available_mask)
-          ),
           action_count_(
               static_cast<std::size_t>(source_policies.size(2))
           ) {}
@@ -132,13 +128,9 @@ public:
             action_count_,
             policy(position).data()
         );
-        search_value_available_mask_[position] = true;
     }
 
-    void mark_miss(std::size_t position) {
-        miss_mask_[position] = true;
-        search_value_available_mask_[position] = true;
-    }
+    void mark_miss(std::size_t position) { miss_mask_[position] = true; }
 
 private:
     std::span<const float> source_policy(std::size_t position) const {
@@ -159,7 +151,6 @@ private:
     std::span<float> search_values_;
     std::span<float> policies_;
     std::span<bool> miss_mask_;
-    std::span<bool> search_value_available_mask_;
     std::size_t action_count_;
 };
 
@@ -199,17 +190,13 @@ public:
         result.search_value_targets = torch::zeros_like(value_targets);
         result.policy_targets = torch::empty_like(policy_targets);
         result.miss_mask = torch::zeros_like(contiguous_mask);
-        result.search_value_available_mask = torch::zeros_like(
-            contiguous_mask
-        );
         PreparationWriter targets(
             value_targets,
             policy_targets,
             result.value_targets,
             result.search_value_targets,
             result.policy_targets,
-            result.miss_mask,
-            result.search_value_available_mask
+            result.miss_mask
         );
 
         std::unordered_map<std::int64_t, std::size_t> miss_lookup;
@@ -306,62 +293,6 @@ public:
         }
     }
 
-    SearchValueLookup lookup_search_values(
-        const torch::Tensor& mask,
-        const torch::Tensor& state_ids,
-        std::int64_t current_step,
-        std::int64_t target_ttl
-    ) const {
-        if (current_step < 0) {
-            throw std::invalid_argument("current_step must be non-negative");
-        }
-        if (target_ttl < 0) {
-            throw std::invalid_argument("target_ttl must be non-negative");
-        }
-        const torch::Tensor contiguous_mask = mask.contiguous();
-        const torch::Tensor contiguous_state_ids = state_ids.contiguous();
-        SearchValueLookup result{
-            torch::zeros(
-                contiguous_mask.sizes(),
-                contiguous_mask.options().dtype(torch::kFloat)
-            ),
-            torch::zeros_like(contiguous_mask),
-        };
-        const auto mask_data = tensor_span<bool>(contiguous_mask);
-        const auto state_id_data = tensor_span<std::int64_t>(
-            contiguous_state_ids
-        );
-        auto value_data = tensor_span<float>(result.values);
-        auto available_data = tensor_span<bool>(result.available_mask);
-        for (std::size_t flat = 0; flat < mask_data.size(); ++flat) {
-            if (!mask_data[flat]) {
-                continue;
-            }
-            const auto state_id = state_id_data[flat];
-            if (state_id < 0) {
-                throw std::invalid_argument(
-                    "active bootstrap state IDs must be non-negative"
-                );
-            }
-            const auto cached = entries_.find(state_id);
-            if (cached == entries_.end()) {
-                continue;
-            }
-            const auto age = current_step - cached->second.created_step;
-            if (age < 0) {
-                throw std::runtime_error(
-                    "cache entry was created after the current step"
-                );
-            }
-            const bool expired = target_ttl > 0 && age >= target_ttl;
-            if (!expired) {
-                value_data[flat] = cached->second.search_value;
-                available_data[flat] = true;
-            }
-        }
-        return result;
-    }
-
     void clear() { entries_.clear(); }
     std::size_t size() const { return entries_.size(); }
 
@@ -403,17 +334,6 @@ void ReanalysisCache::resolve(
         search_value_targets,
         policy_targets,
         current_step
-    );
-}
-
-SearchValueLookup ReanalysisCache::lookup_search_values(
-    const torch::Tensor& mask,
-    const torch::Tensor& state_ids,
-    std::int64_t current_step,
-    std::int64_t target_ttl
-) const {
-    return impl_->lookup_search_values(
-        mask, state_ids, current_step, target_ttl
     );
 }
 

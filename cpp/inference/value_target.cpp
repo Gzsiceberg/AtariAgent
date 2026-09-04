@@ -152,13 +152,10 @@ void ValueTargetNetwork::synchronize(
 torch::Tensor ValueTargetNetwork::reanalyze_values(
     const torch::Tensor& bootstrap_frames,
     const torch::Tensor& bootstrap_mask,
-    const torch::Tensor& mcts_bootstrap_mask,
     const torch::Tensor& stored_bootstrap_values,
     const torch::Tensor& bootstrap_discounts,
     const torch::Tensor& value_targets,
-    std::int64_t stack_size,
-    double root_noise_temperature,
-    bool gumbel_sampling
+    std::int64_t stack_size
 ) {
     c10::InferenceMode inference_guard;
     BFloat16AutocastGuard autocast_guard(
@@ -179,27 +176,12 @@ torch::Tensor ValueTargetNetwork::reanalyze_values(
             bootstrap_frames, chunk, stack_size
         );
         torch::Tensor states = representation_->forward(observations);
-        auto [policy_logits, value_logits] = prediction_->forward(states);
+        auto prediction = prediction_->forward(states);
         torch::Tensor values = categorical_to_scalar(
-            value_logits.to(torch::kFloat32), support_min_, support_max_
+            std::get<1>(prediction).to(torch::kFloat32),
+            support_min_,
+            support_max_
         );
-        torch::Tensor use_mcts = mcts_bootstrap_mask.index({
-            chunk.select(1, 0), chunk.select(1, 1)
-        });
-        if (use_mcts.any().item<bool>()) {
-            auto [search_output, root_values] = search_->search_batch(
-                states.index({use_mcts}),
-                values.index({use_mcts}),
-                policy_logits.index({use_mcts}),
-                root_noise_temperature,
-                gumbel_sampling,
-                false
-            );
-            (void)search_output;
-            values.index_put_(
-                {use_mcts}, root_values.to(values.device())
-            );
-        }
         fresh_values.index_put_(
             {chunk.select(1, 0), chunk.select(1, 1)}, values
         );

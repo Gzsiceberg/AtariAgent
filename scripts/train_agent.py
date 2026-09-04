@@ -382,20 +382,11 @@ def main(config: TrainAgentConfig) -> None:
             raise ValueError(f"training.{name} must be non-negative")
     if not isinstance(config.reanalysis.enabled, bool):
         raise TypeError("reanalysis.enabled must be a boolean")
-    if not isinstance(config.reanalysis.mcts_bootstrap_final_phase, bool):
-        raise TypeError(
-            "reanalysis.mcts_bootstrap_final_phase must be a boolean"
-        )
     if (
         config.training.value_target in {"search", "mixed"}
         and not config.reanalysis.enabled
     ):
         raise ValueError("search value targets require target reanalysis")
-    if (
-        config.reanalysis.mcts_bootstrap_final_phase
-        and not config.reanalysis.enabled
-    ):
-        raise ValueError("MCTS bootstrapping requires target reanalysis")
     for value, name in (
         (
             config.reanalysis.initial_cache_clear_interval,
@@ -683,11 +674,6 @@ def main(config: TrainAgentConfig) -> None:
                 target_update_interval=(
                     config.reanalysis.target_update_interval
                 ),
-                mcts_bootstrap_start_step=(
-                    config.training.steps
-                    if config.reanalysis.mcts_bootstrap_final_phase
-                    else None
-                ),
                 device=device,
             )
             pipeline.publish_weights(
@@ -882,9 +868,6 @@ def main(config: TrainAgentConfig) -> None:
                     update=update,
                     policy_roots_requested=ready.policy_roots_requested,
                     policy_roots_searched=ready.policy_roots_searched,
-                    bootstrap_roots_searched=(
-                        ready.bootstrap_roots_searched
-                    ),
                     cache_hits=ready.cache_hits,
                     cache_target_age_mean=ready.cache_target_age_mean,
                     cache_target_age_max=ready.cache_target_age_max,
@@ -914,9 +897,6 @@ def main(config: TrainAgentConfig) -> None:
                                 "roots": (
                                     f"{ready.policy_roots_searched}/"
                                     f"{ready.policy_roots_requested}"
-                                ),
-                                "bt_roots": str(
-                                    ready.bootstrap_roots_searched
                                 ),
                                 "hit": (
                                     f"{ready.cache_hits / ready.policy_roots_requested:.0%}"

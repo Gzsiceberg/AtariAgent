@@ -38,7 +38,6 @@ class ReadyReanalysis:
     peak_memory_bytes: int
     policy_roots_requested: int = 0
     policy_roots_searched: int = 0
-    bootstrap_roots_searched: int = 0
     cache_hits: int = 0
     cache_target_age_mean: float = 0.0
     cache_target_age_max: int = 0
@@ -106,7 +105,6 @@ class ReanalysisPipeline:
         prefetch_batches: int,
         timeout_seconds: float,
         target_update_interval: int,
-        mcts_bootstrap_start_step: int | None = None,
         device: torch.device | str | None = None,
     ) -> None:
         if not isinstance(cache_targets, bool):
@@ -133,13 +131,6 @@ class ReanalysisPipeline:
             raise TypeError("target_update_interval must be an integer")
         if target_update_interval <= 0:
             raise ValueError("target_update_interval must be positive")
-        if mcts_bootstrap_start_step is not None:
-            if isinstance(mcts_bootstrap_start_step, bool) or not isinstance(
-                mcts_bootstrap_start_step, int
-            ):
-                raise TypeError("mcts_bootstrap_start_step must be an integer")
-            if mcts_bootstrap_start_step < 0:
-                raise ValueError("mcts_bootstrap_start_step must be non-negative")
         set_tree_search_num_threads(search_threads)
 
         self.device = torch.device(
@@ -172,8 +163,6 @@ class ReanalysisPipeline:
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
         self.search_algorithm = search_config.search_algorithm
-        self.mcts_bootstrap_start_step = mcts_bootstrap_start_step
-        self._mcts_bootstrap_active = False
         self._engine = NativeReanalysisEngine(
             self.target,
             str(self.device),
@@ -240,34 +229,15 @@ class ReanalysisPipeline:
         """Return fixed training noise for PUCT and none for Gumbel search."""
         return 0.0 if self.search_algorithm == "gumbel" else 1.0
 
-    def uses_mcts_bootstrap(self, trained_steps: int) -> bool:
-        """Return whether TD endpoints use an MCTS root value at this step."""
-        if isinstance(trained_steps, bool) or not isinstance(trained_steps, int):
-            raise TypeError("trained_steps must be an integer")
-        if trained_steps < 0:
-            raise ValueError("trained_steps must be non-negative")
-        return (
-            self.mcts_bootstrap_start_step is not None
-            and trained_steps >= self.mcts_bootstrap_start_step
-        )
-
     def submit(self, batch: ReplayBatch, *, trained_steps: int = 0) -> int:
         """Queue a batch containing consolidated reanalysis frames."""
         self._require_open()
-        root_noise_temperature = self.root_noise_temperature()
-        use_mcts_bootstrap = self.uses_mcts_bootstrap(trained_steps)
-        if use_mcts_bootstrap != self._mcts_bootstrap_active:
-            # Cached TD targets encode their bootstrap estimator, so they cannot
-            # be reused across the direct-value/MCTS boundary.
-            self._engine.clear_cache()
-            self._mcts_bootstrap_active = use_mcts_bootstrap
         request_id = int(
             self._engine.submit(
                 batch,
-                root_noise_temperature,
+                self.root_noise_temperature(),
                 self.search_algorithm == "gumbel",
                 trained_steps,
-                use_mcts_bootstrap,
             )
         )
         self._pending_bytes[request_id] = replay_batch_nbytes(batch)
@@ -297,7 +267,6 @@ class ReanalysisPipeline:
             peak_memory_bytes=int(result["peak_memory_bytes"]),
             policy_roots_requested=int(result["policy_roots_requested"]),
             policy_roots_searched=int(result["policy_roots_searched"]),
-            bootstrap_roots_searched=int(result["bootstrap_roots_searched"]),
             cache_hits=int(result["cache_hits"]),
             cache_target_age_mean=float(result["cache_target_age_mean"]),
             cache_target_age_max=int(result["cache_target_age_max"]),

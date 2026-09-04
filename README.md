@@ -237,17 +237,6 @@ AtariAgent retains the central EfficientZero learning ideas while redesigning th
 
 Target-network publication always clears the cache on its fixed 1,000-update schedule. Independently, `reanalysis.cache_target_ttl` expires individual entries after a bounded number of learner updates (200 by default). Full-cache clearing starts every `reanalysis.initial_cache_clear_interval` updates (100 by default), then linearly ramps to the target-update interval over the first half of collection-phase training.
 
-### Final-phase MCTS-bootstrap ablation
-
-The optional generalized search-bootstrap ablation trains every valid state during learner-only final updates with an `l=td_steps` TD target. Recent samples use the direct target-network value at the endpoint; stale samples use a fresh MCTS root value there:
-
-```bash
-uv run python scripts/train_agent.py \
-  reanalysis.mcts_bootstrap_final_phase=true
-```
-
-It is disabled by default. The estimator switch occurs at `training.steps` (100,000 by default), invalidates cached targets, and overrides `training.value_target=mixed` with TD for the complete final phase. In the SVE-as-TD-length interpretation, ordinary SVE is `l=0`, while this ablation uses `l=training.td_steps`: replay supplies the first `l` real rewards. `training.mixed_value_threshold` still partitions replay by collected-transition age: samples younger than the threshold bootstrap from direct target-network values, while older samples bootstrap from MCTS. Because collection has stopped, the newest region remains direct throughout final updates. When a bootstrap endpoint is already among the policy-reanalysis roots, its search value is reused; `reanalysis/bootstrap_roots_searched` reports only the remaining additional searches.
-
 ## Scope and limitations
 
 - Training requires an NVIDIA CUDA GPU; CPU training is not supported.

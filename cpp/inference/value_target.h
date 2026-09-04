@@ -54,13 +54,10 @@ public:
     torch::Tensor reanalyze_values(
         const torch::Tensor& bootstrap_frames,
         const torch::Tensor& bootstrap_mask,
-        const torch::Tensor& mcts_bootstrap_mask,
         const torch::Tensor& stored_bootstrap_values,
         const torch::Tensor& bootstrap_discounts,
         const torch::Tensor& value_targets,
-        std::int64_t stack_size,
-        double root_noise_temperature = 0.0,
-        bool gumbel_sampling = false
+        std::int64_t stack_size
     );
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
     policy_reanalysis_outputs(

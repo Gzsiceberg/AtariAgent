@@ -37,9 +37,6 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
         value_bootstrap_values=torch.ones(batch_size, 2),
         value_bootstrap_discounts=torch.ones(batch_size, 2),
         value_bootstrap_mask=torch.ones(batch_size, 2, dtype=torch.bool),
-        value_bootstrap_state_ids=(
-            torch.arange(batch_size * 2).view(batch_size, 2) + 100
-        ),
         reanalysis_state_ids=(
             torch.arange(batch_size)[:, None] + torch.arange(2)[None, :]
         ),
@@ -54,7 +51,6 @@ def _pipeline(
     search_algorithm: str = "puct",
     cache_targets: bool = True,
     cache_target_ttl: int = 200,
-    mcts_bootstrap_start_step: int | None = None,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -75,7 +71,6 @@ def _pipeline(
         prefetch_batches=prefetch_batches,
         timeout_seconds=timeout_seconds,
         target_update_interval=target_update_interval,
-        mcts_bootstrap_start_step=mcts_bootstrap_start_step,
         device="cpu",
     )
     representation = RepresentationNetwork(4)
@@ -125,40 +120,6 @@ def test_native_pipeline_configures_search_noise_from_algorithm(
         pipeline.close()
 
 
-def test_mcts_bootstrap_activates_at_configured_step_and_clears_cache() -> None:
-    pipeline = _pipeline(
-        prefetch_batches=1,
-        mcts_bootstrap_start_step=1,
-    )
-    batch = replace(
-        _batch(),
-        mcts_bootstrap_mask=torch.tensor(
-            [[False, True], [False, True]]
-        ),
-    )
-    try:
-        pipeline.submit(batch, trained_steps=0)
-        direct = pipeline.wait_next()
-        pipeline.submit(batch, trained_steps=1)
-        searched = pipeline.wait_next()
-
-        assert direct.bootstrap_roots_searched == 0
-        assert searched.policy_roots_searched == 3
-        assert searched.bootstrap_roots_searched == 2
-        # Crossing the estimator boundary invalidates direct-bootstrap cache
-        # entries rather than silently reusing them in the ablation phase.
-        assert searched.cache_hits == 0
-    finally:
-        pipeline.close()
-
-
-def test_mcts_bootstrap_start_step_validation() -> None:
-    with pytest.raises(TypeError, match="mcts_bootstrap_start_step"):
-        _pipeline(mcts_bootstrap_start_step=True)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="mcts_bootstrap_start_step"):
-        _pipeline(mcts_bootstrap_start_step=-1)
-
-
 def test_policy_reanalysis_replaces_stored_targets_immediately() -> None:
     pipeline = _pipeline(prefetch_batches=1, cache_target_ttl=0)
     batch = _batch()
@@ -190,108 +151,6 @@ def test_native_pipeline_uses_consolidated_reanalysis_frames() -> None:
         ready = pipeline.wait_next()
         assert ready.batch.search_value_targets is not None
         assert ready.policy_roots_searched == 3
-    finally:
-        pipeline.close()
-
-
-def test_mcts_bootstrap_reuses_overlapping_policy_root_values() -> None:
-    pipeline = _pipeline(
-        prefetch_batches=1,
-        cache_targets=False,
-        mcts_bootstrap_start_step=0,
-    )
-    batch = _batch()
-    combined = torch.zeros(batch.batch_size, 6, 1, 96, 96, dtype=torch.uint8)
-    shared_batch = replace(
-        batch,
-        frames=combined[:, :5],
-        value_bootstrap_frames=combined[:, 1:],
-        reanalysis_frames=combined,
-        mcts_bootstrap_mask=torch.ones(2, 2, dtype=torch.bool),
-    )
-    try:
-        pipeline.submit(shared_batch, trained_steps=0)
-        ready = pipeline.wait_next()
-
-        assert ready.policy_roots_searched == 4
-        # Target slot 0 bootstraps from policy slot 1 in each sample, so only
-        # the two non-overlapping endpoints require an additional search.
-        assert ready.bootstrap_roots_searched == 2
-        assert ready.batch.search_value_targets is not None
-        torch.testing.assert_close(
-            ready.batch.value_targets[:, 0],
-            ready.batch.search_value_targets[:, 1] - 1.0,
-        )
-    finally:
-        pipeline.close()
-
-
-def test_mcts_bootstrap_reuses_nonoverlapping_cached_search_values() -> None:
-    pipeline = _pipeline(
-        prefetch_batches=1,
-        mcts_bootstrap_start_step=0,
-    )
-    try:
-        pipeline.submit(_batch(), trained_steps=0)
-        seeded = pipeline.wait_next()
-
-        batch = replace(
-            _batch(),
-            reanalysis_state_ids=torch.tensor([[10, 11], [12, 13]]),
-            value_bootstrap_state_ids=torch.tensor([[0, 20], [1, 21]]),
-            mcts_bootstrap_mask=torch.ones(2, 2, dtype=torch.bool),
-        )
-        pipeline.submit(batch, trained_steps=0)
-        ready = pipeline.wait_next()
-
-        assert ready.policy_roots_searched == 4
-        # Endpoint states 0 and 1 have cached policy-root search values even
-        # though separate bootstrap frames prevent positional overlap reuse.
-        assert ready.bootstrap_roots_searched == 2
-        assert seeded.batch.search_value_targets is not None
-        expected_bootstraps = torch.stack(
-            (
-                seeded.batch.search_value_targets[0, 0],
-                seeded.batch.search_value_targets[0, 1],
-            )
-        )
-        torch.testing.assert_close(
-            ready.batch.value_targets[:, 0], expected_bootstraps - 1.0
-        )
-    finally:
-        pipeline.close()
-
-
-def test_mcts_bootstrap_handles_fully_cached_search_values() -> None:
-    pipeline = _pipeline(
-        prefetch_batches=1,
-        mcts_bootstrap_start_step=0,
-    )
-    try:
-        pipeline.submit(_batch(), trained_steps=0)
-        seeded = pipeline.wait_next()
-
-        batch = replace(
-            _batch(),
-            reanalysis_state_ids=torch.tensor([[10, 11], [12, 13]]),
-            value_bootstrap_state_ids=torch.tensor([[0, 1], [1, 2]]),
-            mcts_bootstrap_mask=torch.ones(2, 2, dtype=torch.bool),
-        )
-        pipeline.submit(batch, trained_steps=0)
-        ready = pipeline.wait_next()
-
-        assert ready.policy_roots_searched == 4
-        assert ready.bootstrap_roots_searched == 0
-        assert seeded.batch.search_value_targets is not None
-        expected_bootstraps = torch.stack(
-            (
-                seeded.batch.search_value_targets[0],
-                seeded.batch.search_value_targets[1],
-            )
-        )
-        torch.testing.assert_close(
-            ready.batch.value_targets, expected_bootstraps - 1.0
-        )
     finally:
         pipeline.close()
 

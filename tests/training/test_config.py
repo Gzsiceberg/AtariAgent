@@ -188,7 +188,6 @@ def test_reanalysis_uses_target_network_defaults() -> None:
     assert config.timeout_seconds == pytest.approx(600.0)
     assert config.worker_num_threads == 4
     assert config.target_update_interval == 1_000
-    assert not config.mcts_bootstrap_final_phase
 
 
 def test_target_network_uses_fixed_update_interval() -> None:

@@ -100,7 +100,6 @@ class ReanalysisConfig:
     timeout_seconds: float = 600.0
     worker_num_threads: int = 4
     target_update_interval: int = 1_000
-    mcts_bootstrap_final_phase: bool = False
 
 
 @dataclass

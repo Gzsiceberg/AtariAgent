@@ -350,13 +350,10 @@ PYBIND11_MODULE(_models_native, module) {
             &ValueTargetNetwork::reanalyze_values,
             py::arg("bootstrap_frames"),
             py::arg("bootstrap_mask"),
-            py::arg("mcts_bootstrap_mask"),
             py::arg("stored_bootstrap_values"),
             py::arg("bootstrap_discounts"),
             py::arg("value_targets"),
-            py::arg("stack_size"),
-            py::arg("root_noise_temperature") = 0.0,
-            py::arg("gumbel_sampling") = false
+            py::arg("stack_size")
         );
 
     py::class_<NativeReanalysisEngine>(module, "NativeReanalysisEngine")
@@ -392,8 +389,7 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("batch"),
             py::arg("root_noise_temperature"),
             py::arg("gumbel_sampling"),
-            py::arg("trained_step"),
-            py::arg("use_mcts_bootstrap") = false
+            py::arg("trained_step")
         )
         .def("wait_next", &NativeReanalysisEngine::wait_next)
         .def("clear_cache", &NativeReanalysisEngine::clear_cache)

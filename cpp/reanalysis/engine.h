@@ -37,8 +37,7 @@ public:
         pybind11::object batch,
         double root_noise_temperature,
         bool gumbel_sampling,
-        std::int64_t trained_step,
-        bool use_mcts_bootstrap
+        std::int64_t trained_step
     );
     pybind11::dict wait_next();
     void clear_cache();
