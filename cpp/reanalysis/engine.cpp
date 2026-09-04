@@ -497,7 +497,23 @@ private:
         }
         require_cpu(bootstrap.frames, "value_bootstrap_frames");
         require_cpu(bootstrap.values, "value_bootstrap_values");
+        if (bootstrap.values.scalar_type() != torch::kFloat
+            || bootstrap.values.dim() != 2
+            || bootstrap.values.sizes() != bootstrap.mask.sizes()) {
+            throw std::invalid_argument(
+                "value_bootstrap_values must be a 2D float32 tensor matching "
+                "value_bootstrap_mask"
+            );
+        }
         require_cpu(bootstrap.discounts, "value_bootstrap_discounts");
+        if (bootstrap.discounts.scalar_type() != torch::kFloat
+            || bootstrap.discounts.dim() != 2
+            || bootstrap.discounts.sizes() != bootstrap.mask.sizes()) {
+            throw std::invalid_argument(
+                "value_bootstrap_discounts must be a 2D float32 tensor "
+                "matching value_bootstrap_mask"
+            );
+        }
         if (job.stack_size <= 0) {
             throw std::invalid_argument("stack_size must be positive");
         }
@@ -668,8 +684,8 @@ private:
                 job->value_targets
             );
             job->policy_targets = job->policy_targets.clone();
-            job->fresh_bootstrap_values = torch::zeros_like(
-                bootstrap.values
+            job->fresh_bootstrap_values = torch::zeros(
+                bootstrap.values.sizes(), bootstrap.values.options()
             );
         }
 

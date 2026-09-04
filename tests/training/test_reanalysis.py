@@ -367,6 +367,36 @@ def test_native_pipeline_validates_native_batch_tensor_contract() -> None:
                     reanalysis_state_ids=torch.zeros(2, 2, dtype=torch.int32),
                 )
             )
+        for field_name in (
+            "value_bootstrap_values",
+            "value_bootstrap_discounts",
+        ):
+            for invalid in (
+                torch.zeros(1, 2),
+                torch.zeros(2),
+                torch.zeros(2, 2, dtype=torch.float64),
+            ):
+                with pytest.raises(ValueError, match=field_name):
+                    pipeline.submit(
+                        replace(_batch(), **{field_name: invalid})
+                    )
+    finally:
+        pipeline.close()
+
+
+def test_native_pipeline_accepts_noncontiguous_bootstrap_terms() -> None:
+    pipeline = _pipeline(prefetch_batches=1, cache_targets=False)
+    batch = replace(
+        _batch(),
+        value_bootstrap_values=torch.ones(2, 4)[:, ::2],
+        value_bootstrap_discounts=torch.ones(2, 4)[:, ::2],
+    )
+    assert not batch.value_bootstrap_values.is_contiguous()
+    assert not batch.value_bootstrap_discounts.is_contiguous()
+    try:
+        pipeline.submit(batch)
+        ready = pipeline.wait_next()
+        assert ready.batch.value_targets.shape == batch.value_targets.shape
     finally:
         pipeline.close()
 
