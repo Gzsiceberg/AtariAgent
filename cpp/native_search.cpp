@@ -88,7 +88,7 @@ RootTree::RootTree(
         std::max(simulations, 0) + 2
     );
     path_.reserve(scratch_capacity);
-    min_max_stack_.reserve(scratch_capacity);
+    visited_nodes_.reserve(static_cast<std::size_t>(std::max(simulations, 0)));
     SearchNode root;
     root.prior = 1.0F;
     root.state_slot = 0;
@@ -182,6 +182,9 @@ void RootTree::expand_and_back_up(
     expand_logits(leaf_index, state_slot, value_prefix, policy_logits, reset);
     back_up(value);
     if (algorithm_ == SearchAlgorithm::Puct) {
+        // Every simulation expands one new leaf, so this list contains
+        // exactly the visited non-root nodes whose current Q defines bounds.
+        visited_nodes_.push_back(leaf_index);
         rebuild_min_max();
     }
     if (algorithm_ == SearchAlgorithm::Gumbel) {
@@ -603,22 +606,8 @@ void RootTree::back_up(float leaf_value) {
 
 void RootTree::rebuild_min_max() {
     stats_.clear();
-    min_max_stack_.clear();
-    min_max_stack_.push_back(0);
-    while (!min_max_stack_.empty()) {
-        const int node_index = min_max_stack_.back();
-        min_max_stack_.pop_back();
-        if (!nodes_[node_index].expanded()) {
-            continue;
-        }
-        const int first_child = nodes_[node_index].first_child;
-        for (int action = 0; action < action_count_; ++action) {
-            const int child_index = first_child + action;
-            if (nodes_[child_index].visit_count > 0) {
-                stats_.update(q_value(child_index));
-                min_max_stack_.push_back(child_index);
-            }
-        }
+    for (const int node_index : visited_nodes_) {
+        stats_.update(q_value(node_index));
     }
 }
 

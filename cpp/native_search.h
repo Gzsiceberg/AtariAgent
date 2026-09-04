@@ -141,7 +141,7 @@ private:
     std::vector<int> selected_root_actions_;
     std::vector<SearchNode> nodes_;
     std::vector<int> path_;
-    std::vector<int> min_max_stack_;
+    std::vector<int> visited_nodes_;
 };
 
 }  // namespace atariagent::native
