@@ -32,7 +32,7 @@ command=(
     training.value_target=mixed training.mixed_value_start_step=30000
     training.mixed_value_threshold=5000
     training.final_mixed_value_threshold=20000
-    training.preserve_mixed_value_freshness=false
+    training.preserve_mixed_value_freshness=true
     training.optimizer=sgd training.learning_rate=0.2
     loss.consistency_weight=2.0
     checkpoint.pre_final_snapshot_path=null checkpoint.resume_pre_final_path=null
