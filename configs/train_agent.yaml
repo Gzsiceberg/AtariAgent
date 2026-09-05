@@ -15,7 +15,7 @@ environment:
   # full_game: life losses keep the remaining time budget (historical default).
   # episodic_life: each life-loss reset starts a new budget (V2 wrapper order).
   # Without episodic_life enabled, both modes limit the full game.
-  time_limit_mode: full_game  # full_game or episodic_life
+  time_limit_mode: episodic_life # full_game or episodic_life
   grayscale: false
   episodic_life: true
 
@@ -35,7 +35,7 @@ replay:
   # "v1" uses EfficientZero V1-style PER below. "v2" reproduces the old
   # EfficientZero V2-style AtariAgent behavior: alpha=beta=1, a 0.1 normalized
   # importance-weight floor, and prediction-error-aware initial priorities.
-  per_mode: v1  # v1 or v2
+  per_mode: v2  # v1 or v2
   # V1 mode samples with priority**0.6 and linearly anneals the
   # importance-sampling exponent from 0.4 to 1.0 over all learner updates.
   priority_alpha: 0.6
