@@ -72,6 +72,8 @@ training:
   # learner-only updates.
   steps: 100000
   final_steps: 20000
+  # PUCT temperature schedule horizon: collect_steps or collect_steps+final_step.
+  visit_softmax_temperature_horizon: collect_steps
   # Match EfficientZero's 100-update self-play model refresh cadence while
   # keeping learner progress proportional to collected transitions.
   updates_per_iteration: 100

@@ -297,8 +297,39 @@ def test_visit_temperature_uses_efficientzero_v1_collection_schedule() -> None:
     assert visit_softmax_temperature(100_000, collection_steps) == 0.25
 
 
+@pytest.mark.parametrize(
+    ("step", "expected"),
+    [(0, 1.0), (59_999, 1.0), (60_000, 0.5), (89_999, 0.5), (90_000, 0.25)],
+)
+def test_visit_temperature_can_include_final_steps(step: int, expected: float) -> None:
+    assert visit_softmax_temperature(
+        step, 100_000, final_steps=20_000, horizon="collect_steps+final_step"
+    ) == expected
+
+
+def test_visit_temperature_default_excludes_final_steps() -> None:
+    assert TrainingConfig().visit_softmax_temperature_horizon == "collect_steps"
+    assert visit_softmax_temperature(50_000, 100_000, final_steps=20_000) == 0.5
+
+
+@pytest.mark.parametrize("horizon", ["collect_steps", "collect_steps+final_step"])
+def test_visit_temperature_horizon_can_be_configured(horizon: str) -> None:
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        config = compose(
+            config_name="train_agent",
+            overrides=[f"training.visit_softmax_temperature_horizon={horizon}"],
+        )
+    assert config.training.visit_softmax_temperature_horizon == horizon
+
+
 def test_visit_temperature_rejects_invalid_steps() -> None:
     with pytest.raises(ValueError, match="total_steps"):
         visit_softmax_temperature(0, 0)
     with pytest.raises(ValueError, match="trained_steps"):
         visit_softmax_temperature(-1, 100)
+    with pytest.raises(ValueError, match="final_steps"):
+        visit_softmax_temperature(0, 100, final_steps=-1)
+    with pytest.raises(ValueError, match="horizon"):
+        visit_softmax_temperature(0, 100, horizon="invalid")
