@@ -14,3 +14,4 @@ benchmarks
 wandb
 runs
 .pi
+*.log
