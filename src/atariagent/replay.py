@@ -42,7 +42,7 @@ class _StoredTrajectory:
     policy_targets: np.ndarray
     root_values: np.ndarray
     predicted_values: np.ndarray
-    initial_priority: float
+    initial_priorities: np.ndarray
     value_targets: np.ndarray
     value_valid_mask: np.ndarray
 
@@ -57,9 +57,10 @@ class _StoredTrajectory:
 class FIFOReplayBuffer:
     """Store prepared trajectories with FIFO prioritized sampling.
 
-    Target horizons, discount, and PER mode are fixed for the buffer lifetime.
-    V1 mode uses softened priorities and unfloored importance weights; V2 mode
-    reproduces AtariAgent's old direct-priority, full-beta, 0.1-floor behavior.
+    Target horizons and discount are fixed for the buffer lifetime.
+    Both modes initialize priorities from per-transition prediction/bootstrap
+    errors. V1 uses configurable alpha/beta and unfloored importance weights;
+    V2 forces alpha=beta=1 and a 0.1 normalized importance-weight floor.
     Trailing lookahead transitions remain local target context and are not
     replay starts. Reanalysis remains outside this buffer.
     """
@@ -241,6 +242,7 @@ class FIFOReplayBuffer:
             "policy_targets",
             "root_values",
             "predicted_values",
+            "initial_priorities",
             "value_targets",
             "value_valid_mask",
         }
@@ -248,9 +250,9 @@ class FIFOReplayBuffer:
         for raw in raw_trajectories:
             if not isinstance(raw, Mapping):
                 raise TypeError("each replay trajectory must be a mapping")
-            if set(raw) != set(trajectory_fields):
-                raise ValueError("replay trajectory fields are invalid")
             values = dict(raw)
+            if set(values) != set(trajectory_fields):
+                raise ValueError("replay trajectory fields are invalid")
             for name in array_fields:
                 array = np.ascontiguousarray(np.asarray(values[name]))
                 array.setflags(write=False)
@@ -369,14 +371,8 @@ class FIFOReplayBuffer:
             self._transition_ids = self._transition_ids[evicted_transitions:]
             self._priorities = self._priorities[evicted_transitions:]
 
-        # V1 PER matches EfficientZero V1's --use_max_priority behavior.
-        # V2-style old AtariAgent PER also raised the maximum to a trajectory's
-        # insertion-time prediction error.
-        maximum_priority = (
-            float(self._priorities.max()) if self._priorities.size else 1.0
-        )
-        if self._per_mode == "v2":
-            maximum_priority = max(maximum_priority, stored.initial_priority)
+        # Insertion uses each transition's prediction/bootstrap error in both
+        # PER modes, independently of the existing replay maximum.
         transition_ids = np.arange(
             self._next_transition_id,
             self._next_transition_id + trajectory_length,
@@ -387,7 +383,7 @@ class FIFOReplayBuffer:
         self._priorities = np.concatenate(
             (
                 self._priorities,
-                np.full(trajectory_length, maximum_priority, dtype=np.float64),
+                stored.initial_priorities,
             )
         )
 
@@ -556,19 +552,20 @@ class FIFOReplayBuffer:
             root_values64,
             terminated=trajectory.terminated,
         )
+        # Initial errors bootstrap from network predictions, not MCTS values.
         priority_targets, priority_valid_mask = self._build_value_target_table(
             rewards64,
             predicted_values64,
             terminated=trajectory.terminated,
         )
         valid = priority_valid_mask[: len(trajectory)]
-        initial_priority = self._priority_epsilon
-        if np.any(valid):
-            initial_errors = np.abs(
-                predicted_values64[: len(trajectory)][valid]
-                - priority_targets[: len(trajectory)][valid]
-            )
-            initial_priority += float(initial_errors.max())
+        initial_priorities = np.full(
+            len(trajectory), self._priority_epsilon, dtype=np.float64
+        )
+        initial_priorities[valid] += np.abs(
+            predicted_values64[: len(trajectory)][valid]
+            - priority_targets[: len(trajectory)][valid]
+        )
 
         arrays = (
             frames,
@@ -577,6 +574,7 @@ class FIFOReplayBuffer:
             policy_targets,
             root_values,
             predicted_values,
+            initial_priorities,
             value_targets,
             value_valid_mask,
         )
@@ -598,7 +596,7 @@ class FIFOReplayBuffer:
             policy_targets=policy_targets,
             root_values=root_values,
             predicted_values=predicted_values,
-            initial_priority=initial_priority,
+            initial_priorities=initial_priorities,
             value_targets=value_targets,
             value_valid_mask=value_valid_mask,
         )

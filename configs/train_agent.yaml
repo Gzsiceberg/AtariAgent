@@ -32,9 +32,9 @@ self_play:
 replay:
   max_transitions: 100000
   warmup_transitions: 2000
-  # "v1" uses EfficientZero V1-style PER below. "v2" reproduces the old
-  # EfficientZero V2-style AtariAgent behavior: alpha=beta=1, a 0.1 normalized
-  # importance-weight floor, and prediction-error-aware initial priorities.
+  # Both modes initialize priorities from per-transition prediction/bootstrap
+  # errors. "v1" uses the alpha/beta settings below without an IS-weight floor;
+  # "v2" forces alpha=beta=1 and a 0.1 normalized importance-weight floor.
   per_mode: v2  # v1 or v2
   # Optional in-memory switch after collection, without a snapshot/restart.
   final_per_mode: null

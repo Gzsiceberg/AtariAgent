@@ -116,7 +116,25 @@ def test_replay_state_round_trip_restores_data_priorities_and_rng() -> None:
         discount=0.5,
         seed=999,
     )
-    restored.load_state_dict(replay.state_dict())
+    state = replay.state_dict()
+    for trajectory in state["trajectories"]:
+        assert "initial_priority" not in trajectory
+        assert "initial_priorities" in trajectory
+    restored.load_state_dict(state)
+    assert all(
+        "initial_priority" not in trajectory
+        for trajectory in restored.state_dict()["trajectories"]
+    )
+
+    for original, loaded in zip(
+        replay.state_dict()["trajectories"],
+        restored.state_dict()["trajectories"],
+        strict=True,
+    ):
+        np.testing.assert_array_equal(
+            loaded["initial_priorities"], original["initial_priorities"]
+        )
+        assert not loaded["initial_priorities"].flags.writeable
 
     assert len(restored) == len(replay)
     assert restored.trajectory_count == replay.trajectory_count
@@ -130,6 +148,24 @@ def test_replay_state_round_trip_restores_data_priorities_and_rng() -> None:
             assert loaded is None
         else:
             torch.testing.assert_close(loaded, original)
+
+
+@pytest.mark.parametrize("legacy_scalar", [False, True])
+def test_replay_rejects_snapshot_without_initial_priorities(
+    legacy_scalar: bool,
+) -> None:
+    replay = FIFOReplayBuffer(max_transitions=10)
+    replay.add(make_trajectory(3, terminated=True))
+    state = replay.state_dict()
+    trajectory = state["trajectories"][0]
+    del trajectory["initial_priorities"]
+    if legacy_scalar:
+        trajectory["initial_priority"] = 999.0
+
+    restored = FIFOReplayBuffer(max_transitions=10)
+    with pytest.raises(ValueError, match="replay trajectory fields are invalid"):
+        restored.load_state_dict(state)
+    assert len(restored) == 0
 
 
 def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:
@@ -562,7 +598,7 @@ def test_prioritized_replay_matches_efficientzero_v1_atari() -> None:
     assert counts[2] > counts[1] > counts[0]
 
 
-def test_prioritized_replay_can_reproduce_old_atariagent_behavior() -> None:
+def test_prioritized_replay_matches_v2_sampling_weights() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
@@ -587,7 +623,7 @@ def test_prioritized_replay_can_reproduce_old_atariagent_behavior() -> None:
     assert batch.importance_weights.min() == pytest.approx(0.1)
 
 
-def test_new_replay_transitions_use_current_maximum_priority() -> None:
+def test_new_replay_transitions_use_error_not_current_maximum_priority() -> None:
     replay = FIFOReplayBuffer(max_transitions=10, priority_epsilon=1e-6)
     replay.add(make_trajectory(2, terminated=True))
     replay.update_priorities([0, 1], [2.0, 5.0])
@@ -602,16 +638,17 @@ def test_new_replay_transitions_use_current_maximum_priority() -> None:
         )
     )
 
-    np.testing.assert_allclose(replay.priorities, np.array([2.0, 5.0, 5.0]))
+    np.testing.assert_allclose(replay.priorities, [2.0, 5.0, 9.000001])
 
 
-def test_old_per_new_transitions_can_use_prediction_error_priority() -> None:
+@pytest.mark.parametrize("per_mode", ["v1", "v2"])
+def test_initial_priorities_use_individual_prediction_errors(per_mode: str) -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
         td_steps=1,
         discount=0.5,
-        per_mode="v2",
+        per_mode=per_mode,
         priority_epsilon=1e-6,
     )
     replay.add(
@@ -623,10 +660,54 @@ def test_old_per_new_transitions_can_use_prediction_error_priority() -> None:
     )
 
     # Prediction-bootstrapped targets are [11, 17], giving errors [1, 3].
-    np.testing.assert_allclose(replay.priorities, np.full(2, 3.000001))
+    # The lookahead transition is not inserted as a replay start.
+    np.testing.assert_allclose(replay.priorities, [1.000001, 3.000001])
+
+    replay.update_priorities([0, 1], [100.0, 200.0])
+    initial = replay.state_dict()["trajectories"][0]["initial_priorities"]
+    np.testing.assert_allclose(initial, [1.000001, 3.000001])
+    assert not initial.flags.writeable
+    replay.add(
+        make_trajectory(
+            3,
+            episode_id=1,
+            lookahead_steps=1,
+            predicted_values=(10.0, 20.0, 30.0),
+        )
+    )
+    np.testing.assert_allclose(
+        replay.priorities, [100.0, 200.0, 1.000001, 3.000001]
+    )
 
 
-def test_first_replay_transitions_use_unit_priority() -> None:
+@pytest.mark.parametrize("per_mode", ["v1", "v2"])
+def test_initial_priorities_handle_terminal_tail_and_zero_error(per_mode: str) -> None:
+    replay = FIFOReplayBuffer(
+        max_transitions=10,
+        unroll_steps=1,
+        td_steps=2,
+        discount=0.5,
+        per_mode=per_mode,
+        priority_epsilon=1e-6,
+    )
+    replay.add(
+        make_trajectory(
+            3, terminated=True, predicted_values=(2.75, 4.0, 3.0)
+        )
+    )
+    # Targets: [1 + .5*2 + .25*3, 2 + .5*3, 3]. Terminal-tail
+    # returns do not bootstrap, and exact predictions retain positive epsilon.
+    np.testing.assert_allclose(replay.priorities, [1e-6, 0.500001, 1e-6])
+
+    restored = FIFOReplayBuffer(
+        max_transitions=10, unroll_steps=1, td_steps=2,
+        discount=0.5, per_mode=per_mode, priority_epsilon=1e-6,
+    )
+    restored.load_state_dict(replay.state_dict())
+    np.testing.assert_array_equal(restored.priorities, replay.priorities)
+
+
+def test_first_replay_transitions_use_prediction_error_priority() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=2,
         unroll_steps=1,
@@ -642,7 +723,7 @@ def test_first_replay_transitions_use_unit_priority() -> None:
         )
     )
 
-    np.testing.assert_allclose(replay.priorities, np.ones(2))
+    np.testing.assert_allclose(replay.priorities, [1.000001, 3.000001])
 
 
 def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
