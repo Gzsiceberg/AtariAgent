@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Run V1 PER with a mixed-value threshold of 5,000 during the 10k-update
-# cached-target final phase from the 100k pre-final snapshot.
+# Run four PER experiments during the 10k-update cached-target final phase
+# from the 100k pre-final snapshot:
+#   1. V2, threshold 5,000, PUCT with preserved mixed-value freshness.
+#   2. V2, threshold 5,000, Gumbel without preserved mixed-value freshness.
+#   3. V1, threshold 20,000, PUCT without preserved mixed-value freshness.
+#   4. V1, threshold 20,000, PUCT with preserved mixed-value freshness.
 #
-# This run uses the value- and policy-cache separation fix, Gumbel search,
-# cached reanalysis, and target interval 1,000.
+# All runs use the value- and policy-cache separation fix, cached reanalysis,
+# and target interval 1,000.
 #
 # Each invocation creates a new W&B run. The resumed 100k checkpoint is
 # evaluated before training, followed by evaluations every 5k updates at
@@ -56,6 +60,8 @@ run_ablation() {
     local per_mode="$2"
     local cache_targets="$3"
     local mixed_value_threshold="$4"
+    local search_algo="$5"
+    local preserve_mixed_value_freshness="$6"
     local target_update_interval=1000
     local output_dir="$RUN_ROOT/$name"
     local evaluation_path="$output_dir/evaluations/agent_evaluations.json"
@@ -74,7 +80,7 @@ run_ablation() {
 
     local -a command=(
         uv run python scripts/train_agent.py
-        search=gumbel
+        "search=$search_algo"
         "environment.id=$ENVIRONMENT_ID"
         "checkpoint.resume_pre_final_path=$SNAPSHOT_PATH"
         "checkpoint.pre_final_snapshot_path=null"
@@ -89,7 +95,7 @@ run_ablation() {
         "training.final_steps=10000"
         "training.value_target=mixed"
         "training.mixed_value_threshold=$mixed_value_threshold"
-        "training.preserve_mixed_value_freshness=false"
+        "training.preserve_mixed_value_freshness=$preserve_mixed_value_freshness"
         "training.progress_mode=always"
         "training.progress_interval_seconds=10"
         "wandb.enabled=true"
@@ -100,9 +106,10 @@ run_ablation() {
     )
 
     printf '\n=== %s ===\n' "$name"
-    printf 'search=gumbel per_mode=%s cache_targets=%s target_update_interval=%s ' \
-        "$per_mode" "$cache_targets" "$target_update_interval"
-    printf 'mixed_value_threshold=%s\n' "$mixed_value_threshold"
+    printf 'search=%s per_mode=%s cache_targets=%s target_update_interval=%s ' \
+        "$search_algo" "$per_mode" "$cache_targets" "$target_update_interval"
+    printf 'mixed_value_threshold=%s preserve_mixed_value_freshness=%s\n' \
+        "$mixed_value_threshold" "$preserve_mixed_value_freshness"
     printf 'output=%s\n' "$output_dir"
     printf 'command:'
     printf ' %q' "${command[@]}"
@@ -115,6 +122,9 @@ run_ablation() {
     "${command[@]}" 2>&1 | tee "$output_dir/training.log"
 }
 
-run_ablation "v1-threshold-5000" v1 true 5000
+run_ablation "puct-v2-threshold-5000-preserve-freshness" v2 true 5000 puct true
+run_ablation "gumbel-v2-threshold-5000" v2 true 5000 gumbel false
+run_ablation "puct-v1-threshold-20000" v1 true 20000 puct false
+run_ablation "puct-v1-threshold-20000-preserve-freshness" v1 true 20000 puct true
 
 printf '\nFinal-phase PER experiments completed. Results: %s\n' "$RUN_ROOT"
