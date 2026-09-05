@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the default baseline, total-steps temperature schedule, and
+# Run the default baseline, 200-step target updates with TTL disabled, and
 # Gumbel + V2 PER with the total-steps temperature schedule sequentially.
 # All other training parameters come from the Hydra defaults.
 #
@@ -47,8 +47,8 @@ run_experiment() {
 }
 
 run_experiment baseline
-run_experiment total_steps \
-    training.visit_softmax_temperature_horizon=total_steps
+run_experiment target_update_200_no_ttl \
+    reanalysis.target_update_interval=200 reanalysis.cache_target_ttl=0
 run_experiment gumbel_v2_total_steps \
     search=gumbel replay.per_mode=v2 \
     training.visit_softmax_temperature_horizon=total_steps
