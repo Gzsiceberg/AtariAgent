@@ -5,7 +5,7 @@
         "**/.venv": true,
         // "**/wandb": true,
         // "**/runs": true,
-        "**/checkpoints": true,
+        // "**/checkpoints": true,
         "**/outputs": true
     },
     "markdown.styles": [

@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Compare V1 and V2 PER with a mixed-value threshold of 5,000 during the
+# Run V1 PER with a mixed-value threshold of 5,000 during the 10k-update
 # cached-target final phase from the 100k pre-final snapshot.
 #
-# These runs repeat the PER comparison after the value- and policy-cache
-# separation fix. Both arms use Gumbel search, cached reanalysis, and target
-# interval 1,000.
+# This run uses the value- and policy-cache separation fix, Gumbel search,
+# cached reanalysis, and target interval 1,000.
 #
 # Each invocation creates a new W&B run. The resumed 100k checkpoint is
 # evaluated before training, followed by evaluations every 5k updates at
-# 105k, 110k, 115k, and 120k, so every run contains the same baseline.
+# 105k and 110k, so every run contains the same baseline.
 #
 # Usage:
 #   ./scripts/run_final_phase_ablations.sh
@@ -35,7 +34,7 @@ WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
 DRY_RUN="${DRY_RUN:-0}"
-EXPECTED_FINAL_UPDATE=120000
+EXPECTED_FINAL_UPDATE=110000
 
 if [[ "$DRY_RUN" != "1" && ! -f "$SNAPSHOT_PATH" ]]; then
     printf 'Pre-final snapshot not found: %s\n' "$SNAPSHOT_PATH" >&2
@@ -87,6 +86,7 @@ run_ablation() {
         "replay.per_mode=$per_mode"
         "reanalysis.cache_targets=$cache_targets"
         "reanalysis.target_update_interval=$target_update_interval"
+        "training.final_steps=10000"
         "training.value_target=mixed"
         "training.mixed_value_threshold=$mixed_value_threshold"
         "training.progress_mode=always"
@@ -115,6 +115,5 @@ run_ablation() {
 }
 
 run_ablation "v1-threshold-5000" v1 true 5000
-run_ablation "v2-threshold-5000" v2 true 5000
 
 printf '\nFinal-phase PER experiments completed. Results: %s\n' "$RUN_ROOT"
