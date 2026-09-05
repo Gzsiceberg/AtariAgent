@@ -46,9 +46,9 @@ run_experiment() {
     "${command[@]}" 2>&1 | tee "$output_dir/training.log"
 }
 
-run_experiment baseline
 run_experiment target_update_200_no_ttl \
     reanalysis.target_update_interval=200 reanalysis.cache_target_ttl=0
+run_experiment baseline
 run_experiment gumbel_v2_total_steps \
     search=gumbel replay.per_mode=v2 \
     training.visit_softmax_temperature_horizon=total_steps
