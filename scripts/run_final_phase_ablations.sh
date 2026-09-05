@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Compare V1 and V2 PER with mixed-value thresholds of 5,000 and 20,000
-# during the cached-target final phase from the 100k pre-final snapshot.
+# Compare V1 and V2 PER with a mixed-value threshold of 5,000 during the
+# cached-target final phase from the 100k pre-final snapshot.
 #
-# These runs repeat the key 2x2 comparison after the value- and policy-cache
-# separation fix. All arms use cached reanalysis and target interval 1,000.
+# These runs repeat the PER comparison after the value- and policy-cache
+# separation fix. Both arms use Gumbel search, cached reanalysis, and target
+# interval 1,000.
 #
 # Each invocation creates a new W&B run. The resumed 100k checkpoint is
 # evaluated before training, followed by evaluations every 5k updates at
@@ -74,6 +75,7 @@ run_ablation() {
 
     local -a command=(
         uv run python scripts/train_agent.py
+        search=gumbel
         "environment.id=$ENVIRONMENT_ID"
         "checkpoint.resume_pre_final_path=$SNAPSHOT_PATH"
         "checkpoint.pre_final_snapshot_path=null"
@@ -97,7 +99,7 @@ run_ablation() {
     )
 
     printf '\n=== %s ===\n' "$name"
-    printf 'per_mode=%s cache_targets=%s target_update_interval=%s ' \
+    printf 'search=gumbel per_mode=%s cache_targets=%s target_update_interval=%s ' \
         "$per_mode" "$cache_targets" "$target_update_interval"
     printf 'mixed_value_threshold=%s\n' "$mixed_value_threshold"
     printf 'output=%s\n' "$output_dir"
@@ -113,8 +115,6 @@ run_ablation() {
 }
 
 run_ablation "v1-threshold-5000" v1 true 5000
-run_ablation "v1-threshold-20000" v1 true 20000
 run_ablation "v2-threshold-5000" v2 true 5000
-run_ablation "v2-threshold-20000" v2 true 20000
 
 printf '\nFinal-phase PER experiments completed. Results: %s\n' "$RUN_ROOT"
