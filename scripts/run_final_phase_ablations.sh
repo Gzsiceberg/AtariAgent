@@ -89,6 +89,7 @@ run_ablation() {
         "training.final_steps=10000"
         "training.value_target=mixed"
         "training.mixed_value_threshold=$mixed_value_threshold"
+        "training.preserve_mixed_value_freshness=false"
         "training.progress_mode=always"
         "training.progress_interval_seconds=10"
         "wandb.enabled=true"

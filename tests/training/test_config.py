@@ -157,6 +157,7 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.value_target == "mixed"
     assert config.mixed_value_start_step == 30_000
     assert config.mixed_value_threshold == 5_000
+    assert not config.preserve_mixed_value_freshness
     assert config.batch_max_in_flight == 3
     assert config.batch_ready_prefetch == 2
     assert config.batch_worker_timeout_seconds == pytest.approx(600.0)
