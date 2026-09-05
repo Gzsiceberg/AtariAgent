@@ -56,6 +56,39 @@ def make_trajectory(
     )
 
 
+def test_switch_per_mode_preserves_replay_and_matches_v1_sampling() -> None:
+    replay = FIFOReplayBuffer(
+        max_transitions=20, unroll_steps=2, td_steps=2, per_mode="v2", seed=7
+    )
+    replay.add(make_trajectory(10, terminated=True))
+    replay.update_priorities(range(10), np.geomspace(0.01, 100, 10))
+    before = replay.state_dict()
+    reference = FIFOReplayBuffer(
+        max_transitions=20, unroll_steps=2, td_steps=2,
+        per_mode="v1", priority_alpha=0.6, priority_beta=0.95,
+    )
+    reference.load_state_dict(before)
+    replay.set_per_mode("v1", priority_alpha=0.6, priority_beta=0.95)
+    assert len(replay) == 10
+    assert replay.trajectory_count == 1
+    np.testing.assert_array_equal(replay.priorities, before["priorities"])
+    assert replay.state_dict()["rng_state"] == before["rng_state"]
+    actual = replay.sample(10)
+    expected = reference.sample(10)
+    torch.testing.assert_close(actual.indices, expected.indices)
+    torch.testing.assert_close(actual.importance_weights, expected.importance_weights)
+    assert actual.importance_weights.min() < 0.1
+
+
+@pytest.mark.parametrize(
+    "mode,alpha,beta", [("bad", 0.6, 0.4), ("v1", -1, 0.4), ("v1", 0.6, 2)]
+)
+def test_switch_per_mode_rejects_invalid_settings(mode, alpha, beta) -> None:
+    replay = FIFOReplayBuffer(max_transitions=10)
+    with pytest.raises(ValueError):
+        replay.set_per_mode(mode, priority_alpha=alpha, priority_beta=beta)
+
+
 def test_replay_state_round_trip_restores_data_priorities_and_rng() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,

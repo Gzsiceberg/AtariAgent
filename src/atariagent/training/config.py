@@ -45,6 +45,7 @@ class ReplayConfig:
     max_transitions: int = 10_000
     warmup_transitions: int = 2_000
     per_mode: str = "v1"
+    final_per_mode: str | None = None
     priority_alpha: float = 0.6
     priority_beta_initial: float = 0.4
     priority_beta_final: float = 1.0
@@ -66,6 +67,7 @@ class TrainingConfig:
     value_target: str = "mixed"
     mixed_value_start_step: int = 30_000
     mixed_value_threshold: int = 5_000
+    final_mixed_value_threshold: int | None = None
     preserve_mixed_value_freshness: bool = False
     batch_max_in_flight: int = 3
     batch_ready_prefetch: int = 2

@@ -36,6 +36,8 @@ replay:
   # EfficientZero V2-style AtariAgent behavior: alpha=beta=1, a 0.1 normalized
   # importance-weight floor, and prediction-error-aware initial priorities.
   per_mode: v2  # v1 or v2
+  # Optional in-memory switch after collection, without a snapshot/restart.
+  final_per_mode: null
   # V1 mode samples with priority**0.6 and linearly anneals the
   # importance-sampling exponent from 0.4 to 1.0 over all learner updates.
   priority_alpha: 0.6
@@ -82,6 +84,8 @@ training:
   value_target: mixed
   mixed_value_start_step: 30000
   mixed_value_threshold: 5000
+  # null keeps the collection-phase threshold during learner-only updates.
+  final_mixed_value_threshold: null
   # When enabled, learner-only updates do not make replay samples artificially
   # older, preserving EfficientZero V2's newest TD-target region.
   preserve_mixed_value_freshness: false
