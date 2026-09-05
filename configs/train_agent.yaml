@@ -35,7 +35,7 @@ replay:
   # Both modes initialize priorities from per-transition prediction/bootstrap
   # errors. "v1" uses the alpha/beta settings below without an IS-weight floor;
   # "v2" forces alpha=beta=1 and a 0.1 normalized importance-weight floor.
-  per_mode: v2  # v1 or v2
+  per_mode: v1  # v1 or v2
   # Optional in-memory switch after collection, without a snapshot/restart.
   final_per_mode: null
   # V1 mode samples with priority**0.6 and linearly anneals the
