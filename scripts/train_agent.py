@@ -127,6 +127,7 @@ def create_environments(config: TrainAgentConfig) -> list[Environment]:
                     frame_skip=config.environment.frame_skip,
                     screen_size=config.environment.screen_size,
                     max_episode_steps=config.environment.max_episode_steps,
+                    time_limit_mode=config.environment.time_limit_mode,
                     grayscale_obs=config.environment.grayscale,
                     terminal_on_life_loss=config.environment.episodic_life,
                 )

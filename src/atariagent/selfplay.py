@@ -286,6 +286,21 @@ class EpisodicLifeEnvironment(gym.Wrapper):
         return observation, info
 
 
+class _EpisodicLifeTimeLimit(gym.wrappers.TimeLimit):
+    """Reset the time budget per life, but treat timeouts as full-game ends."""
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = super().step(action)
+        if truncated:
+            # The inner life wrapper cannot see an outer TimeLimit's timeout.
+            # Propagate it so reset() restarts the game and reward tracking
+            # closes the full episode rather than continuing it after timeout.
+            self.env._was_real_done = True
+            info = dict(info)
+            info[FULL_EPISODE_DONE_KEY] = True
+        return observation, reward, terminated, truncated, info
+
+
 def make_atari_environment(
     env_id: str,
     *,
@@ -293,6 +308,7 @@ def make_atari_environment(
     frame_skip: int = 4,
     screen_size: int = 96,
     max_episode_steps: int = 3000,
+    time_limit_mode: str = "full_game",
     terminal_on_life_loss: bool = False,
     grayscale_obs: bool = False,
     render_mode: str | None = None,
@@ -306,6 +322,8 @@ def make_atari_environment(
         raise ValueError("screen_size must be positive")
     if max_episode_steps <= 0:
         raise ValueError("max_episode_steps must be positive")
+    if time_limit_mode not in {"full_game", "episodic_life"}:
+        raise ValueError("time_limit_mode must be full_game or episodic_life")
 
     import ale_py
     import gymnasium as gym
@@ -330,9 +348,15 @@ def make_atari_environment(
         grayscale_obs=grayscale_obs,
         scale_obs=False,
     )
-    environment = TimeLimit(environment, max_episode_steps=max_episode_steps)
-    if terminal_on_life_loss:
-        environment = EpisodicLifeEnvironment(environment)
+    if terminal_on_life_loss and time_limit_mode == "episodic_life":
+        environment = _EpisodicLifeTimeLimit(
+            EpisodicLifeEnvironment(environment),
+            max_episode_steps=max_episode_steps,
+        )
+    else:
+        environment = TimeLimit(environment, max_episode_steps=max_episode_steps)
+        if terminal_on_life_loss:
+            environment = EpisodicLifeEnvironment(environment)
     return FrameStackObservation(environment, stack_size=frame_stack)
 
 

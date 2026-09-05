@@ -61,6 +61,21 @@ def test_replay_per_mode_can_select_v2() -> None:
     assert config.replay.per_mode == "v2"
 
 
+def test_environment_time_limit_mode_can_be_overridden() -> None:
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        default = compose(config_name="train_agent")
+        per_life = compose(
+            config_name="train_agent",
+            overrides=["environment.time_limit_mode=episodic_life"],
+        )
+
+    assert default.environment.time_limit_mode == "full_game"
+    assert per_life.environment.time_limit_mode == "episodic_life"
+
+
 def test_augmentation_uses_efficientzero_atari_defaults() -> None:
     config = AugmentationConfig()
 
