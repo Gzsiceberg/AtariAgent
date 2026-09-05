@@ -303,7 +303,7 @@ def test_visit_temperature_uses_efficientzero_v1_collection_schedule() -> None:
 )
 def test_visit_temperature_can_include_final_steps(step: int, expected: float) -> None:
     assert visit_softmax_temperature(
-        step, 100_000, final_steps=20_000, horizon="collect_steps+final_step"
+        step, 100_000, final_steps=20_000, horizon="total_steps"
     ) == expected
 
 
@@ -312,7 +312,7 @@ def test_visit_temperature_default_excludes_final_steps() -> None:
     assert visit_softmax_temperature(50_000, 100_000, final_steps=20_000) == 0.5
 
 
-@pytest.mark.parametrize("horizon", ["collect_steps", "collect_steps+final_step"])
+@pytest.mark.parametrize("horizon", ["collect_steps", "total_steps"])
 def test_visit_temperature_horizon_can_be_configured(horizon: str) -> None:
     register_train_agent_config()
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")

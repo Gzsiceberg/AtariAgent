@@ -335,13 +335,13 @@ def visit_softmax_temperature(
     horizon: str = "collect_steps",
 ) -> float:
     """Return EfficientZero V1's schedule over the selected update horizon."""
-    if horizon not in {"collect_steps", "collect_steps+final_step"}:
-        raise ValueError("horizon must be collect_steps or collect_steps+final_step")
+    if horizon not in {"collect_steps", "total_steps"}:
+        raise ValueError("horizon must be collect_steps or total_steps")
     if total_steps <= 0:
         raise ValueError("total_steps must be positive")
     if final_steps < 0:
         raise ValueError("final_steps must be non-negative")
-    if horizon == "collect_steps+final_step":
+    if horizon == "total_steps":
         total_steps += final_steps
     if trained_steps < 0:
         raise ValueError("trained_steps must be non-negative")

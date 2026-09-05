@@ -334,11 +334,11 @@ def main(config: TrainAgentConfig) -> None:
     if config.training.batch_size < 2:
         raise ValueError("batch_size must be at least 2 for batch normalization")
     if config.training.visit_softmax_temperature_horizon not in {
-        "collect_steps", "collect_steps+final_step"
+        "collect_steps", "total_steps"
     }:
         raise ValueError(
             "training.visit_softmax_temperature_horizon must be "
-            "collect_steps or collect_steps+final_step"
+            "collect_steps or total_steps"
         )
     if config.replay.per_mode not in {"v1", "v2"}:
         raise ValueError("replay.per_mode must be v1 or v2")
