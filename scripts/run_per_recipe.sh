@@ -29,8 +29,10 @@ run_experiment() {
     local -a command=(
         uv run python scripts/train_agent.py
         "$@"
+        "training.progress_mode=always"
+        "training.progress_interval_seconds=10"
         wandb.enabled=true
-        'wandb.name=${environment_slug:${environment.id}}_'"${name}"'_seed${seed}_'"${RUN_ID}"
+        "wandb.name='\${environment_slug:\${environment.id}}_${name}_seed\${seed}_${RUN_ID}'"
         "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
         checkpoint.pre_final_snapshot_path=null
         "evaluation.data_path=$output_dir/evaluations/agent_evaluations.json"
