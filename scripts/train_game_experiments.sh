@@ -303,6 +303,7 @@ run_training() {
         search=puct
         "environment.id=$environment_id"
         "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
+        checkpoint.pre_final_snapshot_path=null
         "evaluation.data_path=$evaluation_path"
         "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
         training.progress_mode=always
