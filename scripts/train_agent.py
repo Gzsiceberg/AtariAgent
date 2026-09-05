@@ -96,11 +96,16 @@ def resolve_device(name: str) -> torch.device:
     return device
 
 
-def configure_training_backend(deterministic: bool) -> None:
-    """Select reproducible kernels or faster cuDNN/TF32 execution."""
+def configure_training_backend(
+    deterministic: bool, *, cudnn_benchmark: bool = False
+) -> None:
+    """Configure process-wide CUDA backends before starting native workers."""
     if not torch.cuda.is_available():
         return
-    torch.backends.cudnn.benchmark = not deterministic
+    # Variable cache-miss root counts otherwise repeatedly trigger cuDNN
+    # algorithm benchmarking and device-wide synchronization. Keep this a
+    # startup setting: changing it around native requests also affects learning.
+    torch.backends.cudnn.benchmark = cudnn_benchmark
     torch.backends.cudnn.deterministic = deterministic
     torch.backends.cudnn.allow_tf32 = not deterministic
     torch.backends.cuda.matmul.allow_tf32 = not deterministic
@@ -480,7 +485,10 @@ def main(config: TrainAgentConfig) -> None:
     random.seed(config.seed)
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
-    configure_training_backend(config.training.deterministic)
+    configure_training_backend(
+        config.training.deterministic,
+        cudnn_benchmark=config.training.cudnn_benchmark,
+    )
     set_runtime_typechecking(config.training.runtime_type_checks)
     device = resolve_device(config.training.device)
     resume_path = (
@@ -704,6 +712,7 @@ def main(config: TrainAgentConfig) -> None:
             f"precision={config.training.precision} "
             f"per={config.replay.per_mode} "
             f"deterministic={config.training.deterministic} "
+            f"cudnn_benchmark={torch.backends.cudnn.benchmark} "
             f"compile={config.training.compile_model} "
             f"transitions={config.self_play.total_transitions:,} "
             f"updates={total_updates:,}[/dim]"

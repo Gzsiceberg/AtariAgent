@@ -104,6 +104,10 @@ training:
   # FP32 is the deterministic baseline; BF16 is the optimized CUDA mode.
   precision: bf16  # fp32 or bf16
   deterministic: false
+  # Variable reanalysis root counts make cuDNN autotuning repeatedly benchmark
+  # new shapes and synchronize the GPU. Applies to learner and native inference.
+  # Controlled independently of deterministic; set true to enable autotuning.
+  cudnn_benchmark: false
   # Disable these checks in production after validating with them enabled.
   runtime_type_checks: false
   # Compile the complete learner unroll/loss graph and autotune its kernels.

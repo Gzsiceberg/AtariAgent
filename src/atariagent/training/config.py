@@ -80,6 +80,7 @@ class TrainingConfig:
     max_gradient_norm: float = 5.0
     precision: str = "fp32"
     deterministic: bool = True
+    cudnn_benchmark: bool = False
     runtime_type_checks: bool = True
     compile_model: bool = False
     compile_mode: str = "max-autotune"

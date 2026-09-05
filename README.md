@@ -105,6 +105,8 @@ The default preset uses **PUCT**, bounds cached reanalysis targets to 200 learne
 uv run python scripts/train_agent.py
 ```
 
+cuDNN convolution autotuning is disabled by default (`training.cudnn_benchmark=false`) to avoid repeated algorithm searches and GPU synchronization as reanalysis cache-miss batch sizes change. This is a process-wide setting for training and native inference; BF16, TF32, and learner compilation remain unchanged. Set `training.cudnn_benchmark=true` to compare the previous behavior. Autotuning is controlled independently of `training.deterministic`.
+
 Choose another Atari environment through a Hydra override:
 
 ```bash
