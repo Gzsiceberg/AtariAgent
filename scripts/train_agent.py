@@ -337,12 +337,6 @@ def main(config: TrainAgentConfig) -> None:
         raise ValueError("replay.per_mode must be v1 or v2")
     if config.replay.final_per_mode not in {None, "v1", "v2"}:
         raise ValueError("replay.final_per_mode must be null, v1 or v2")
-    final_threshold = config.training.final_mixed_value_threshold
-    if final_threshold is not None:
-        if isinstance(final_threshold, bool) or not isinstance(final_threshold, int):
-            raise TypeError("training.final_mixed_value_threshold must be an integer")
-        if final_threshold < 0:
-            raise ValueError("training.final_mixed_value_threshold must be non-negative")
     if not 0.0 <= config.replay.priority_alpha <= 1.0:
         raise ValueError("replay.priority_alpha must be in [0, 1]")
     if not (
@@ -368,8 +362,6 @@ def main(config: TrainAgentConfig) -> None:
         raise ValueError("training.progress_interval_seconds must be positive")
     if config.training.value_target not in {"td", "search", "mixed"}:
         raise ValueError("training.value_target must be td, search, or mixed")
-    if not isinstance(config.training.preserve_mixed_value_freshness, bool):
-        raise TypeError("training.preserve_mixed_value_freshness must be a boolean")
     for value, name in (
         (
             config.training.mixed_value_start_step,
@@ -790,7 +782,7 @@ def main(config: TrainAgentConfig) -> None:
             assert resume_path is not None
             evaluate_current_agent(resume_path, phase="Resume evaluation")
 
-        def create_batch_worker(*, final_phase: bool = False) -> BatchWorker:
+        def create_batch_worker() -> BatchWorker:
             return BatchWorker(
                 replay,
                 batch_size=config.training.batch_size,
@@ -799,14 +791,7 @@ def main(config: TrainAgentConfig) -> None:
                 value_target=config.training.value_target,
                 collection_steps=config.training.steps,
                 mixed_value_start_step=(config.training.mixed_value_start_step),
-                mixed_value_threshold=(
-                    final_threshold
-                    if final_phase and final_threshold is not None
-                    else config.training.mixed_value_threshold
-                ),
-                preserve_mixed_value_freshness=(
-                    config.training.preserve_mixed_value_freshness
-                ),
+                mixed_value_threshold=config.training.mixed_value_threshold,
                 priority_beta_initial=config.replay.priority_beta_initial,
                 priority_beta_final=config.replay.priority_beta_final,
                 priority_beta_steps=(
@@ -1118,7 +1103,7 @@ def main(config: TrainAgentConfig) -> None:
             )
 
         switch_final_settings = config.training.final_steps > 0 and (
-            config.replay.final_per_mode is not None or final_threshold is not None
+            config.replay.final_per_mode is not None
         )
         if (
             not resuming_final_phase and pre_final_path is not None
@@ -1136,14 +1121,14 @@ def main(config: TrainAgentConfig) -> None:
                     priority_beta=config.replay.priority_beta_initial,
                 )
             reanalysis_pipeline = create_reanalysis_pipeline()
-            batch_worker = create_batch_worker(final_phase=True)
+            batch_worker = create_batch_worker()
             restore_rng_state(boundary_rng_state)
             if switch_final_settings:
                 log(
                     "[bold yellow]Final sampling settings[/bold yellow] "
                     f"update={update:,} "
                     f"per={config.replay.final_per_mode or config.replay.per_mode} "
-                    f"mixed_value_threshold={final_threshold if final_threshold is not None else config.training.mixed_value_threshold}"
+                    f"mixed_value_threshold={config.training.mixed_value_threshold}"
                 )
 
         log(

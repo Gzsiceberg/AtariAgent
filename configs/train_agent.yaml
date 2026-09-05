@@ -83,12 +83,8 @@ training:
   # stale replay states after the model has become reliable.
   value_target: mixed
   mixed_value_start_step: 30000
-  mixed_value_threshold: 5000
-  # null keeps the collection-phase threshold during learner-only updates.
-  final_mixed_value_threshold: null
-  # When enabled, learner-only updates do not make replay samples artificially
-  # older, preserving EfficientZero V2's newest TD-target region.
-  preserve_mixed_value_freshness: false
+  mixed_value_threshold: 20000
+  # Learner-only updates preserve replay freshness for mixed value targets.
   # Bound threaded sampling, reanalysis, H2D transfer, and ready GPU batches.
   batch_max_in_flight: 3
   # Keep at most two transferred GPU batches waiting ahead of the learner.

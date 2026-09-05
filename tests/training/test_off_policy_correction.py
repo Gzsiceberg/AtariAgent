@@ -54,7 +54,7 @@ def test_mixed_values_use_search_for_stale_samples_at_strict_boundary() -> None:
     )
 
 
-def test_mixed_values_add_final_updates_to_transition_ages() -> None:
+def test_mixed_values_preserve_transition_ages_through_final_updates() -> None:
     batch = replace(
         _batch(),
         transition_ages=torch.tensor([0, 4_999]),
@@ -77,32 +77,27 @@ def test_mixed_values_add_final_updates_to_transition_ages() -> None:
 
     torch.testing.assert_close(
         first_final_update.value_targets,
-        torch.tensor([[1.0, 2.0], [30.0, 4.0]]),
+        batch.value_targets,
     )
     torch.testing.assert_close(
         after_threshold.value_targets,
-        torch.tensor([[10.0, 20.0], [30.0, 4.0]]),
+        batch.value_targets,
     )
 
 
-def test_mixed_values_can_preserve_v2_freshness_during_final_updates() -> None:
-    batch = replace(
-        _batch(),
-        transition_ages=torch.tensor([0, 4_999]),
-    )
-
+def test_mixed_values_preserve_stale_boundary_during_final_updates() -> None:
+    batch = _batch()
     selected = batch.with_selected_value_targets(
         mode="mixed",
         learner_step=105_000,
         collection_steps=100_000,
         mixed_start_step=30_000,
         freshness_threshold=5_000,
-        preserve_mixed_value_freshness=True,
     )
 
     torch.testing.assert_close(
         selected.value_targets,
-        torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+        torch.tensor([[10.0, 20.0], [3.0, 4.0]]),
     )
 
 

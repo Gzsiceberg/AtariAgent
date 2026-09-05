@@ -63,10 +63,8 @@ def test_single_training_command_and_valid_hydra_recipe(launcher):
     assert config.self_play.num_simulations == 50
     assert config.replay.per_mode == "v2"
     assert config.replay.final_per_mode == "v1"
-    assert config.training.mixed_value_threshold == 5000
-    assert config.training.final_mixed_value_threshold == 20000
+    assert config.training.mixed_value_threshold == 20000
     assert config.training.final_steps == 10000
-    assert config.training.preserve_mixed_value_freshness is True
     assert config.checkpoint.pre_final_snapshot_path is None
     assert config.checkpoint.resume_pre_final_path is None
     assert config.checkpoint.final_interval == 2500

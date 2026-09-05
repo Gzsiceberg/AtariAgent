@@ -103,13 +103,10 @@ class ReplayBatch:
         collection_steps: int,
         mixed_start_step: int,
         freshness_threshold: int,
-        preserve_mixed_value_freshness: bool = False,
     ) -> ReplayBatch:
         """Select EfficientZero V2 TD or search values for training."""
         if mode not in {"td", "search", "mixed"}:
             raise ValueError("value target mode must be td, search, or mixed")
-        if not isinstance(preserve_mixed_value_freshness, bool):
-            raise TypeError("preserve_mixed_value_freshness must be a boolean")
         for value, name in (
             (learner_step, "learner_step"),
             (collection_steps, "collection_steps"),
@@ -134,7 +131,7 @@ class ReplayBatch:
             effective_ages = self.effective_transition_ages(
                 learner_step=learner_step,
                 collection_steps=collection_steps,
-                advance_during_final=not preserve_mixed_value_freshness,
+                advance_during_final=False,
             )
             sample_uses_search = effective_ages >= freshness_threshold
             search_mask = search_mask & sample_uses_search[:, None]
