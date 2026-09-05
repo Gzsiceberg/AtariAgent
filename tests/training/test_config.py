@@ -19,7 +19,6 @@ from atariagent.training.config import (
     next_collection_vector_steps,
     proportional_training_update,
     register_train_agent_config,
-    scheduled_cache_clear_interval,
     target_network_update_due,
     visit_softmax_temperature,
 )
@@ -112,10 +111,8 @@ def test_search_presets_select_their_simulation_budgets() -> None:
     assert puct.self_play.steps_per_iteration == 25
     assert puct.training.updates_per_iteration == 100
     assert custom_puct.self_play.root_exploration_fraction == pytest.approx(0.4)
-    assert puct.reanalysis.initial_cache_clear_interval == 100
     assert gumbel.self_play.search_algorithm == "gumbel"
     assert gumbel.self_play.num_simulations == 16
-    assert gumbel.reanalysis.initial_cache_clear_interval == 100
 
 
 def test_resume_evaluation_is_disabled_by_default_and_can_be_enabled() -> None:
@@ -213,7 +210,6 @@ def test_reanalysis_uses_target_network_defaults() -> None:
 
     assert config.policy_chunk_size == 768
     assert config.cache_targets
-    assert config.initial_cache_clear_interval == 100
     assert config.cache_target_ttl == 200
     assert config.prefetch_batches == 2
     assert config.timeout_seconds == pytest.approx(600.0)
@@ -235,19 +231,6 @@ def test_target_network_uses_fixed_update_interval() -> None:
             last_update = update
 
     assert due_updates == [1_000, 2_000, 3_000]
-
-
-def test_cache_clear_interval_ramps_over_first_half_of_training() -> None:
-    intervals = [
-        scheduled_cache_clear_interval(
-            update,
-            ramp_steps=5_000,
-            initial_interval=100,
-            final_interval=1_000,
-        )
-        for update in (0, 2_500, 5_000, 10_000)
-    ]
-    assert intervals == [100, 550, 1_000, 1_000]
 
 
 def test_final_evaluation_uses_efficientzero_v1_raw_frame_horizon() -> None:

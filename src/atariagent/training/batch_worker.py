@@ -15,7 +15,7 @@ from torch import Tensor
 from atariagent.replay import FIFOReplayBuffer
 from atariagent.replay_batch import ReplayBatch
 
-from .config import linear_priority_beta, scheduled_cache_clear_interval
+from .config import linear_priority_beta
 from .reanalysis import ReanalysisPipeline, TargetState
 
 
@@ -89,9 +89,6 @@ class BatchWorker:
         priority_beta_initial: float = 0.4,
         priority_beta_final: float = 1.0,
         priority_beta_steps: int = 120_000,
-        reanalysis_initial_cache_clear_interval: int = 100,
-        reanalysis_final_cache_clear_interval: int = 1_000,
-        reanalysis_cache_clear_ramp_steps: int = 50_000,
         max_in_flight: int = 3,
         ready_prefetch: int = 1,
         timeout_seconds: float = 600.0,
@@ -102,18 +99,6 @@ class BatchWorker:
             (mixed_value_start_step, "mixed_value_start_step"),
             (mixed_value_threshold, "mixed_value_threshold"),
             (priority_beta_steps, "priority_beta_steps"),
-            (
-                reanalysis_initial_cache_clear_interval,
-                "reanalysis_initial_cache_clear_interval",
-            ),
-            (
-                reanalysis_final_cache_clear_interval,
-                "reanalysis_final_cache_clear_interval",
-            ),
-            (
-                reanalysis_cache_clear_ramp_steps,
-                "reanalysis_cache_clear_ramp_steps",
-            ),
             (max_in_flight, "max_in_flight"),
             (ready_prefetch, "ready_prefetch"),
         ):
@@ -132,19 +117,6 @@ class BatchWorker:
         if not 0.0 <= priority_beta_initial <= priority_beta_final <= 1.0:
             raise ValueError(
                 "priority beta bounds must satisfy 0 <= initial <= final <= 1"
-            )
-        if (
-            reanalysis_initial_cache_clear_interval <= 0
-            or reanalysis_final_cache_clear_interval <= 0
-            or reanalysis_cache_clear_ramp_steps <= 0
-        ):
-            raise ValueError("cache clear intervals and ramp must be positive")
-        if (
-            reanalysis_initial_cache_clear_interval
-            > reanalysis_final_cache_clear_interval
-        ):
-            raise ValueError(
-                "initial cache clear interval must not exceed final interval"
             )
         if max_in_flight <= 0:
             raise ValueError("max_in_flight must be positive")
@@ -166,16 +138,6 @@ class BatchWorker:
         self.priority_beta_initial = priority_beta_initial
         self.priority_beta_final = priority_beta_final
         self.priority_beta_steps = priority_beta_steps
-        self.reanalysis_initial_cache_clear_interval = (
-            reanalysis_initial_cache_clear_interval
-        )
-        self.reanalysis_final_cache_clear_interval = (
-            reanalysis_final_cache_clear_interval
-        )
-        self.reanalysis_cache_clear_ramp_steps = (
-            reanalysis_cache_clear_ramp_steps
-        )
-        self._last_reanalysis_cache_clear_step = 0
         self.max_in_flight = max_in_flight
         self.ready_prefetch = ready_prefetch
         self.timeout_seconds = timeout_seconds
@@ -372,20 +334,6 @@ class BatchWorker:
                 and self.outstanding_count < self.max_in_flight
             ):
                 self._drain_controls()
-                cache_clear_interval = scheduled_cache_clear_interval(
-                    self._last_reanalysis_cache_clear_step,
-                    ramp_steps=self.reanalysis_cache_clear_ramp_steps,
-                    initial_interval=(
-                        self.reanalysis_initial_cache_clear_interval
-                    ),
-                    final_interval=self.reanalysis_final_cache_clear_interval,
-                )
-                if (
-                    submitted_step - self._last_reanalysis_cache_clear_step
-                    >= cache_clear_interval
-                ):
-                    pipeline.clear_cache()
-                    self._last_reanalysis_cache_clear_step = submitted_step
                 token, batch, sample_ms = self._sample(True, submitted_step)
                 try:
                     request_id = pipeline.submit(
@@ -559,7 +507,6 @@ class BatchWorker:
                 if pipeline is None:
                     raise RuntimeError("reanalysis pipeline is unavailable")
                 pipeline.publish_weights(command.version, command.state)
-                self._last_reanalysis_cache_clear_step = command.version
             except BaseException as error:
                 command.error = error
             finally:

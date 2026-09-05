@@ -384,24 +384,12 @@ def main(config: TrainAgentConfig) -> None:
         if value < 0:
             raise ValueError(f"training.{name} must be non-negative")
     for value, name in (
-        (
-            config.reanalysis.initial_cache_clear_interval,
-            "initial_cache_clear_interval",
-        ),
         (config.reanalysis.target_update_interval, "target_update_interval"),
     ):
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"reanalysis.{name} must be an integer")
         if value <= 0:
             raise ValueError(f"reanalysis.{name} must be positive")
-    if (
-        config.reanalysis.initial_cache_clear_interval
-        > config.reanalysis.target_update_interval
-    ):
-        raise ValueError(
-            "reanalysis.initial_cache_clear_interval must not exceed "
-            "reanalysis.target_update_interval"
-        )
     if config.reanalysis.policy_chunk_size <= 0:
         raise ValueError("reanalysis.policy_chunk_size must be positive")
     if not isinstance(config.reanalysis.cache_targets, bool):
@@ -803,16 +791,6 @@ def main(config: TrainAgentConfig) -> None:
                 priority_beta_final=config.replay.priority_beta_final,
                 priority_beta_steps=(
                     config.training.steps + config.training.final_steps
-                ),
-                reanalysis_initial_cache_clear_interval=(
-                    config.reanalysis.initial_cache_clear_interval
-                ),
-                reanalysis_final_cache_clear_interval=(
-                    config.reanalysis.target_update_interval
-                ),
-                reanalysis_cache_clear_ramp_steps=max(
-                    config.training.steps // 2,
-                    1,
                 ),
                 max_in_flight=config.training.batch_max_in_flight,
                 ready_prefetch=config.training.batch_ready_prefetch,

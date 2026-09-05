@@ -298,15 +298,11 @@ def main(c: DictConfig):
             priority_beta_initial=c.replay.priority_beta_initial,
             priority_beta_final=c.replay.priority_beta_final,
             priority_beta_steps=c.training.steps + c.training.final_steps,
-            reanalysis_initial_cache_clear_interval=c.reanalysis.initial_cache_clear_interval,
-            reanalysis_final_cache_clear_interval=c.reanalysis.target_update_interval,
-            reanalysis_cache_clear_ramp_steps=max(c.training.steps // 2, 1),
             max_in_flight=c.training.batch_max_in_flight,
             ready_prefetch=c.training.batch_ready_prefetch,
             timeout_seconds=c.training.batch_worker_timeout_seconds,
         ) as worker:
             worker._replay_lock = TimedLock(m)
-            worker._last_reanalysis_cache_clear_step = start_step
             step = start_step
             target_version = start_step
 
@@ -373,11 +369,10 @@ def main(c: DictConfig):
             setup = dict(m.values)
             results = []
             for repetition in range(repetitions):
-                # Optional explicit cold-cache windows; otherwise retain the production clear schedule.
+                # Optional explicit cold-cache windows; otherwise retain cached targets.
                 if pipeline is not None and cold_windows:
                     with m.time("boundary_cache_clear_ms"):
                         pipeline.clear_cache()
-                    worker._last_reanalysis_cache_clear_step = step
                 boundary = m.values.get("boundary_cache_clear_ms", [])[-1:]
                 m.values.clear()
                 torch.cuda.reset_peak_memory_stats()

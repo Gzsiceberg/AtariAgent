@@ -97,7 +97,6 @@ class ReanalysisConfig:
 
     policy_chunk_size: int = 768
     cache_targets: bool = True
-    initial_cache_clear_interval: int = 100
     cache_target_ttl: int = 200
     prefetch_batches: int = 2
     timeout_seconds: float = 600.0
@@ -207,38 +206,6 @@ def final_evaluation_max_episode_steps(frame_skip: int) -> int:
             "frame_skip must be positive and no greater than the raw-frame horizon"
         )
     return FINAL_EVALUATION_RAW_FRAMES // frame_skip
-
-
-def scheduled_cache_clear_interval(
-    update: int,
-    *,
-    ramp_steps: int,
-    initial_interval: int,
-    final_interval: int,
-) -> int:
-    """Ramp full-cache clearing from ``initial`` to ``final`` spacing."""
-    for value, name in (
-        (update, "update"),
-        (ramp_steps, "ramp_steps"),
-        (initial_interval, "initial_interval"),
-        (final_interval, "final_interval"),
-    ):
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise TypeError(f"{name} must be an integer")
-    if update < 0:
-        raise ValueError("update must be non-negative")
-    if ramp_steps <= 0:
-        raise ValueError("ramp_steps must be positive")
-    if initial_interval <= 0 or final_interval <= 0:
-        raise ValueError("cache clear intervals must be positive")
-    if initial_interval > final_interval:
-        raise ValueError("initial_interval must not exceed final_interval")
-
-    ramp_progress = min(update / ramp_steps, 1.0)
-    return round(
-        initial_interval
-        + ramp_progress * (final_interval - initial_interval)
-    )
 
 
 def target_network_update_due(
@@ -384,7 +351,6 @@ __all__ = [
     "next_collection_vector_steps",
     "proportional_training_update",
     "register_train_agent_config",
-    "scheduled_cache_clear_interval",
     "target_network_update_due",
     "visit_softmax_temperature",
 ]

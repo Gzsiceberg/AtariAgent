@@ -62,30 +62,6 @@ class _FakeReplay:
         self.priority_updates.append((indices.clone(), priorities.clone()))
 
 
-@pytest.mark.parametrize("interval", [True, 2.0])
-def test_worker_rejects_non_integer_cache_clear_interval(interval: object) -> None:
-    with pytest.raises(
-        TypeError,
-        match="reanalysis_initial_cache_clear_interval",
-    ):
-        BatchWorker(
-            _FakeReplay(lambda _: _batch()),  # type: ignore[arg-type]
-            batch_size=2,
-            device="cpu",
-            reanalysis_initial_cache_clear_interval=interval,  # type: ignore[arg-type]
-        )
-
-
-def test_worker_rejects_non_positive_cache_clear_interval() -> None:
-    with pytest.raises(ValueError, match="cache clear intervals"):
-        BatchWorker(
-            _FakeReplay(lambda _: _batch()),  # type: ignore[arg-type]
-            batch_size=2,
-            device="cpu",
-            reanalysis_initial_cache_clear_interval=0,
-        )
-
-
 def test_worker_bounds_sampling_when_consumer_is_slow() -> None:
     sampled: list[int] = []
     lock = Lock()
@@ -264,7 +240,7 @@ def test_worker_applies_mixed_values_before_learner_transfer() -> None:
         worker.wait_idle()
 
 
-def test_worker_reanalyzes_in_order_and_ramps_cache_clearing() -> None:
+def test_worker_reanalyzes_in_order_without_scheduled_cache_clearing() -> None:
     includes: list[bool] = []
     pipeline = _FakeReanalysisPipeline()
 
@@ -279,14 +255,11 @@ def test_worker_reanalyzes_in_order_and_ramps_cache_clearing() -> None:
         batch_size=2,
         device="cpu",
         reanalysis_pipeline=pipeline,  # type: ignore[arg-type]
-        reanalysis_initial_cache_clear_interval=2,
-        reanalysis_final_cache_clear_interval=4,
-        reanalysis_cache_clear_ramp_steps=4,
         max_in_flight=3,
         ready_prefetch=1,
         timeout_seconds=2.0,
     ) as worker:
-        worker.start(0, 10)
+        worker.start(990, 10)
         steps = []
         for _ in range(10):
             ready = worker.next_ready()
@@ -295,10 +268,10 @@ def test_worker_reanalyzes_in_order_and_ramps_cache_clearing() -> None:
             assert ready.gpu_batch.value_bootstrap_frames is None
             worker.complete(ready, torch.ones(2))
         worker.wait_idle()
-        worker.publish_weights(10, {})
+        worker.publish_weights(1_000, {})
 
-    assert steps == list(range(10))
+    assert steps == list(range(990, 1_000))
     assert includes == [True] * 10
-    assert pipeline.submitted_steps == list(range(10))
-    assert pipeline.cache_clear_request_counts == [2, 5, 9]
-    assert pipeline.published_versions == [10]
+    assert pipeline.submitted_steps == list(range(990, 1_000))
+    assert pipeline.cache_clear_request_counts == []
+    assert pipeline.published_versions == [1_000]

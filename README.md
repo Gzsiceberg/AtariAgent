@@ -237,7 +237,7 @@ AtariAgent retains the central EfficientZero learning ideas while redesigning th
 | Hardware objective | Official README recommends four RTX 3090 GPUs for high-throughput training | Official example launches with two GPUs and supports broader workloads | Consumer single-GPU experiments |
 | License | GPL-3.0 | GPL-3.0 | MIT |
 
-Target-network publication clears both policy and value caches on its fixed 1,000-update schedule. Independently, `reanalysis.cache_target_ttl` expires policy/search entries after a bounded number of learner updates (200 by default). Policy-cache clearing starts every `reanalysis.initial_cache_clear_interval` updates (100 by default), then linearly ramps to the target-update interval over the first half of collection-phase training. Raw bootstrap values need no TTL because they are deterministic for fixed target-network weights.
+Target-network publication clears both policy and value caches on its fixed 1,000-update schedule. Independently, `reanalysis.cache_target_ttl` expires policy/search entries after a bounded number of learner updates (200 by default). Raw bootstrap values need no TTL because they are deterministic for fixed target-network weights.
 
 ## Scope and limitations
 

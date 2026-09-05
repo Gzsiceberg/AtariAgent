@@ -52,9 +52,6 @@ reanalysis:
   # Cache policy/MCTS targets with a TTL and raw bootstrap values until the
   # next target-network publication.
   cache_targets: true
-  # Ramp full-cache clearing from 100 updates to target_update_interval over
-  # the first half of collection-phase training.
-  initial_cache_clear_interval: 100
   # Re-search an entry once it is this many learner updates old. Zero disables
   # age-based expiration; cache clearing and target publication still refresh it.
   cache_target_ttl: 200
