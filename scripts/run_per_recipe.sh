@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run 200-step target updates with TTL disabled, the default baseline, and
-# Gumbel search sequentially.
+# Run PUCT with PER v2, 200-step target updates, no TTL, and MV threshold 5000.
+# Previous experiments are commented out.
 # All other training parameters come from the Hydra defaults.
 #
 # Usage: ./scripts/run_per_recipe.sh
@@ -50,10 +50,15 @@ run_experiment() {
     "${command[@]}" 2>&1 | tee "$output_dir/training.log"
 }
 
-run_experiment target_update_200_no_ttl \
-    reanalysis.target_update_interval=200 reanalysis.cache_target_ttl=0
-run_experiment baseline
-run_experiment gumbel search=gumbel
+# run_experiment target_update_200_no_ttl \
+#     reanalysis.target_update_interval=200 reanalysis.cache_target_ttl=0
+# run_experiment baseline
+# run_experiment gumbel search=gumbel
+
+run_experiment puct_v2_t200_no_ttl_mv5000 \
+    search=puct replay.per_mode=v2 \
+    reanalysis.target_update_interval=200 reanalysis.cache_target_ttl=0 \
+    training.mixed_value_threshold=5000
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete; no training or output directories created.\n'
