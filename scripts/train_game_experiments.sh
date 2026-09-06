@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Train the 26 Atari 100k games sequentially with the default PUCT config.
+# Train the 26 Atari 100k games sequentially using configs/train_agent.yaml.
+# Keep model-only checkpoints, but disable the large pre-final snapshot.
 #
 # The batch blocks automatic sleep while it is running and, by default,
 # suspends the host whether the batch succeeds, fails, or is interrupted.
@@ -24,7 +25,7 @@ cd "$REPO_ROOT"
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RUN_ROOT="runs/game_experiments/$RUN_ID"
-EXPERIMENT_NAME="puct-default"
+EXPERIMENT_NAME="default"
 WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
@@ -300,7 +301,6 @@ run_training() {
 
     local -a command=(
         uv run python scripts/train_agent.py
-        search=puct
         "environment.id=$environment_id"
         "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
         checkpoint.pre_final_snapshot_path=null
@@ -310,7 +310,8 @@ run_training() {
         training.progress_interval_seconds=10
         wandb.enabled=true
         "wandb.project=$WANDB_PROJECT"
-        "wandb.tags=[atari-100k,puct,all-games,$game]"
+        "wandb.name='\${environment_slug:\${environment.id}}_${EXPERIMENT_NAME}_seed\${seed}_${RUN_ID}'"
+        "wandb.tags=[atari-100k,default,all-games,$game]"
     )
     if [[ -n "$WANDB_ENTITY" ]]; then
         command+=("wandb.entity=$WANDB_ENTITY")
@@ -370,7 +371,7 @@ run_training() {
 
 printf 'Run ID: %s\n' "$RUN_ID"
 printf 'Output root: %s\n' "$RUN_ROOT"
-printf 'Search preset: puct (configs/train_agent.yaml default)\n'
+printf 'Training config: configs/train_agent.yaml (defaults)\n'
 printf 'W&B project: %s\n' "$WANDB_PROJECT"
 printf 'Automatic suspend on exit: %s\n' "$SUSPEND_WHEN_DONE"
 write_status starting "validating 26-game batch"
