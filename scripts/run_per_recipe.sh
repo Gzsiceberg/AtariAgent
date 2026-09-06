@@ -34,7 +34,7 @@ run_experiment() {
         wandb.enabled=true
         "wandb.name='\${environment_slug:\${environment.id}}_${name}_seed\${seed}_${RUN_ID}'"
         "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
-        checkpoint.pre_final_snapshot_path=null
+        "checkpoint.pre_final_snapshot_path=$output_dir/checkpoints/agent_pre_final.pt"
         "evaluation.data_path=$output_dir/evaluations/agent_evaluations.json"
         "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
     )
