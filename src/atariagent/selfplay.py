@@ -308,7 +308,6 @@ def make_atari_environment(
     frame_skip: int = 4,
     screen_size: int = 96,
     max_episode_steps: int = 3000,
-    time_limit_mode: str = "full_game",
     terminal_on_life_loss: bool = False,
     grayscale_obs: bool = False,
     render_mode: str | None = None,
@@ -322,8 +321,6 @@ def make_atari_environment(
         raise ValueError("screen_size must be positive")
     if max_episode_steps <= 0:
         raise ValueError("max_episode_steps must be positive")
-    if time_limit_mode not in {"full_game", "episodic_life"}:
-        raise ValueError("time_limit_mode must be full_game or episodic_life")
 
     import ale_py
     import gymnasium as gym
@@ -348,15 +345,13 @@ def make_atari_environment(
         grayscale_obs=grayscale_obs,
         scale_obs=False,
     )
-    if terminal_on_life_loss and time_limit_mode == "episodic_life":
+    if terminal_on_life_loss:
         environment = _EpisodicLifeTimeLimit(
             EpisodicLifeEnvironment(environment),
             max_episode_steps=max_episode_steps,
         )
     else:
         environment = TimeLimit(environment, max_episode_steps=max_episode_steps)
-        if terminal_on_life_loss:
-            environment = EpisodicLifeEnvironment(environment)
     return FrameStackObservation(environment, stack_size=frame_stack)
 
 
