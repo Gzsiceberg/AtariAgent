@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run PUCT with PER v2, 200-step target updates, no TTL, and MV threshold 5000.
+# Run two independent ablations: disable cache target TTL; set PER alpha to 1.0.
 # Previous experiments are commented out.
 # All other training parameters come from the Hydra defaults.
 #
@@ -55,10 +55,16 @@ run_experiment() {
 # run_experiment baseline
 # run_experiment gumbel search=gumbel
 
-run_experiment puct_v2_t200_no_ttl_mv5000 \
-    search=puct replay.per_mode=v2 \
-    reanalysis.target_update_interval=200 reanalysis.cache_target_ttl=0 \
-    training.mixed_value_threshold=5000
+# run_experiment puct_v2_t200_no_ttl_mv5000 \
+#     search=puct replay.per_mode=v2 \
+#     reanalysis.target_update_interval=200 reanalysis.cache_target_ttl=0 \
+#     training.mixed_value_threshold=5000
+
+run_experiment no_cache_target_ttl \
+    reanalysis.cache_target_ttl=0
+
+run_experiment priority_alpha_1 \
+    replay.priority_alpha=1.0
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete; no training or output directories created.\n'
