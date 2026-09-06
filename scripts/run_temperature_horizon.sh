@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Test the visit-softmax temperature schedule over all learner updates.
+# All other training parameters come from the Hydra defaults.
+# Save model-only checkpoints and the pre-final training snapshot.
+#
+# Usage: ./scripts/run_temperature_horizon.sh
+# Overrides: RUN_ID, RUN_ROOT, DRY_RUN=1.
+# Existing output roots are rejected to protect prior experiments.
+set -Eeuo pipefail
+
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
+RUN_ROOT="${RUN_ROOT:-runs/temperature_horizon/$RUN_ID}"
+DRY_RUN="${DRY_RUN:-0}"
+
+if [[ "$DRY_RUN" != "1" ]]; then
+    mkdir -p -- "$(dirname -- "$RUN_ROOT")"
+    if ! mkdir -- "$RUN_ROOT"; then
+        printf 'Choose a new RUN_ID/RUN_ROOT; refusing to overwrite: %s\n' "$RUN_ROOT" >&2
+        exit 1
+    fi
+fi
+
+run_experiment() {
+    local name="$1"
+    shift
+    local output_dir="$RUN_ROOT/$name"
+    local -a command=(
+        uv run python scripts/train_agent.py
+        "$@"
+        "training.progress_mode=always"
+        "training.progress_interval_seconds=10"
+        wandb.enabled=true
+        "wandb.name='\${environment_slug:\${environment.id}}_${name}_seed\${seed}_${RUN_ID}'"
+        "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
+        "checkpoint.pre_final_snapshot_path=$output_dir/checkpoints/agent_pre_final.pt"
+        "evaluation.data_path=$output_dir/evaluations/agent_evaluations.json"
+        "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
+    )
+    printf '\n%s command:' "$name"
+    printf ' %q' "${command[@]}"
+    printf '\n'
+    if [[ "$DRY_RUN" == "1" ]]; then
+        return
+    fi
+    mkdir -p -- "$output_dir/checkpoints" "$output_dir/evaluations"
+    printf '%q ' "${command[@]}" > "$output_dir/command.sh"
+    printf '\n' >> "$output_dir/command.sh"
+    "${command[@]}" 2>&1 | tee "$output_dir/training.log"
+}
+
+run_experiment temperature_horizon_total_steps \
+    training.visit_softmax_temperature_horizon=total_steps
+
+if [[ "$DRY_RUN" == "1" ]]; then
+    printf '\nDry run complete; no training or output directories created.\n'
+else
+    printf '\nExperiments complete. Results: %s\n' "$RUN_ROOT"
+fi
