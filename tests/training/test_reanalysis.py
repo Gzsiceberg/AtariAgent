@@ -54,6 +54,8 @@ def _pipeline(
     search_algorithm: str = "puct",
     cache_targets: bool = True,
     cache_target_ttl: int = 200,
+    policy_update_interval: int | None = None,
+    bootstrap_update_interval: int | None = None,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -74,6 +76,8 @@ def _pipeline(
         prefetch_batches=prefetch_batches,
         timeout_seconds=timeout_seconds,
         target_update_interval=target_update_interval,
+        policy_update_interval=policy_update_interval,
+        bootstrap_update_interval=bootstrap_update_interval,
         device="cpu",
     )
     representation = RepresentationNetwork(4)
@@ -413,6 +417,144 @@ def test_native_pipeline_retains_tensor_storage_without_transport_copy() -> None
         assert ready.transfer_duration_ms == 0.0
         assert ready.worker_duration_ms >= 0.0
         assert ready.queue_wait_ms >= 0.0
+    finally:
+        pipeline.close()
+
+
+def _changed_value_state(pipeline: ReanalysisPipeline) -> dict[str, torch.Tensor]:
+    state = {k: v.clone() for k, v in pipeline.latest_target_state.items()}
+    bias = state["prediction.value.projection.3.bias"]
+    bias.fill_(-20)
+    bias[305] = 20
+    return state
+
+
+@pytest.mark.parametrize("cache_targets", [True, False])
+def test_split_publication_keeps_search_and_bootstrap_independent(
+    cache_targets,
+) -> None:
+    pipeline = _pipeline(cache_targets=cache_targets, cache_target_ttl=0)
+    batch = _batch()
+    try:
+        pipeline.submit(batch)
+        initial = pipeline.wait_next()
+        state = _changed_value_state(pipeline)
+
+        pipeline.publish_weights(200, state, policy=False)
+        assert pipeline.weight_version == 0
+        assert pipeline.bootstrap_weight_version == 200
+        assert pipeline.cache_size == (3 if cache_targets else 0)
+        assert pipeline.value_cache_size == 0
+        pipeline.submit(batch, trained_steps=200)
+        bootstrap_only = pipeline.wait_next()
+        assert bootstrap_only.weight_version == 0
+        assert bootstrap_only.bootstrap_weight_version == 200
+        assert not torch.allclose(
+            initial.batch.value_targets, bootstrap_only.batch.value_targets
+        )
+        torch.testing.assert_close(
+            initial.batch.search_value_targets,
+            bootstrap_only.batch.search_value_targets,
+        )
+        if cache_targets:
+            assert bootstrap_only.policy_roots_searched == 0
+            assert bootstrap_only.value_roots_searched == 4
+            torch.testing.assert_close(
+                initial.batch.policy_targets, bootstrap_only.batch.policy_targets
+            )
+
+        # Updating policy/search to the same version is legal: versions are independent.
+        pipeline.publish_weights(200, state, bootstrap=False)
+        assert pipeline.cache_size == 0
+        assert pipeline.value_cache_size == (4 if cache_targets else 0)
+        pipeline.submit(batch, trained_steps=200)
+        both = pipeline.wait_next()
+        assert both.weight_version == both.bootstrap_weight_version == 200
+        torch.testing.assert_close(
+            both.batch.value_targets, bootstrap_only.batch.value_targets
+        )
+        assert not torch.allclose(
+            both.batch.search_value_targets, initial.batch.search_value_targets
+        )
+        if cache_targets:
+            assert both.policy_roots_searched == 3
+            assert both.value_roots_searched == 0
+    finally:
+        pipeline.close()
+
+
+def test_split_publications_preserve_versions_of_queued_requests() -> None:
+    pipeline = _pipeline(
+        policy_update_interval=200, bootstrap_update_interval=1000, cache_target_ttl=0
+    )
+    batch = _batch()
+    try:
+        state = _changed_value_state(pipeline)
+        pipeline.submit(batch)
+        pipeline.publish_weights(200, state, bootstrap=False)
+        pipeline.submit(batch, trained_steps=200)
+        pipeline.publish_weights(1000, state, policy=False)
+        old = pipeline.wait_next()
+        mixed = pipeline.wait_next()
+        assert (old.weight_version, old.bootstrap_weight_version) == (0, 0)
+        assert (mixed.weight_version, mixed.bootstrap_weight_version) == (200, 0)
+        torch.testing.assert_close(old.batch.value_targets, mixed.batch.value_targets)
+        assert not torch.allclose(
+            old.batch.search_value_targets, mixed.batch.search_value_targets
+        )
+        pipeline.submit(batch, trained_steps=1000)
+        latest = pipeline.wait_next()
+        assert (latest.weight_version, latest.bootstrap_weight_version) == (200, 1000)
+        assert not torch.allclose(latest.batch.value_targets, mixed.batch.value_targets)
+    finally:
+        pipeline.close()
+
+
+@pytest.mark.parametrize("policy", [True, False])
+def test_split_publication_checks_each_paths_result_lag(policy: bool) -> None:
+    pipeline = _pipeline(policy_update_interval=200, bootstrap_update_interval=1000)
+    try:
+        state = pipeline.latest_target_state
+        pipeline.submit(_batch())
+        interval = 200 if policy else 1000
+        for version in (interval, 2 * interval):
+            pipeline.publish_weights(
+                version, state, policy=policy, bootstrap=not policy
+            )
+        with pytest.raises(RuntimeError, match="older than one target update interval"):
+            pipeline.wait_next()
+    finally:
+        pipeline.close()
+
+
+def test_resume_publication_can_skip_versions_with_a_shorter_interval() -> None:
+    pipeline = _pipeline(policy_update_interval=200, bootstrap_update_interval=200)
+    try:
+        pipeline.submit(_batch())
+        # The restored snapshot can be older than the newly selected interval.
+        pipeline.publish_weights(1000, pipeline.latest_target_state)
+        old = pipeline.wait_next()
+        assert old.weight_version == old.bootstrap_weight_version == 0
+        pipeline.submit(_batch(), trained_steps=1000)
+        new = pipeline.wait_next()
+        assert new.weight_version == new.bootstrap_weight_version == 1000
+    finally:
+        pipeline.close()
+
+
+def test_split_publication_validates_versions_atomically() -> None:
+    pipeline = _pipeline()
+    try:
+        state = pipeline.latest_target_state
+        pipeline.publish_weights(200, state, bootstrap=False)
+        with pytest.raises(ValueError, match="must increase"):
+            pipeline.publish_weights(100, state)
+        assert pipeline.weight_version == 200
+        assert pipeline.bootstrap_weight_version == 0
+        with pytest.raises(ValueError, match="at least one target"):
+            pipeline.publish_weights(300, state, policy=False, bootstrap=False)
+        pipeline.publish_weights(100, state, policy=False)
+        assert pipeline.bootstrap_weight_version == 100
     finally:
         pipeline.close()
 

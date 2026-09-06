@@ -269,6 +269,7 @@ public:
     }
 
     void clear_policy() { policy_entries_.clear(); }
+    void clear_values() { value_entries_.clear(); }
 
     void clear_all() {
         policy_entries_.clear();
@@ -331,6 +332,7 @@ void ReanalysisCache::resolve_values(
 }
 
 void ReanalysisCache::clear_policy() { impl_->clear_policy(); }
+void ReanalysisCache::clear_values() { impl_->clear_values(); }
 void ReanalysisCache::clear_all() { impl_->clear_all(); }
 std::size_t ReanalysisCache::policy_size() const {
     return impl_->policy_size();

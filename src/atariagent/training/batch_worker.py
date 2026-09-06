@@ -37,6 +37,11 @@ class ReadyBatch:
     cache_hits: int = 0
     cache_target_age_mean: float = 0.0
     cache_target_age_max: int = 0
+    policy_weight_version: int | None = None
+    bootstrap_weight_version: int | None = None
+    value_roots_requested: int = 0
+    value_roots_searched: int = 0
+    value_cache_hits: int = 0
 
     def wait_for_current_stream(self, device: torch.device | str) -> None:
         """Make the current training stream wait for this batch's transfer."""
@@ -58,6 +63,8 @@ class _Run:
 class _PublishWeights:
     version: int
     state: TargetState
+    policy: bool = True
+    bootstrap: bool = True
     done: Event = field(default_factory=Event)
     error: BaseException | None = None
 
@@ -235,13 +242,18 @@ class BatchWorker:
         self,
         version: int,
         state: Mapping[str, Tensor],
+        *,
+        policy: bool = True,
+        bootstrap: bool = True,
     ) -> None:
-        """Order a target-weight update between old and new requests."""
+        """Order selected target updates between old and new requests."""
         self._require_open()
         pipeline = self.reanalysis_pipeline
         if pipeline is None:
             return
-        command = _PublishWeights(version=version, state=dict(state))
+        command = _PublishWeights(
+            version=version, state=dict(state), policy=policy, bootstrap=bootstrap
+        )
         self._controls.put(command)
         self._control_pending.set()
         deadline = perf_counter() + self.timeout_seconds
@@ -369,6 +381,11 @@ class BatchWorker:
                     cache_hits=result.cache_hits,
                     cache_target_age_mean=result.cache_target_age_mean,
                     cache_target_age_max=result.cache_target_age_max,
+                    policy_weight_version=result.weight_version,
+                    bootstrap_weight_version=result.bootstrap_weight_version,
+                    value_roots_requested=result.value_roots_requested,
+                    value_roots_searched=result.value_roots_searched,
+                    value_cache_hits=result.value_cache_hits,
                 )
             except BaseException:
                 self._discard_token(token)
@@ -427,6 +444,11 @@ class BatchWorker:
         cache_hits: int = 0,
         cache_target_age_mean: float = 0.0,
         cache_target_age_max: int = 0,
+        policy_weight_version: int | None = None,
+        bootstrap_weight_version: int | None = None,
+        value_roots_requested: int = 0,
+        value_roots_searched: int = 0,
+        value_cache_hits: int = 0,
     ) -> ReadyBatch:
         started = perf_counter()
         cpu_batch = cpu_batch.with_selected_value_targets(
@@ -466,6 +488,11 @@ class BatchWorker:
             cache_hits=cache_hits,
             cache_target_age_mean=cache_target_age_mean,
             cache_target_age_max=cache_target_age_max,
+            policy_weight_version=policy_weight_version,
+            bootstrap_weight_version=bootstrap_weight_version,
+            value_roots_requested=value_roots_requested,
+            value_roots_searched=value_roots_searched,
+            value_cache_hits=value_cache_hits,
         )
 
     def _put_ready(self, ready: ReadyBatch) -> None:
@@ -506,7 +533,15 @@ class BatchWorker:
                 pipeline = self.reanalysis_pipeline
                 if pipeline is None:
                     raise RuntimeError("reanalysis pipeline is unavailable")
-                pipeline.publish_weights(command.version, command.state)
+                if command.policy and command.bootstrap:
+                    pipeline.publish_weights(command.version, command.state)
+                else:
+                    pipeline.publish_weights(
+                        command.version,
+                        command.state,
+                        policy=command.policy,
+                        bootstrap=command.bootstrap,
+                    )
             except BaseException as error:
                 command.error = error
             finally:

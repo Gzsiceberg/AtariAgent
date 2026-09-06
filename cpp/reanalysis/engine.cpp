@@ -41,13 +41,18 @@ public:
         double timeout_seconds,
         int target_update_interval,
         bool cache_targets,
-        std::int64_t cache_target_ttl
+        std::int64_t cache_target_ttl,
+        std::shared_ptr<ValueTargetNetwork> bootstrap_target,
+        int bootstrap_update_interval
     )
         : target_(std::move(target)),
+          bootstrap_target_(bootstrap_target ? std::move(bootstrap_target) : target_),
           device_(device),
           prefetch_batches_(prefetch_batches),
           timeout_seconds_(timeout_seconds),
           target_update_interval_(target_update_interval),
+          bootstrap_update_interval_(bootstrap_update_interval == 0
+              ? target_update_interval : bootstrap_update_interval),
           cache_targets_(cache_targets),
           cache_target_ttl_(cache_target_ttl) {
         if (!target_) {
@@ -64,6 +69,9 @@ public:
                 "target_update_interval must be positive"
             );
         }
+        if (bootstrap_update_interval_ <= 0) {
+            throw std::invalid_argument("bootstrap_update_interval must be positive");
+        }
         if (cache_target_ttl_ < 0) {
             throw std::invalid_argument(
                 "cache_target_ttl must be non-negative"
@@ -77,6 +85,9 @@ public:
         }
 #endif
         target_->to(device_.str());
+        if (bootstrap_target_ != target_) {
+            bootstrap_target_->to(device_.str());
+        }
         worker_ = std::thread(&Impl::run, this);
     }
 
@@ -86,10 +97,20 @@ public:
         std::int64_t version,
         TensorState representation,
         TensorState prediction,
-        TensorState dynamics
+        TensorState dynamics,
+        bool policy,
+        bool bootstrap
     ) {
+        if (!policy && !bootstrap) {
+            throw std::invalid_argument("publication must select at least one target");
+        }
+        if (policy != bootstrap && bootstrap_target_ == target_) {
+            throw std::invalid_argument("split publication requires a separate bootstrap target");
+        }
         auto job = std::make_shared<Job>();
         job->kind = Kind::Weights;
+        job->publish_policy = policy;
+        job->publish_bootstrap = bootstrap;
         job->version = version;
         job->representation = std::move(representation);
         job->prediction = std::move(prediction);
@@ -97,12 +118,21 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             require_open_locked();
-            if (version <= published_version_) {
+            if (version < 0
+                || (policy && version <= published_version_)
+                || (bootstrap && version <= published_bootstrap_version_)) {
                 throw std::invalid_argument(
                     "target weight version must increase"
                 );
             }
-            published_version_ = version;
+            if (policy) {
+                published_version_ = version;
+                ++policy_generation_;
+            }
+            if (bootstrap) {
+                published_bootstrap_version_ = version;
+                ++bootstrap_generation_;
+            }
             jobs_.push_back(job);
         }
         work_ready_.notify_one();
@@ -165,7 +195,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             require_open_locked();
-            if (published_version_ < 0) {
+            if (published_version_ < 0 || published_bootstrap_version_ < 0) {
                 throw std::runtime_error(
                     "target weights must be published before submission"
                 );
@@ -178,6 +208,9 @@ public:
             }
             job->request_id = next_request_id_++;
             job->version = published_version_;
+            job->bootstrap_version = published_bootstrap_version_;
+            job->policy_generation = policy_generation_;
+            job->bootstrap_generation = bootstrap_generation_;
             jobs_.push_back(job);
             ++pending_count_;
             max_pending_ = std::max(max_pending_, pending_count_);
@@ -229,11 +262,17 @@ public:
         if (job->error) {
             std::rethrow_exception(job->error);
         }
-        const auto lag = published_version_ - job->version;
-        if (lag < 0 || lag > target_update_interval_) {
-            throw std::runtime_error(
-                "reanalysis result is older than one target update interval"
-            );
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            // Count publications rather than subtract learner-step versions:
+            // a resume with shorter intervals can legitimately skip versions
+            // on its first publication. Permit one intervening copy per path.
+            if (policy_generation_ - job->policy_generation > 1
+                || bootstrap_generation_ - job->bootstrap_generation > 1) {
+                throw std::runtime_error(
+                    "reanalysis result is older than one target update interval"
+                );
+            }
         }
         py::object result_batch = job->original_batch.attr(
             "with_reanalysis_targets"
@@ -245,6 +284,7 @@ public:
         py::dict result;
         result["request_id"] = job->request_id;
         result["weight_version"] = job->version;
+        result["bootstrap_weight_version"] = job->bootstrap_version;
         result["batch"] = std::move(result_batch);
         result["queue_wait_ms"] = job->queue_wait_ms;
         result["worker_duration_ms"] = job->worker_duration_ms;
@@ -315,6 +355,11 @@ public:
         return published_version_;
     }
 
+    std::int64_t bootstrap_weight_version() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return published_bootstrap_version_;
+    }
+
 private:
     using Clock = std::chrono::steady_clock;
     enum class Kind { Request, Weights, CacheClear };
@@ -336,6 +381,11 @@ private:
         Kind kind = Kind::Request;
         std::int64_t request_id = -1;
         std::int64_t version = -1;
+        std::int64_t bootstrap_version = -1;
+        std::int64_t policy_generation = 0;
+        std::int64_t bootstrap_generation = 0;
+        bool publish_policy = false;
+        bool publish_bootstrap = false;
         py::object original_batch;
         torch::Tensor frames;
         torch::Tensor policy_mask;
@@ -597,18 +647,24 @@ private:
     }
 
     void process_weights(const std::shared_ptr<Job>& job) {
-        if (job->version <= active_version_) {
-            throw std::invalid_argument(
-                "target weight version must increase"
-            );
+        if (job->publish_policy) {
+            target_->synchronize(job->representation, job->prediction, job->dynamics);
+            process_policy_cache_clear();
+            active_version_ = job->version;
         }
-        target_->synchronize(
-            job->representation,
-            job->prediction,
-            job->dynamics
-        );
-        process_all_cache_clear();
-        active_version_ = job->version;
+        if (job->publish_bootstrap) {
+            if (bootstrap_target_ != target_) {
+                bootstrap_target_->synchronize(
+                    job->representation, job->prediction, job->dynamics
+                );
+            }
+            cache_.clear_values();
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                value_cache_size_ = 0;
+            }
+            active_bootstrap_version_ = job->version;
+        }
         job->representation.clear();
         job->prediction.clear();
         job->dynamics.clear();
@@ -620,15 +676,9 @@ private:
         cache_size_ = 0;
     }
 
-    void process_all_cache_clear() {
-        cache_.clear_all();
-        std::lock_guard<std::mutex> lock(mutex_);
-        cache_size_ = 0;
-        value_cache_size_ = 0;
-    }
-
     void process_request(const std::shared_ptr<Job>& job) {
-        if (job->version != active_version_) {
+        if (job->version != active_version_
+            || job->bootstrap_version != active_bootstrap_version_) {
             throw std::runtime_error(
                 "request target version does not match active target version"
             );
@@ -790,7 +840,7 @@ private:
         const torch::Tensor& device_bootstrap_frames,
         const torch::Tensor& bootstrap_mask
     ) {
-        auto [positions, values] = target_->value_predictions(
+        auto [positions, values] = bootstrap_target_->value_predictions(
             device_bootstrap_frames,
             bootstrap_mask.to(device_),
             job->stack_size
@@ -891,15 +941,18 @@ private:
         pending_count_ = 0;
         cache_.clear_all();
         target_.reset();
+        bootstrap_target_.reset();
     }
 
     std::size_t pending_count_locked() const { return pending_count_; }
 
     std::shared_ptr<ValueTargetNetwork> target_;
+    std::shared_ptr<ValueTargetNetwork> bootstrap_target_;
     torch::Device device_;
     int prefetch_batches_;
     double timeout_seconds_;
     int target_update_interval_;
+    int bootstrap_update_interval_;
     bool cache_targets_;
     std::int64_t cache_target_ttl_;
     mutable std::mutex mutex_;
@@ -914,6 +967,10 @@ private:
     std::int64_t next_request_id_ = 0;
     std::int64_t published_version_ = -1;
     std::int64_t active_version_ = -1;
+    std::int64_t published_bootstrap_version_ = -1;
+    std::int64_t active_bootstrap_version_ = -1;
+    std::int64_t policy_generation_ = 0;
+    std::int64_t bootstrap_generation_ = 0;
     std::size_t pending_count_ = 0;
     std::size_t max_pending_ = 0;
     std::size_t cache_size_ = 0;
@@ -927,7 +984,9 @@ NativeReanalysisEngine::NativeReanalysisEngine(
     double timeout_seconds,
     int target_update_interval,
     bool cache_targets,
-    std::int64_t cache_target_ttl
+    std::int64_t cache_target_ttl,
+    std::shared_ptr<ValueTargetNetwork> bootstrap_target,
+    int bootstrap_update_interval
 )
     : impl_(std::make_unique<Impl>(
           std::move(target),
@@ -936,7 +995,9 @@ NativeReanalysisEngine::NativeReanalysisEngine(
           timeout_seconds,
           target_update_interval,
           cache_targets,
-          cache_target_ttl
+          cache_target_ttl,
+          std::move(bootstrap_target),
+          bootstrap_update_interval
       )) {}
 
 NativeReanalysisEngine::~NativeReanalysisEngine() = default;
@@ -945,13 +1006,17 @@ void NativeReanalysisEngine::publish_weights(
     std::int64_t version,
     const py::dict& representation,
     const py::dict& prediction,
-    const py::dict& dynamics
+    const py::dict& dynamics,
+    bool policy,
+    bool bootstrap
 ) {
     impl_->publish_weights(
         version,
         tensor_state_from_dict(representation),
         tensor_state_from_dict(prediction),
-        tensor_state_from_dict(dynamics)
+        tensor_state_from_dict(dynamics),
+        policy,
+        bootstrap
     );
 }
 
@@ -993,6 +1058,10 @@ std::size_t NativeReanalysisEngine::value_cache_size() const {
 
 std::int64_t NativeReanalysisEngine::weight_version() const {
     return impl_->weight_version();
+}
+
+std::int64_t NativeReanalysisEngine::bootstrap_weight_version() const {
+    return impl_->bootstrap_weight_version();
 }
 
 }  // namespace atariagent::native

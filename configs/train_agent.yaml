@@ -58,8 +58,13 @@ reanalysis:
   timeout_seconds: 600.0
   # Cap native OpenMP tree traversal to avoid CPU oversubscription.
   worker_num_threads: 4
-  # Keep delayed-target hard copies on a fixed learner-update interval.
+  # Shared fallback for immediate-copy target publication (learner updates).
   target_update_interval: 1000
+  # Optional independent intervals; null inherits target_update_interval.
+  # Policy and MCTS root-value targets always share one search snapshot/cache.
+  policy_update_interval: null
+  # TD endpoint predictions use a separate snapshot and prediction cache.
+  bootstrap_update_interval: null
 
 training:
   device: auto

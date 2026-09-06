@@ -164,6 +164,9 @@ class _FakeReanalysisPipeline:
         self.pending: list[tuple[int, ReplayBatch]] = []
         self.next_request_id = 0
         self.published_versions: list[int] = []
+        self.publications: list[tuple[int, bool, bool]] = []
+        self.weight_version = 0
+        self.bootstrap_weight_version = 0
         self.cache_clear_request_counts: list[int] = []
         self.submitted_steps: list[int] = []
         self.cache_size = 0
@@ -184,7 +187,8 @@ class _FakeReanalysisPipeline:
         return ReadyReanalysis(
             request_id=request_id,
             batch=batch,
-            weight_version=0,
+            weight_version=self.weight_version,
+            bootstrap_weight_version=self.bootstrap_weight_version,
             queue_wait_ms=1.0,
             worker_duration_ms=2.0,
             transfer_duration_ms=0.0,
@@ -193,12 +197,41 @@ class _FakeReanalysisPipeline:
             policy_roots_searched=3,
         )
 
-    def publish_weights(self, version: int, state) -> None:
+    def publish_weights(
+        self, version: int, state, *, policy=True, bootstrap=True
+    ) -> None:
         del state
         self.published_versions.append(version)
+        self.publications.append((version, policy, bootstrap))
+        if policy:
+            self.weight_version = version
+        if bootstrap:
+            self.bootstrap_weight_version = version
 
     def clear_cache(self) -> None:
         self.cache_clear_request_counts.append(self.next_request_id)
+
+
+def test_worker_routes_independent_publications_and_preserves_batch_versions() -> None:
+    pipeline = _FakeReanalysisPipeline()
+    with BatchWorker(
+        _FakeReplay(lambda _: _batch()),
+        batch_size=2,
+        device="cpu",
+        reanalysis_pipeline=pipeline,
+        max_in_flight=1,
+        ready_prefetch=1,
+        timeout_seconds=2.0,
+    ) as worker:
+        worker.publish_weights(200, {}, bootstrap=False)
+        worker.publish_weights(1000, {}, policy=False)
+        worker.start(1000, 1)
+        ready = worker.next_ready()
+        assert ready.policy_weight_version == 200
+        assert ready.bootstrap_weight_version == 1000
+        worker.complete(ready, torch.ones(2))
+        worker.wait_idle()
+    assert pipeline.publications == [(200, True, False), (1000, False, True)]
 
 
 def test_worker_applies_mixed_values_before_learner_transfer() -> None:

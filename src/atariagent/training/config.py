@@ -101,6 +101,8 @@ class ReanalysisConfig:
     timeout_seconds: float = 600.0
     worker_num_threads: int = 4
     target_update_interval: int = 1_000
+    policy_update_interval: int | None = None
+    bootstrap_update_interval: int | None = None
 
 
 @dataclass
@@ -205,6 +207,33 @@ def final_evaluation_max_episode_steps(frame_skip: int) -> int:
             "frame_skip must be positive and no greater than the raw-frame horizon"
         )
     return FINAL_EVALUATION_RAW_FRAMES // frame_skip
+
+
+def resolve_target_update_intervals(
+    target_update_interval: int,
+    policy_update_interval: int | None = None,
+    bootstrap_update_interval: int | None = None,
+) -> tuple[int, int]:
+    """Resolve per-path intervals, retaining the legacy shared fallback."""
+    for name, value in (
+        ("target_update_interval", target_update_interval),
+        ("policy_update_interval", policy_update_interval),
+        ("bootstrap_update_interval", bootstrap_update_interval),
+    ):
+        if value is None and name != "target_update_interval":
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+    return (
+        target_update_interval
+        if policy_update_interval is None
+        else policy_update_interval,
+        target_update_interval
+        if bootstrap_update_interval is None
+        else bootstrap_update_interval,
+    )
 
 
 def target_network_update_due(
@@ -350,6 +379,7 @@ __all__ = [
     "next_collection_vector_steps",
     "proportional_training_update",
     "register_train_agent_config",
+    "resolve_target_update_intervals",
     "target_network_update_due",
     "visit_softmax_temperature",
 ]

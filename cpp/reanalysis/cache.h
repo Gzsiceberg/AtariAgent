@@ -64,6 +64,7 @@ public:
         torch::Tensor& values
     );
     void clear_policy();
+    void clear_values();
     void clear_all();
     std::size_t policy_size() const;
     std::size_t value_size() const;

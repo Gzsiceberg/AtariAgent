@@ -20,7 +20,9 @@ public:
         double timeout_seconds,
         int target_update_interval,
         bool cache_targets,
-        std::int64_t cache_target_ttl
+        std::int64_t cache_target_ttl,
+        std::shared_ptr<ValueTargetNetwork> bootstrap_target = nullptr,
+        int bootstrap_update_interval = 0
     );
     ~NativeReanalysisEngine();
 
@@ -31,7 +33,9 @@ public:
         std::int64_t version,
         const pybind11::dict& representation,
         const pybind11::dict& prediction,
-        const pybind11::dict& dynamics
+        const pybind11::dict& dynamics,
+        bool policy = true,
+        bool bootstrap = true
     );
     std::int64_t submit(
         pybind11::object batch,
@@ -47,6 +51,7 @@ public:
     std::size_t cache_size() const;
     std::size_t value_cache_size() const;
     std::int64_t weight_version() const;
+    std::int64_t bootstrap_weight_version() const;
 
 private:
     class Impl;

@@ -273,6 +273,8 @@ def main(c: DictConfig):
                 prefetch_batches=c.reanalysis.prefetch_batches,
                 timeout_seconds=c.reanalysis.timeout_seconds,
                 target_update_interval=c.reanalysis.target_update_interval,
+                policy_update_interval=c.reanalysis.policy_update_interval,
+                bootstrap_update_interval=c.reanalysis.bootstrap_update_interval,
                 device=device,
             )
             pipeline.measurements = m
@@ -305,9 +307,10 @@ def main(c: DictConfig):
             worker._replay_lock = TimedLock(m)
             step = start_step
             target_version = start_step
+            bootstrap_version = start_step
 
             def phase(count):
-                nonlocal step, target_version
+                nonlocal step, target_version, bootstrap_version
                 events = []
                 torch.cuda.synchronize()
                 started = perf_counter()
@@ -341,10 +344,13 @@ def main(c: DictConfig):
                         if value is not None:
                             m.values[name].append(value)
                     step += 1
-                    if (
-                        pipeline is not None
-                        and step - target_version >= c.reanalysis.target_update_interval
-                    ):
+                    publish_policy = pipeline is not None and (
+                        step - target_version >= pipeline.policy_update_interval
+                    )
+                    publish_bootstrap = pipeline is not None and (
+                        step - bootstrap_version >= pipeline.bootstrap_update_interval
+                    )
+                    if publish_policy or publish_bootstrap:
                         with m.time("target_snapshot_ms"):
                             state = make_target_state(
                                 agent.representation_network,
@@ -352,8 +358,16 @@ def main(c: DictConfig):
                                 agent.dynamics_network,
                             )
                         with m.time("target_publish_ms"):
-                            worker.publish_weights(step, state)
-                        target_version = step
+                            worker.publish_weights(
+                                step,
+                                state,
+                                policy=publish_policy,
+                                bootstrap=publish_bootstrap,
+                            )
+                        if publish_policy:
+                            target_version = step
+                        if publish_bootstrap:
+                            bootstrap_version = step
                 worker.wait_idle()
                 torch.cuda.synchronize()
                 elapsed = perf_counter() - started
