@@ -12,8 +12,10 @@ environment:
   frame_skip: 4
   screen_size: 96
   max_episode_steps: 3000
-  # Each life-loss reset starts a new time budget when episodic_life is enabled.
-  # Otherwise, max_episode_steps limits the full game.
+  # full_game: life losses keep the remaining time budget (historical default).
+  # episodic_life: each life-loss reset starts a new budget (V2 wrapper order).
+  # Without episodic_life enabled, both modes limit the full game.
+  time_limit_mode: episodic_life # full_game or episodic_life
   grayscale: false
   episodic_life: true
 

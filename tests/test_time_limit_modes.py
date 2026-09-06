@@ -51,10 +51,14 @@ def base_environment(monkeypatch):
     return base
 
 
-def test_life_reset_time_budget_and_timeout_reset(base_environment):
-    remaining_steps = 3
+@pytest.mark.parametrize(
+    ("mode", "remaining_steps"), [("full_game", 1), ("episodic_life", 3)]
+)
+def test_life_reset_time_budget_and_timeout_reset(
+    base_environment, mode, remaining_steps
+):
     env = make_atari_environment(
-        "mock", max_episode_steps=3,
+        "mock", max_episode_steps=3, time_limit_mode=mode,
         terminal_on_life_loss=True,
     )
     try:
@@ -80,9 +84,12 @@ def test_life_reset_time_budget_and_timeout_reset(base_environment):
         env.close()
 
 
-def test_without_episodic_life_uses_full_game_budget(base_environment):
+@pytest.mark.parametrize("mode", ["full_game", "episodic_life"])
+def test_without_episodic_life_both_modes_use_full_game_budget(
+    base_environment, mode
+):
     env = make_atari_environment(
-        "mock", max_episode_steps=3,
+        "mock", max_episode_steps=3, time_limit_mode=mode,
         terminal_on_life_loss=False,
     )
     try:
@@ -95,3 +102,16 @@ def test_without_episodic_life_uses_full_game_budget(base_environment):
         assert base_environment.reset_calls == 2
     finally:
         env.close()
+
+
+def test_default_keeps_full_game_wrapper_order(base_environment):
+    env = make_atari_environment("mock", terminal_on_life_loss=True)
+    try:
+        assert isinstance(env.env.env, gym.wrappers.TimeLimit)
+    finally:
+        env.close()
+
+
+def test_unknown_time_limit_mode_is_rejected():
+    with pytest.raises(ValueError, match="time_limit_mode"):
+        make_atari_environment("mock", time_limit_mode="unknown")

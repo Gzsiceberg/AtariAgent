@@ -17,6 +17,7 @@ class EnvironmentConfig:
     frame_skip: int = 4
     screen_size: int = 96
     max_episode_steps: int = 3_000
+    time_limit_mode: str = "full_game"
     grayscale: bool = False
     episodic_life: bool = True
 
