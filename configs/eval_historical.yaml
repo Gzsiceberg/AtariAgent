@@ -1,0 +1,29 @@
+# Run: uv run python scripts/eval_historical.py
+# Override with Hydra syntax, e.g. seed=3000 num_simulations=100 dry_run=true.
+# Seeds 2000–2127 are a screening set; confirm a selected winner on fresh starts.
+output_dir: evaluations/historical_${now:%Y%m%d_%H%M%S}
+episodes: 128
+# One environment per episode: maximum useful parallelism for this evaluation.
+num_envs: ${episodes}
+seed: 2000
+device: cuda
+num_simulations: 50
+dry_run: false
+
+checkpoints:
+  mixed_threshold_20k_110k: runs/final_phase_ablations/20260903_111944/mixed-threshold-20000/checkpoints/agent_update_00110000.pt
+  cached_baseline_105k: runs/final_phase_ablations/20260903_214405/baseline-current-commit/checkpoints/agent_update_00105000.pt
+  full_run_96k: runs/game_experiments/20260901_170321/asterix/puct-default/checkpoints/agent_update_00096000.pt
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
+  job_logging:
+    version: 1
+    disable_existing_loggers: false
+    handlers: {}
+    root:
+      handlers: []

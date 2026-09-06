@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="override the checkpoint search simulation count",
     )
+    parser.add_argument("--output-json", type=Path, help="save exact episode returns and settings")
     parser.add_argument("--seed", type=int, default=0, help="first episode seed")
     parser.add_argument(
         "--device",
@@ -150,6 +152,22 @@ def main() -> int:
         seed=args.seed,
         print_episode_results=True,
     )
+
+    if args.output_json is not None:
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        temporary = args.output_json.with_suffix(args.output_json.suffix + ".tmp")
+        temporary.write_text(json.dumps({
+            "checkpoint": str(checkpoint_path.resolve()),
+            "environment": str(environment_config["id"]),
+            "episodes": episodes,
+            "num_envs": min(num_envs, episodes),
+            "first_episode_seed": args.seed,
+            "rewards": list(stats.rewards),
+            "mean": stats.mean,
+            "median": stats.median,
+            "std": stats.std,
+        }, indent=2) + "\n")
+        temporary.replace(args.output_json)
 
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Episodes:   {episodes}")
