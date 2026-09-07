@@ -287,11 +287,15 @@ class EpisodicLifeEnvironment(gym.Wrapper):
 
 
 class _EpisodicLifeTimeLimit(gym.wrappers.TimeLimit):
-    """Reset the time budget per life, but treat timeouts as full-game ends."""
+    """Reset the time budget per life, optionally restarting on timeout."""
+
+    def __init__(self, environment, *, max_episode_steps, reset_game_on_timeout=True):
+        super().__init__(environment, max_episode_steps=max_episode_steps)
+        self._reset_game_on_timeout = reset_game_on_timeout
 
     def step(self, action):
         observation, reward, terminated, truncated, info = super().step(action)
-        if truncated:
+        if truncated and self._reset_game_on_timeout:
             # The inner life wrapper cannot see an outer TimeLimit's timeout.
             # Propagate it so reset() restarts the game and reward tracking
             # closes the full episode rather than continuing it after timeout.
@@ -309,6 +313,7 @@ def make_atari_environment(
     screen_size: int = 96,
     max_episode_steps: int = 3000,
     time_limit_mode: str = "full_game",
+    reset_game_on_timeout: bool = True,
     terminal_on_life_loss: bool = False,
     grayscale_obs: bool = False,
     render_mode: str | None = None,
@@ -322,6 +327,8 @@ def make_atari_environment(
         raise ValueError("screen_size must be positive")
     if max_episode_steps <= 0:
         raise ValueError("max_episode_steps must be positive")
+    if not isinstance(reset_game_on_timeout, bool):
+        raise TypeError("reset_game_on_timeout must be a boolean")
     if time_limit_mode not in {"full_game", "episodic_life"}:
         raise ValueError("time_limit_mode must be full_game or episodic_life")
 
@@ -352,6 +359,7 @@ def make_atari_environment(
         environment = _EpisodicLifeTimeLimit(
             EpisodicLifeEnvironment(environment),
             max_episode_steps=max_episode_steps,
+            reset_game_on_timeout=reset_game_on_timeout,
         )
     else:
         environment = TimeLimit(environment, max_episode_steps=max_episode_steps)
