@@ -73,6 +73,7 @@ class FIFOReplayBuffer:
         td_steps: int = 5,
         discount: float = 0.997,
         per_mode: str = "v1",
+        treat_truncation_as_terminal: bool = False,
         priority_alpha: float = 0.6,
         priority_beta: float = 0.4,
         priority_epsilon: float = 1e-6,
@@ -105,6 +106,9 @@ class FIFOReplayBuffer:
         if not np.isfinite(priority_epsilon) or priority_epsilon <= 0.0:
             raise ValueError("priority_epsilon must be finite and positive")
 
+        if not isinstance(treat_truncation_as_terminal, bool):
+            raise TypeError("treat_truncation_as_terminal must be a boolean")
+        self._treat_truncation_as_terminal = treat_truncation_as_terminal
         self.max_transitions = max_transitions
         self._unroll_steps = unroll_steps
         self._td_steps = td_steps
@@ -193,6 +197,7 @@ class FIFOReplayBuffer:
         trajectory_fields = tuple(_StoredTrajectory.__dataclass_fields__)
         return {
             "version": 1,
+            "treat_truncation_as_terminal": self._treat_truncation_as_terminal,
             "max_transitions": self.max_transitions,
             "unroll_steps": self.unroll_steps,
             "td_steps": self.td_steps,
@@ -230,6 +235,16 @@ class FIFOReplayBuffer:
                 raise ValueError(
                     f"replay state {name} does not match the configured buffer"
                 )
+
+        # Older checkpoints used truncation-aware targets unconditionally.
+        if (
+            state.get("treat_truncation_as_terminal", False)
+            != self._treat_truncation_as_terminal
+        ):
+            raise ValueError(
+                "replay state treat_truncation_as_terminal does not match "
+                "the configured buffer"
+            )
 
         raw_trajectories = state.get("trajectories")
         if not isinstance(raw_trajectories, list):
@@ -547,16 +562,21 @@ class FIFOReplayBuffer:
         predicted_values = np.ascontiguousarray(
             predicted_values64, dtype=np.float32
         )
+        # Compatibility with EfficientZero's terminal-style timeout targets.
+        # Preserve the original boundary flags for episode accounting.
+        target_terminated = trajectory.terminated or (
+            self._treat_truncation_as_terminal and trajectory.truncated
+        )
         value_targets, value_valid_mask = self._build_value_target_table(
             rewards64,
             root_values64,
-            terminated=trajectory.terminated,
+            terminated=target_terminated,
         )
         # Initial errors bootstrap from network predictions, not MCTS values.
         priority_targets, priority_valid_mask = self._build_value_target_table(
             rewards64,
             predicted_values64,
-            terminated=trajectory.terminated,
+            terminated=target_terminated,
         )
         valid = priority_valid_mask[: len(trajectory)]
         initial_priorities = np.full(

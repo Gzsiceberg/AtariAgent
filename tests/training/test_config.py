@@ -60,6 +60,19 @@ def test_replay_per_mode_can_select_v2() -> None:
     assert config.replay.per_mode == "v2"
 
 
+def test_timeout_terminal_targets_can_be_enabled() -> None:
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        default = compose(config_name="train_agent")
+        enabled = compose(
+            config_name="train_agent",
+            overrides=["replay.treat_truncation_as_terminal=true"],
+        )
+    assert default.replay.treat_truncation_as_terminal is False
+    assert enabled.replay.treat_truncation_as_terminal is True
+
+
 def test_environment_time_limit_mode_can_be_overridden() -> None:
     register_train_agent_config()
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")

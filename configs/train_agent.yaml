@@ -30,6 +30,8 @@ self_play:
   clip_rewards: true
 
 replay:
+  # EfficientZero-compatible timeout targets; otherwise mask incomplete tails.
+  treat_truncation_as_terminal: false
   max_transitions: 100000
   warmup_transitions: 2000
   # Both modes initialize priorities from per-transition prediction/bootstrap
