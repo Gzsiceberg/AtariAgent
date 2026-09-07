@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# Schedule three AtariAgent training experiments with task spooler (tsp).
+# Schedule one AtariAgent training experiment with task spooler (tsp).
 #
-# 1) "workspace-time-full-game": config override with full-game time limit.
-# 2) "current-default-bootstrap200": current defaults with
-#    reanalysis.bootstrap_update_interval=200.
-# 3) "workspace-time-full-game-v2-per": full-game time limit with
-#    replay.per_mode=v2.
+# 1) "priority-alpha-1": current defaults with replay.priority_alpha=1.0.
 #
-# Both experiments:
+# The experiment:
 # - enable W&B logging
 # - keep final snapshot path enabled
 # - run only final_updates=10000 learner-only updates (default collection remains
@@ -62,7 +58,7 @@ if [[ "$DRY_RUN" != "1" ]]; then
     fi
 fi
 
-# Build common args used by both experiments.
+# Build the experiment's common args.
 build_common_args() {
     local output_dir=$1
     local experiment_name=$2
@@ -145,19 +141,12 @@ schedule() {
     tsp -L "$name" bash "$job_script"
 }
 
-schedule "workspace-time-full-game" \
-    "environment.time_limit_mode=full_game"
-
-schedule "current-default-bootstrap200" \
-    "reanalysis.bootstrap_update_interval=200"
-
-schedule "workspace-time-full-game-v2-per" \
-    "environment.time_limit_mode=full_game" \
-    "replay.per_mode=v2"
+schedule "priority-alpha-1" \
+    "replay.priority_alpha=1.0"
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete. Commands were not scheduled.\n'
 else
-    printf '\nScheduled 3 jobs via task-spooler under %s\n' "$RUN_ROOT"
+    printf '\nScheduled 1 job via task-spooler under %s\n' "$RUN_ROOT"
     tsp -l
 fi
