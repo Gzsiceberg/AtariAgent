@@ -16,6 +16,8 @@ environment:
   # episodic_life: each life-loss reset starts a new budget (V2 wrapper order).
   # Without episodic_life enabled, both modes limit the full game.
   time_limit_mode: episodic_life # full_game or episodic_life
+  # Only for episodic_life time limits; false continues the game after timeout.
+  reset_game_on_timeout: true
   grayscale: false
   episodic_life: true
 
@@ -42,7 +44,7 @@ replay:
   final_per_mode: null
   # V1 mode samples with priority**0.6 and linearly anneals the
   # importance-sampling exponent from 0.4 to 1.0 over all learner updates.
-  priority_alpha: 0.6
+  priority_alpha: 1.0
   priority_beta_initial: 0.4
   priority_beta_final: 1.0
   priority_epsilon: 0.000001
