@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Schedule one AtariAgent training experiment with task spooler (tsp).
+# Schedule two AtariAgent training experiments with task spooler (tsp).
 #
-# 1) "priority-alpha-1": current defaults with replay.priority_alpha=1.0.
+# 1) "full-game": full-game time limit with truncation-aware targets.
+# 2) "full-game-terminal": full-game time limit with terminal-style timeout targets.
 #
-# The experiment:
+# Both experiments:
 # - enable W&B logging
 # - keep final snapshot path enabled
 # - run only final_updates=10000 learner-only updates (default collection remains
@@ -141,12 +142,17 @@ schedule() {
     tsp -L "$name" bash "$job_script"
 }
 
-schedule "priority-alpha-1" \
-    "replay.priority_alpha=1.0"
+schedule "full-game" \
+    "environment.time_limit_mode=full_game" \
+    "replay.treat_truncation_as_terminal=false"
+
+schedule "full-game-terminal" \
+    "environment.time_limit_mode=full_game" \
+    "replay.treat_truncation_as_terminal=true"
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete. Commands were not scheduled.\n'
 else
-    printf '\nScheduled 1 job via task-spooler under %s\n' "$RUN_ROOT"
+    printf '\nScheduled 2 jobs via task-spooler under %s\n' "$RUN_ROOT"
     tsp -l
 fi
