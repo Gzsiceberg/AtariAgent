@@ -21,8 +21,6 @@ from atariagent.models.native import (
 from atariagent.replay_batch import ReplayBatch
 from atariagent.search import SearchConfig
 
-from .config import resolve_target_update_intervals
-
 Precision = Literal["fp32", "bf16"]
 TargetState = dict[str, Tensor]
 
@@ -46,7 +44,6 @@ class ReadyReanalysis:
     value_cache_hits: int = 0
     cache_target_age_mean: float = 0.0
     cache_target_age_max: int = 0
-    bootstrap_weight_version: int = 0
 
 
 def replay_batch_nbytes(batch: ReplayBatch) -> int:
@@ -110,8 +107,6 @@ class ReanalysisPipeline:
         timeout_seconds: float,
         target_update_interval: int,
         device: torch.device | str | None = None,
-        policy_update_interval: int | None = None,
-        bootstrap_update_interval: int | None = None,
     ) -> None:
         if not isinstance(cache_targets, bool):
             raise TypeError("cache_targets must be a boolean")
@@ -131,9 +126,12 @@ class ReanalysisPipeline:
             raise ValueError("prefetch_batches must be positive")
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
             raise ValueError("timeout_seconds must be positive")
-        policy_interval, bootstrap_interval = resolve_target_update_intervals(
-            target_update_interval, policy_update_interval, bootstrap_update_interval
-        )
+        if isinstance(target_update_interval, bool) or not isinstance(
+            target_update_interval, int
+        ):
+            raise TypeError("target_update_interval must be an integer")
+        if target_update_interval <= 0:
+            raise ValueError("target_update_interval must be positive")
         set_tree_search_num_threads(search_threads)
 
         self.device = torch.device(
@@ -162,48 +160,20 @@ class ReanalysisPipeline:
             precision=precision,
             chunk_size=policy_chunk_size,
         )
-        # Construction must not consume extra learner/augmentation RNG draws.
-        # Keep a complete independent snapshot, even when the intervals match:
-        # resumed snapshots may have different versions despite equal intervals.
-        with torch.random.fork_rng(devices=[]):
-            bootstrap_models = (
-                InferenceModels(
-                    representation=RepresentationNetwork(in_channels),
-                    prediction=PredictionNetwork(action_space_size),
-                    dynamics=DynamicsNetwork(action_space_size),
-                )
-                .eval()
-                .to(self.device)
-            )
-            self.bootstrap_target = make_value_target(
-                bootstrap_models,
-                action_space_size,
-                search_config,
-                seed=rng_seed,
-                support_min=support_min,
-                support_max=support_max,
-                precision=precision,
-                chunk_size=policy_chunk_size,
-            )
         self.prefetch_batches = prefetch_batches
         self.timeout_seconds = timeout_seconds
         self.target_update_interval = target_update_interval
-        self.policy_update_interval = policy_interval
-        self.bootstrap_update_interval = bootstrap_interval
         self.search_algorithm = search_config.search_algorithm
         self._engine = NativeReanalysisEngine(
             self.target,
             str(self.device),
             prefetch_batches,
             timeout_seconds,
-            policy_interval,
+            target_update_interval,
             cache_targets,
             cache_target_ttl,
-            self.bootstrap_target,
-            bootstrap_interval,
         )
         self._latest_target_state: TargetState | None = None
-        self._latest_bootstrap_state: TargetState | None = None
         self._closed = False
         self.max_observed_pending = 0
         self.max_observed_pending_bytes = 0
@@ -234,14 +204,6 @@ class ReanalysisPipeline:
         return int(self._engine.weight_version)
 
     @property
-    def bootstrap_weight_version(self) -> int:
-        return int(self._engine.bootstrap_weight_version)
-
-    @property
-    def latest_bootstrap_state(self) -> TargetState | None:
-        return self._latest_bootstrap_state
-
-    @property
     def latest_target_state(self) -> TargetState | None:
         return self._latest_target_state
 
@@ -251,30 +213,17 @@ class ReanalysisPipeline:
         state: TargetState,
         *,
         wait: bool = False,
-        policy: bool = True,
-        bootstrap: bool = True,
     ) -> None:
-        """Publish selected snapshots in request order, clearing only their caches."""
+        """Queue an ordered immutable target snapshot and wait for activation."""
         del wait  # Native publication is deliberately synchronous for ordering.
         self._require_open()
-        if isinstance(version, bool) or not isinstance(version, int):
-            raise TypeError("target weight version must be an integer")
-        if version < 0:
-            raise ValueError("target weight version must be non-negative")
-        if not isinstance(policy, bool) or not isinstance(bootstrap, bool):
-            raise TypeError("publication selectors must be booleans")
         self._engine.publish_weights(
             version,
             _state_section(state, "representation"),
             _state_section(state, "prediction"),
             _state_section(state, "dynamics"),
-            policy,
-            bootstrap,
         )
-        if policy:
-            self._latest_target_state = dict(state)
-        if bootstrap:
-            self._latest_bootstrap_state = dict(state)
+        self._latest_target_state = dict(state)
 
     def clear_cache(self) -> None:
         """Queue a policy-cache clear after all previously submitted requests."""
@@ -321,7 +270,6 @@ class ReanalysisPipeline:
             request_id=request_id,
             batch=result["batch"],
             weight_version=int(result["weight_version"]),
-            bootstrap_weight_version=int(result["bootstrap_weight_version"]),
             queue_wait_ms=float(result["queue_wait_ms"]),
             worker_duration_ms=float(result["worker_duration_ms"]),
             transfer_duration_ms=0.0,

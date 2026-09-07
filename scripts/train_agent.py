@@ -56,7 +56,6 @@ from atariagent.training.config import (
     next_collection_vector_steps,
     proportional_training_update,
     register_train_agent_config,
-    resolve_target_update_intervals,
     target_network_update_due,
     visit_softmax_temperature,
 )
@@ -169,10 +168,8 @@ def save_checkpoint(
     target_version: int,
     update: int,
     config: TrainAgentConfig,
-    bootstrap_state: Mapping[str, torch.Tensor] | None = None,
-    bootstrap_version: int | None = None,
 ) -> None:
-    """Persist online networks, both target snapshots, and optimizer."""
+    """Persist online networks, asynchronous target state, and optimizer."""
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint: dict[str, object] = {
         "update": update,
@@ -182,12 +179,6 @@ def save_checkpoint(
         "consistency": trainer.consistency_network.state_dict(),
         "target_network": dict(target_state),
         "target_version": target_version,
-        "bootstrap_target_network": dict(
-            target_state if bootstrap_state is None else bootstrap_state
-        ),
-        "bootstrap_target_version": target_version
-        if bootstrap_version is None
-        else bootstrap_version,
         "optimizer": trainer.optimizer.state_dict(),
         "trainer_step": trainer.step_count,
         "config": OmegaConf.to_container(config, resolve=True),
@@ -227,15 +218,13 @@ def save_pre_final_snapshot(
     update: int,
     config: TrainAgentConfig,
     rng_state: Mapping[str, object],
-    bootstrap_state: Mapping[str, torch.Tensor] | None = None,
-    bootstrap_version: int | None = None,
 ) -> None:
     """Atomically persist everything required by the learner-only phase."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(f".{path.name}.tmp")
     snapshot: dict[str, object] = {
         "snapshot_type": "atariagent_pre_final",
-        "snapshot_version": 2,
+        "snapshot_version": 1,
         "update": update,
         "representation": agent.representation_network.state_dict(),
         "dynamics": agent.dynamics_network.state_dict(),
@@ -244,12 +233,6 @@ def save_pre_final_snapshot(
         "trainer": trainer.training_state_dict(),
         "target_network": dict(target_state),
         "target_version": target_version,
-        "bootstrap_target_network": dict(
-            target_state if bootstrap_state is None else bootstrap_state
-        ),
-        "bootstrap_target_version": target_version
-        if bootstrap_version is None
-        else bootstrap_version,
         "replay": replay.state_dict(),
         "search_rng": agent.search.rng.getstate(),
         "rng": dict(rng_state),
@@ -269,14 +252,7 @@ def load_pre_final_snapshot(
     trainer: Trainer,
     replay: FIFOReplayBuffer,
     expected_update: int,
-) -> tuple[
-    int,
-    dict[str, torch.Tensor],
-    int,
-    dict[str, torch.Tensor],
-    int,
-    Mapping[str, object],
-]:
+) -> tuple[int, dict[str, torch.Tensor], int, Mapping[str, object]]:
     """Load a trusted pre-final snapshot into initialized training objects."""
     if not path.is_file():
         raise FileNotFoundError(f"pre-final snapshot not found: {path}")
@@ -291,7 +267,7 @@ def load_pre_final_snapshot(
         raise TypeError("pre-final snapshot must contain a mapping")
     if snapshot.get("snapshot_type") != "atariagent_pre_final":
         raise ValueError("file is not an AtariAgent pre-final snapshot")
-    if snapshot.get("snapshot_version") not in {1, 2}:
+    if snapshot.get("snapshot_version") != 1:
         raise ValueError("unsupported pre-final snapshot version")
 
     update = snapshot.get("update")
@@ -302,19 +278,8 @@ def load_pre_final_snapshot(
         raise ValueError(
             f"snapshot update {update} does not match training.steps {expected_update}"
         )
-    bootstrap_version = (
-        target_version
-        if snapshot["snapshot_version"] == 1
-        else snapshot.get("bootstrap_target_version")
-    )
-    for name, version in (
-        ("target_version", target_version),
-        ("bootstrap_target_version", bootstrap_version),
-    ):
-        if isinstance(version, bool) or not isinstance(version, int):
-            raise TypeError(f"snapshot {name} must be an integer")
-        if not 0 <= version <= update:
-            raise ValueError(f"snapshot {name} must be between zero and update")
+    if isinstance(target_version, bool) or not isinstance(target_version, int):
+        raise TypeError("snapshot target_version must be an integer")
 
     for name, network in (
         ("representation", agent.representation_network),
@@ -333,11 +298,6 @@ def load_pre_final_snapshot(
     trainer_state = snapshot.get("trainer")
     replay_state = snapshot.get("replay")
     target_state = snapshot.get("target_network")
-    bootstrap_state = (
-        target_state
-        if snapshot["snapshot_version"] == 1
-        else snapshot.get("bootstrap_target_network")
-    )
     search_rng_state = snapshot.get("search_rng")
     rng_state = snapshot.get("rng")
     if not isinstance(trainer_state, Mapping):
@@ -349,11 +309,6 @@ def load_pre_final_snapshot(
         for name, value in target_state.items()
     ):
         raise TypeError("snapshot target-network state is invalid")
-    if not isinstance(bootstrap_state, Mapping) or not all(
-        isinstance(name, str) and isinstance(value, torch.Tensor)
-        for name, value in bootstrap_state.items()
-    ):
-        raise TypeError("snapshot bootstrap target-network state is invalid")
     if not isinstance(rng_state, Mapping):
         raise TypeError("snapshot RNG state must be a mapping")
     trainer.load_training_state_dict(trainer_state)
@@ -364,14 +319,7 @@ def load_pre_final_snapshot(
         agent.search.rng.setstate(search_rng_state)  # type: ignore[arg-type]
     except (TypeError, ValueError) as error:
         raise ValueError("snapshot search RNG state is invalid") from error
-    return (
-        update,
-        dict(target_state),
-        target_version,
-        dict(bootstrap_state),
-        bootstrap_version,
-        rng_state,
-    )
+    return update, dict(target_state), target_version, rng_state
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="train_agent")
@@ -435,16 +383,13 @@ def main(config: TrainAgentConfig) -> None:
             raise TypeError(f"training.{name} must be an integer")
         if value < 0:
             raise ValueError(f"training.{name} must be non-negative")
-    policy_interval, bootstrap_interval = resolve_target_update_intervals(
-        config.reanalysis.target_update_interval,
-        config.reanalysis.policy_update_interval,
-        config.reanalysis.bootstrap_update_interval,
-    )
-    log(
-        "Reanalysis publication: "
-        f"policy/search={policy_interval} bootstrap={bootstrap_interval} "
-        "(immediate snapshots)"
-    )
+    for value, name in (
+        (config.reanalysis.target_update_interval, "target_update_interval"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"reanalysis.{name} must be an integer")
+        if value <= 0:
+            raise ValueError(f"reanalysis.{name} must be positive")
     if config.reanalysis.policy_chunk_size <= 0:
         raise ValueError("reanalysis.policy_chunk_size must be positive")
     if not isinstance(config.reanalysis.cache_targets, bool):
@@ -663,8 +608,6 @@ def main(config: TrainAgentConfig) -> None:
             agent.dynamics_network,
         )
         target_version = 0
-        bootstrap_state = target_state
-        bootstrap_version = target_version
         update = 0
         resume_rng_state: Mapping[str, object] | None = None
         if resume_path is not None:
@@ -672,8 +615,6 @@ def main(config: TrainAgentConfig) -> None:
                 update,
                 target_state,
                 target_version,
-                bootstrap_state,
-                bootstrap_version,
                 resume_rng_state,
             ) = load_pre_final_snapshot(
                 resume_path,
@@ -703,22 +644,15 @@ def main(config: TrainAgentConfig) -> None:
                 search_threads=config.reanalysis.worker_num_threads,
                 prefetch_batches=config.reanalysis.prefetch_batches,
                 timeout_seconds=config.reanalysis.timeout_seconds,
-                target_update_interval=config.reanalysis.target_update_interval,
-                policy_update_interval=policy_interval,
-                bootstrap_update_interval=bootstrap_interval,
+                target_update_interval=(
+                    config.reanalysis.target_update_interval
+                ),
                 device=device,
             )
             pipeline.publish_weights(
                 target_version,
                 target_state,
                 wait=True,
-                bootstrap=False,
-            )
-            pipeline.publish_weights(
-                bootstrap_version,
-                bootstrap_state,
-                wait=True,
-                policy=False,
             )
             return pipeline
 
@@ -819,8 +753,6 @@ def main(config: TrainAgentConfig) -> None:
                 trainer=trainer,
                 target_state=target_state,
                 target_version=target_version,
-                bootstrap_state=bootstrap_state,
-                bootstrap_version=bootstrap_version,
                 update=update,
                 config=config,
             )
@@ -871,37 +803,34 @@ def main(config: TrainAgentConfig) -> None:
 
         def apply_gpu_update(ready: ReadyBatch) -> None:
             nonlocal update, target_state, target_version
-            nonlocal bootstrap_state, bootstrap_version
             metrics = trainer.train_step(ready.gpu_batch)
             # Priority transfer synchronizes the learner stream, so it also
             # makes the pinned H2D source safe to release immediately.
             batch_worker.complete(ready, metrics.priorities)
 
             update += 1
-            publish_policy = target_network_update_due(
-                update, last_update=target_version, interval=policy_interval
-            )
-            publish_bootstrap = target_network_update_due(
-                update, last_update=bootstrap_version, interval=bootstrap_interval
-            )
-            if publish_policy or publish_bootstrap:
-                state = make_target_state(
+            if target_network_update_due(
+                update,
+                last_update=target_version,
+                interval=config.reanalysis.target_update_interval,
+            ):
+                target_state = make_target_state(
                     agent.representation_network,
                     agent.prediction_network,
                     agent.dynamics_network,
                 )
-                batch_worker.publish_weights(
-                    update, state, policy=publish_policy, bootstrap=publish_bootstrap
-                )
-                if publish_policy:
-                    target_state, target_version = state, update
-                if publish_bootstrap:
-                    bootstrap_state, bootstrap_version = state, update
+                target_version = update
+                batch_worker.publish_weights(update, target_state)
 
             if update == 1 or update % config.training.log_every == 0:
                 wandb_logger.log_training(
                     metrics,
                     update=update,
+                    policy_roots_requested=ready.policy_roots_requested,
+                    policy_roots_searched=ready.policy_roots_searched,
+                    cache_hits=ready.cache_hits,
+                    cache_target_age_mean=ready.cache_target_age_mean,
+                    cache_target_age_max=ready.cache_target_age_max,
                 )
                 progress_stats: dict[str, str] = {
                     # "loss": f"{metrics.loss:.3f}",
@@ -1154,8 +1083,6 @@ def main(config: TrainAgentConfig) -> None:
                 update=update,
                 config=config,
                 rng_state=pre_final_rng_state,
-                bootstrap_state=bootstrap_state,
-                bootstrap_version=bootstrap_version,
             )
             log(
                 "[bold green]Pre-final snapshot saved[/bold green] "

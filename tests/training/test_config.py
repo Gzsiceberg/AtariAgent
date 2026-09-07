@@ -19,72 +19,9 @@ from atariagent.training.config import (
     next_collection_vector_steps,
     proportional_training_update,
     register_train_agent_config,
-    resolve_target_update_intervals,
     target_network_update_due,
     visit_softmax_temperature,
 )
-
-
-def test_split_target_intervals_resolve_hydra_overrides_and_legacy_fallback() -> None:
-    register_train_agent_config()
-    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
-    with initialize_config_dir(version_base=None, config_dir=config_dir):
-        default = compose(config_name="train_agent").reanalysis
-        split = compose(
-            config_name="train_agent",
-            overrides=[
-                "reanalysis.target_update_interval=800",
-                "reanalysis.policy_update_interval=200",
-                "reanalysis.bootstrap_update_interval=1000",
-            ],
-        ).reanalysis
-    assert resolve_target_update_intervals(
-        default.target_update_interval,
-        default.policy_update_interval,
-        default.bootstrap_update_interval,
-    ) == (1000, 1000)
-    assert resolve_target_update_intervals(
-        split.target_update_interval,
-        split.policy_update_interval,
-        split.bootstrap_update_interval,
-    ) == (200, 1000)
-    assert resolve_target_update_intervals(800, 200) == (200, 800)
-    assert resolve_target_update_intervals(800, bootstrap_update_interval=200) == (
-        800,
-        200,
-    )
-
-
-@pytest.mark.parametrize(
-    "name", ["policy_update_interval", "bootstrap_update_interval"]
-)
-@pytest.mark.parametrize("value", [0, -1, True, 1.5])
-def test_split_target_intervals_reject_invalid_values(name, value) -> None:
-    with pytest.raises((TypeError, ValueError), match=name):
-        resolve_target_update_intervals(1000, **{name: value})
-
-
-def test_split_target_schedules_follow_independent_last_publications() -> None:
-    versions = [0, 0]
-    events = []
-    for update in range(1, 1001):
-        due = tuple(
-            target_network_update_due(update, last_update=version, interval=interval)
-            for version, interval in zip(versions, (200, 1000), strict=True)
-        )
-        if any(due):
-            events.append((update, due))
-            versions = [
-                update if publish else version
-                for version, publish in zip(versions, due, strict=True)
-            ]
-    assert events == [
-        (200, (True, False)),
-        (400, (True, False)),
-        (600, (True, False)),
-        (800, (True, False)),
-        (1000, (True, True)),
-    ]
 
 
 def test_output_paths_are_derived_from_environment_id() -> None:

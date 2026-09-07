@@ -362,9 +362,7 @@ PYBIND11_MODULE(_models_native, module) {
                 double,
                 int,
                 bool,
-                std::int64_t,
-                std::shared_ptr<ValueTargetNetwork>,
-                int
+                std::int64_t
             >(),
             py::arg("target"),
             py::arg("device"),
@@ -372,9 +370,7 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("timeout_seconds"),
             py::arg("target_update_interval"),
             py::arg("cache_targets"),
-            py::arg("cache_target_ttl"),
-            py::arg("bootstrap_target") = nullptr,
-            py::arg("bootstrap_update_interval") = 0
+            py::arg("cache_target_ttl")
         )
         .def(
             "publish_weights",
@@ -382,9 +378,7 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("version"),
             py::arg("representation"),
             py::arg("prediction"),
-            py::arg("dynamics"),
-            py::arg("policy") = true,
-            py::arg("bootstrap") = true
+            py::arg("dynamics")
         )
         .def(
             "submit",
@@ -411,9 +405,6 @@ PYBIND11_MODULE(_models_native, module) {
         )
         .def_property_readonly(
             "weight_version", &NativeReanalysisEngine::weight_version
-        )
-        .def_property_readonly(
-            "bootstrap_weight_version", &NativeReanalysisEngine::bootstrap_weight_version
         );
 
     module.def(

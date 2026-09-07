@@ -44,6 +44,7 @@ class WandbLogger:
                 ("self_play", "self_play/update"),
                 ("behavior", "behavior/update"),
                 ("eval", "eval/update"),
+                ("reanalysis", "reanalysis/update"),
             ):
                 run.define_metric(step_name)
                 run.define_metric(f"{namespace}/*", step_metric=step_name)
@@ -94,8 +95,13 @@ class WandbLogger:
         metrics: TrainMetrics,
         *,
         update: int,
+        policy_roots_requested: int = 0,
+        policy_roots_searched: int = 0,
+        cache_hits: int = 0,
+        cache_target_age_mean: float = 0.0,
+        cache_target_age_max: int = 0,
     ) -> None:
-        """Log optimizer and policy diagnostics."""
+        """Log optimizer, policy, and optional reanalysis diagnostics."""
         if self._run is None:
             return
         data: dict[str, object] = {
@@ -122,6 +128,27 @@ class WandbLogger:
                 metrics.network_policy_effective_actions.item()
             ),
         }
+        if policy_roots_requested > 0:
+            data.update(
+                {
+                    "reanalysis/update": update,
+                    "reanalysis/cache_hit_rate": (
+                        cache_hits / policy_roots_requested
+                    ),
+                    "reanalysis/cache_target_age_mean_updates": (
+                        cache_target_age_mean
+                    ),
+                    "reanalysis/cache_target_age_max_updates": (
+                        cache_target_age_max
+                    ),
+                    "reanalysis/policy_roots_requested": (
+                        policy_roots_requested
+                    ),
+                    "reanalysis/policy_roots_searched": (
+                        policy_roots_searched
+                    ),
+                }
+            )
         self._run.log(data)
 
     def log_behavior_policy(

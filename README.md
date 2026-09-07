@@ -161,36 +161,6 @@ preserve outputs from an earlier final-phase run. Set
 load snapshots you trust; replay snapshots use Python pickle through
 `torch.load`.
 
-### Independent reanalysis publication intervals
-
-Search targets and TD bootstrap predictions can use different immediate-copy
-publication schedules (in learner updates):
-
-```bash
-uv run python scripts/train_agent.py \
-    reanalysis.policy_update_interval=200 \
-    reanalysis.bootstrap_update_interval=1000
-```
-
-`policy_update_interval` controls a complete search-network snapshot and the
-paired policy/MCTS root-value cache. `bootstrap_update_interval` controls a
-separate network snapshot and its raw TD endpoint-prediction cache. Publishing
-one leaves the other snapshot and cache unchanged. Each request retains both
-weight versions, including requests queued across a publication boundary.
-
-Both overrides default to `null`, inheriting the existing
-`reanalysis.target_update_interval=1000`. Thus legacy shared-interval overrides
-still work. This feature does **not** add EfficientZero's previous-snapshot lag.
-The independent bootstrap model adds target-network memory even when the
-intervals match. When both paths are due together, the learner copies its state
-once and publishes it to both.
-
-Checkpoints save both snapshots and versions. Pre-final snapshot format v2
-supports resuming independent schedules; legacy v1 snapshots initialize both
-paths from their original shared target. Subsequent publications are scheduled
-relative to each restored version. Use unique output paths when comparing runs.
-Reanalysis diagnostics remain available locally; they are not logged to W&B.
-
 ### Evaluate a checkpoint
 
 Training performs periodic and final evaluation automatically. A checkpoint can also be evaluated independently:
@@ -230,7 +200,7 @@ uv run python scripts/train_agent.py \
     wandb.project=AtariAgent
 ```
 
-The W&B entity, project, and tags can also be set through overrides such as `wandb.entity=<entity>` and `wandb.tags=[atari,baseline]`. Policy diagnostics include search-target entropy, network-policy entropy, target-to-network KL divergence, maximum action probability, and effective action count `exp(H)`. PUCT also reports behavior-policy entropy after action temperature; Gumbel omits that metric because one sampled Gumbel search does not define a categorical per-state behavior distribution.
+The W&B entity, project, and tags can also be set through overrides such as `wandb.entity=<entity>` and `wandb.tags=[atari,baseline]`. Policy diagnostics include search-target entropy, network-policy entropy, target-to-network KL divergence, maximum action probability, and effective action count `exp(H)`. Reanalysis diagnostics include exact cache hit rate and cached-target mean/maximum age in learner updates. PUCT also reports behavior-policy entropy after action temperature; Gumbel omits that metric because one sampled Gumbel search does not define a categorical per-state behavior distribution.
 
 ## Using AtariAgent as a research base
 
@@ -267,7 +237,7 @@ AtariAgent retains the central EfficientZero learning ideas while redesigning th
 | Hardware objective | Official README recommends four RTX 3090 GPUs for high-throughput training | Official example launches with two GPUs and supports broader workloads | Consumer single-GPU experiments |
 | License | GPL-3.0 | GPL-3.0 | MIT |
 
-By default, both target snapshots are published every 1,000 updates. Their publication intervals can be overridden independently: search publication clears policy/search-value entries, while bootstrap publication clears only raw endpoint predictions. Independently, `reanalysis.cache_target_ttl` expires policy/search entries after a bounded number of learner updates (200 by default). Raw bootstrap values need no TTL because they are deterministic for fixed bootstrap-network weights.
+Target-network publication clears both policy and value caches on its fixed 1,000-update schedule. Independently, `reanalysis.cache_target_ttl` expires policy/search entries after a bounded number of learner updates (200 by default). Raw bootstrap values need no TTL because they are deterministic for fixed target-network weights.
 
 ## Scope and limitations
 
