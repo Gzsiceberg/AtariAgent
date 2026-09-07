@@ -961,6 +961,7 @@ def main(config: TrainAgentConfig) -> None:
                         update=update,
                     )
                 trajectories = tuple(flatten_trajectories(grouped))
+                wandb_logger.log_self_play_truncations(trajectories, update=update)
                 completed_rewards = reward_tracker.add(trajectories)
                 self_play_episode_rewards.extend(completed_rewards)
                 insertion = replay.extend(trajectories)

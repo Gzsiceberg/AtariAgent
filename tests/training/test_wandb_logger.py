@@ -27,6 +27,39 @@ class FakeRun:
         self.exit_code = exit_code
 
 
+def test_self_play_truncations_count_only_full_episode_boundaries() -> None:
+    run = FakeRun()
+    logger = WandbLogger(run)
+
+    def trajectory(*, done: bool, truncated: bool = False):
+        return SimpleNamespace(full_episode_done=done, truncated=truncated)
+
+    logger.log_self_play_truncations(
+        [trajectory(done=False), trajectory(done=False, truncated=True)],
+        update=1,
+    )
+    assert run.logged == []
+    logger.log_self_play_truncations(
+        [
+            trajectory(done=True, truncated=True),
+            trajectory(done=False, truncated=True),  # Overlapping lookahead tail.
+            trajectory(done=True),
+        ],
+        update=2,
+    )
+    assert run.logged[-1] == {
+        "self_play/update": 2,
+        "self_play/time_limit_truncated_episodes": 1,
+        "self_play/time_limit_truncation_rate": 0.5,
+    }
+    logger.log_self_play_truncations([trajectory(done=True)], update=3)
+    assert run.logged[-1]["self_play/time_limit_truncated_episodes"] == 1
+    assert run.logged[-1]["self_play/time_limit_truncation_rate"] == pytest.approx(1 / 3)
+    WandbLogger().log_self_play_truncations(
+        [trajectory(done=True, truncated=True)], update=1
+    )
+
+
 def make_train_metrics() -> TrainMetrics:
     return TrainMetrics(
         loss=torch.tensor(6.0),
