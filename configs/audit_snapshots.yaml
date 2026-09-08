@@ -1,0 +1,10 @@
+# Only load trusted local snapshots: torch.load uses Python pickle.
+root: runs/tsp_sweep
+snapshot_name: agent_pre_final.pt
+output_path: null
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

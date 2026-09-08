@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Schedule two AtariAgent training experiments with task spooler (tsp).
+# Schedule three AtariAgent training experiments with task spooler (tsp).
 #
 # 1) "full-game": full-game time limit with truncation-aware targets.
 # 2) "full-game-terminal": full-game time limit with terminal-style timeout targets.
 #
-# Both experiments:
+# 3) "episodic-life-continue-terminal": per-life time limit, continue on timeout,
+#    and terminal-style timeout targets.
+#
+# All experiments:
 # - enable W&B logging
 # - keep final snapshot path enabled
 # - run only final_updates=10000 learner-only updates (default collection remains
@@ -150,9 +153,14 @@ schedule "full-game-terminal" \
     "environment.time_limit_mode=full_game" \
     "replay.treat_truncation_as_terminal=true"
 
+schedule "episodic-life-continue-terminal" \
+    "environment.time_limit_mode=episodic_life" \
+    "environment.reset_game_on_timeout=false" \
+    "replay.treat_truncation_as_terminal=true"
+
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete. Commands were not scheduled.\n'
 else
-    printf '\nScheduled 2 jobs via task-spooler under %s\n' "$RUN_ROOT"
+    printf '\nScheduled 3 jobs via task-spooler under %s\n' "$RUN_ROOT"
     tsp -l
 fi
