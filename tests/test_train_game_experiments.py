@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 
@@ -96,6 +97,24 @@ def run_batch(root, env):
         ["bash", str(root / "scripts/train_game_experiments.sh")],
         env=env, capture_output=True, text=True, timeout=15,
     )
+
+
+@pytest.mark.parametrize("run_id, suffix", [(None, ""), ("seed_2", ""), ("test-run", "_test-run")])
+def test_wandb_name_does_not_duplicate_default_seed(batch, run_id, suffix):
+    root, env = batch
+    env = {**env, "DRY_RUN": "1"}
+    if run_id is None:
+        env.pop("RUN_ID")
+    else:
+        env["RUN_ID"] = run_id
+    result = run_batch(root, env)
+    assert result.returncode == 0, result.stderr
+    worker = Path(env["RUN_ROOT"]) / "battle-zone/default/job.sh"
+    args = shlex.split(worker.read_text().splitlines()[3])
+    assert (
+        "wandb.name='${environment_slug:${environment.id}}_default_seed${seed}"
+        f"{suffix}'"
+    ) in args
 
 
 def test_dry_run_generates_simple_jobs(batch):

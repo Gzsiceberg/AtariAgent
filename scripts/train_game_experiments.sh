@@ -51,6 +51,10 @@ fi
 RUN_ID="${RUN_ID:-seed_$SEED}"
 RUN_ROOT="${RUN_ROOT:-runs/game_experiments/$RUN_ID}"
 EXPERIMENT_NAME="default"
+WANDB_RUN_SUFFIX=""
+if [[ "$RUN_ID" != "seed_$SEED" ]]; then
+    WANDB_RUN_SUFFIX="_$RUN_ID"
+fi
 WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -141,7 +145,7 @@ schedule() {
         training.progress_interval_seconds=10
         wandb.enabled=true
         "wandb.project=$WANDB_PROJECT"
-        "wandb.name='\${environment_slug:\${environment.id}}_${EXPERIMENT_NAME}_seed\${seed}_${RUN_ID}'"
+        "wandb.name='\${environment_slug:\${environment.id}}_${EXPERIMENT_NAME}_seed\${seed}${WANDB_RUN_SUFFIX}'"
         "wandb.tags=[atari-100k,default,all-games,$game]"
     )
     if [[ -n "$WANDB_ENTITY" ]]; then
