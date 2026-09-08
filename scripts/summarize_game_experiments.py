@@ -64,6 +64,8 @@ def read_paper_scores(
     aggregates: dict[str, dict[str, float]] = {}
     with path.open(newline="") as source:
         reader = csv.DictReader(source)
+        if reader.fieldnames is not None:
+            reader.fieldnames = [name.strip() for name in reader.fieldnames]
         if reader.fieldnames is None or not required_fields.issubset(reader.fieldnames):
             raise ValueError(
                 f"paper score CSV must contain {sorted(required_fields)}: {path}"
