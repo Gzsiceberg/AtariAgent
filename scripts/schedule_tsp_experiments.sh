@@ -156,8 +156,8 @@ schedule() {
 schedule "final-20000" \
     "training.final_steps=20000"
 
-schedule "final-10000" \
-    "training.final_steps=10000"
+# schedule "final-10000" \
+#     "training.final_steps=10000"
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete. Commands were not scheduled.\n'
