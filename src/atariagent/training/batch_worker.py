@@ -176,6 +176,14 @@ class BatchWorker:
         return 0 if pipeline is None else pipeline.cache_size
 
     @property
+    def ready_count(self) -> int:
+        """Snapshot of queued batches, excluding the learner's current batch.
+
+        Transfers are enqueued but may still be in progress on CUDA.
+        """
+        return self._ready.qsize()
+
+    @property
     def outstanding_count(self) -> int:
         with self._outstanding_lock:
             return len(self._outstanding)

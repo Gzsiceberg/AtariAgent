@@ -129,6 +129,19 @@ def test_wandb_logger_emits_training_metrics() -> None:
     ]
 
 
+@pytest.mark.parametrize("ready_count", [0, 2])
+def test_wandb_logger_emits_prefetch_ready_count(ready_count: int) -> None:
+    run = FakeRun()
+    logger = WandbLogger(run)
+
+    logger.log_training(
+        make_train_metrics(), update=10, prefetch_ready_batches=ready_count
+    )
+
+    assert run.logged[0]["train/update"] == 10
+    assert run.logged[0]["train/prefetch_ready_batches"] == ready_count
+
+
 def test_wandb_logger_emits_reanalysis_metrics() -> None:
     run = FakeRun()
     logger = WandbLogger(run)

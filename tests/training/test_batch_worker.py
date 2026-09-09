@@ -102,6 +102,30 @@ def test_worker_bounds_sampling_when_consumer_is_slow() -> None:
     assert len(replay.priority_updates) == 5
 
 
+def test_ready_count_excludes_consumed_batches() -> None:
+    replay = _FakeReplay(lambda _: _batch().without_value_bootstraps())
+    with BatchWorker(
+        replay,  # type: ignore[arg-type]
+        batch_size=2,
+        device="cpu",
+        max_in_flight=2,
+        ready_prefetch=2,
+        timeout_seconds=2.0,
+    ) as worker:
+        assert worker.ready_count == 0
+        worker.start(0, 2)
+        _wait_until(lambda: worker.ready_count == 2)
+        first = worker.next_ready()
+        assert worker.ready_count == 1
+        second = worker.next_ready()
+        assert worker.ready_count == 0
+        assert worker.outstanding_count == 2
+        worker.complete(first, torch.ones(2))
+        worker.complete(second, torch.ones(2))
+        worker.wait_idle()
+        assert worker.ready_count == 0
+
+
 def test_worker_anneals_priority_beta_by_learner_step() -> None:
     replay = _FakeReplay(lambda _: _batch().without_value_bootstraps())
     with BatchWorker(

@@ -97,6 +97,7 @@ class WandbLogger:
         metrics: TrainMetrics,
         *,
         update: int,
+        prefetch_ready_batches: int | None = None,
         policy_roots_requested: int = 0,
         policy_roots_searched: int = 0,
         cache_hits: int = 0,
@@ -130,6 +131,8 @@ class WandbLogger:
                 metrics.network_policy_effective_actions.item()
             ),
         }
+        if prefetch_ready_batches is not None:
+            data["train/prefetch_ready_batches"] = prefetch_ready_batches
         if policy_roots_requested > 0:
             data.update(
                 {

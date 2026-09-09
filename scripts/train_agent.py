@@ -828,6 +828,7 @@ def main(config: TrainAgentConfig) -> None:
                 wandb_logger.log_training(
                     metrics,
                     update=update,
+                    prefetch_ready_batches=batch_worker.ready_count,
                     policy_roots_requested=ready.policy_roots_requested,
                     policy_roots_searched=ready.policy_roots_searched,
                     cache_hits=ready.cache_hits,
