@@ -151,8 +151,8 @@ def test_agent_train_step_updates_all_supervised_output_heads() -> None:
     metrics = trainer.train_step(batch)
 
     assert metrics.loss == pytest.approx(
-        metrics.policy_loss
-        + 0.25 * metrics.value_loss
+        2.0 * metrics.policy_loss
+        + 0.25 * 2.0 * metrics.value_loss
         + metrics.reward_loss
         + 5.0 * metrics.consistency_loss
     )
@@ -342,6 +342,62 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         torch.testing.assert_close(compiled_parameter.grad, eager_parameter.grad)
 
 
+class _AlignedConsistency(torch.nn.Module):
+    def forward(self, predicted_state, target_state):
+        return predicted_state * 0.0 + 1.0, target_state.detach() * 0.0 + 1.0
+
+
+@pytest.mark.parametrize("importance_weight", [1.0, 0.01])
+@pytest.mark.parametrize("valid_steps", [0, 1, 2])
+def test_logged_losses_ignore_importance_weights_and_padding(
+    importance_weight: float, valid_steps: int
+) -> None:
+    trainer = Trainer(
+        _ScalarRepresentation(),
+        _IdentityDynamics(),
+        _ScalarPrediction(),
+        consistency_network=_AlignedConsistency(),
+        unroll_steps=2,
+        lstm_horizon=2,
+        support_min=0,
+        support_max=1,
+    )
+    action_mask = torch.arange(2).expand(2, -1) < valid_steps
+    policy_mask = torch.arange(3).expand(2, -1) < valid_steps
+    value_mask = torch.arange(3).expand(2, -1) < max(valid_steps - 1, 0)
+    batch = ReplayBatch(
+        frames=torch.zeros(2, 3, 1, 1, 1, dtype=torch.uint8),
+        actions=torch.zeros(2, 2, 1, dtype=torch.long),
+        rewards=torch.zeros(2, 2),
+        policy_targets=torch.full((2, 3, 2), 0.5),
+        value_targets=torch.zeros(2, 3),
+        action_mask=action_mask,
+        policy_mask=policy_mask,
+        value_mask=value_mask,
+        indices=torch.arange(2),
+        importance_weights=torch.full((2,), importance_weight),
+    )
+    metrics = trainer.train_step(batch)
+    log_two = torch.log(torch.tensor(2.0)).item()
+    for name, count, expected in (
+        ("policy", valid_steps, log_two),
+        ("value", max(valid_steps - 1, 0), log_two),
+        ("reward", valid_steps, log_two),
+        ("consistency", valid_steps, -1.0),
+    ):
+        normalized = getattr(metrics, f"{name}_loss")
+        assert not normalized.requires_grad
+        assert normalized.item() == pytest.approx(expected if count else 0.0)
+    # The optimization objective still uses weights and fixed unroll scaling.
+    expected_loss = importance_weight / 2 * (
+        valid_steps * log_two
+        + 0.25 * max(valid_steps - 1, 0) * log_two
+        + valid_steps * log_two
+        - 5.0 * valid_steps
+    )
+    assert metrics.loss.item() == pytest.approx(expected_loss)
+
+
 def test_agent_requires_dynamics_gradient_scaling() -> None:
     with pytest.raises(ValueError, match="gradient scaling"):
         Trainer(
@@ -388,7 +444,9 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
 
     metrics = trainer.train_step(batch)
 
-    assert metrics.policy_loss == pytest.approx(torch.log(torch.tensor(2.0)))
+    assert metrics.policy_loss == pytest.approx(
+        2.0 / 3.0 * torch.log(torch.tensor(2.0)).item()
+    )
     assert representation.weight.grad == pytest.approx(-0.1875)
 
 
@@ -417,10 +475,10 @@ def test_agent_scales_root_and_recurrent_losses_together() -> None:
     metrics = trainer.train_step(batch)
 
     assert metrics.policy_loss == pytest.approx(
-        1.5 * torch.log(torch.tensor(3.0)).item()
+        torch.log(torch.tensor(3.0)).item()
     )
     assert metrics.value_loss == pytest.approx(
-        1.5 * torch.log(torch.tensor(601.0)).item()
+        torch.log(torch.tensor(601.0)).item()
     )
     assert metrics.reward_loss == pytest.approx(torch.log(torch.tensor(601.0)).item())
     assert metrics.consistency_loss == 0.0

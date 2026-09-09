@@ -32,7 +32,9 @@ class TrainMetrics:
     until the CPU replay update performs its required transfer.
     """
 
+    # Actual weighted optimization objective.
     loss: Tensor
+    # Unweighted means over valid targets, for learning diagnostics.
     policy_loss: Tensor
     value_loss: Tensor
     reward_loss: Tensor
@@ -337,12 +339,20 @@ class _LearnerUnroll(nn.Module):
         )
         valid_policy_roots = policy_statistics[7].clamp_min(1.0)
         policy_diagnostics = policy_statistics[:7] / valid_policy_roots
+        # Logging only: do not let replay weights or padding dilute these means.
+        valid_actions = action_mask.sum().clamp_min(1)
+        normalized_losses = torch.stack(
+            (
+                (root_policy_loss + recurrent_policy_loss).detach().float().sum()
+                / policy_mask.sum().clamp_min(1),
+                (root_value_loss + recurrent_value_loss).detach().float().sum()
+                / value_mask.sum().clamp_min(1),
+                recurrent_reward_loss.detach().float().sum() / valid_actions,
+                recurrent_consistency_loss.detach().float().sum() / valid_actions,
+            )
+        )
         return (
             loss,
-            policy_loss,
-            value_loss,
-            reward_loss,
-            consistency_loss,
             priorities,
             policy_diagnostics[0],
             policy_diagnostics[1],
@@ -351,6 +361,7 @@ class _LearnerUnroll(nn.Module):
             policy_diagnostics[4],
             policy_diagnostics[5],
             policy_diagnostics[6],
+            normalized_losses,
         )
 
 
@@ -615,10 +626,6 @@ class Trainer:
             )
             (
                 loss,
-                policy_loss,
-                value_loss,
-                reward_loss,
-                consistency_loss,
                 new_priorities,
                 search_target_entropy,
                 network_policy_entropy,
@@ -627,6 +634,7 @@ class Trainer:
                 network_policy_max_probability,
                 search_target_effective_actions,
                 network_policy_effective_actions,
+                normalized_losses,
             ) = outputs
 
         loss.backward()
@@ -640,10 +648,10 @@ class Trainer:
 
         return TrainMetrics(
             loss=loss.detach(),
-            policy_loss=policy_loss.detach(),
-            value_loss=value_loss.detach(),
-            reward_loss=reward_loss.detach(),
-            consistency_loss=consistency_loss.detach(),
+            policy_loss=normalized_losses[0].detach(),
+            value_loss=normalized_losses[1].detach(),
+            reward_loss=normalized_losses[2].detach(),
+            consistency_loss=normalized_losses[3].detach(),
             gradient_norm=gradient_norm.detach(),
             search_target_entropy=search_target_entropy.detach(),
             network_policy_entropy=network_policy_entropy.detach(),
