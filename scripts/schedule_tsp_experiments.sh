@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Schedule independent Bank Heist experiments with task spooler (tsp).
+# Schedule independent Battle Zone experiments with task spooler (tsp).
 #
 # 1 / value_loss_coeff:    loss.value_weight=0.5
 # 2 / consistency_weight:  loss.consistency_weight=5
@@ -9,7 +9,7 @@
 # All experiments:
 # - enable W&B logging
 # - keep final snapshot path enabled
-# - train on ALE/BankHeist-v5 using default settings otherwise
+# - train on ALE/BattleZone-v5 using default settings otherwise
 # - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
 # Usage:
@@ -79,7 +79,7 @@ fi
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RUN_ROOT="${RUN_ROOT:-runs/tsp_sweep/$RUN_ID}"
-ENVIRONMENT_ID="ALE/BankHeist-v5"
+ENVIRONMENT_ID="ALE/BattleZone-v5"
 SEED="${SEED:-2}"
 TRAINING_STEPS="${TRAINING_STEPS:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
