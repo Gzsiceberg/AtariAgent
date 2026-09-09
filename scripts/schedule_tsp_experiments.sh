@@ -22,6 +22,7 @@
 #   WANDB_PROJECT:   wandb project (default AtariAgent)
 #   WANDB_ENTITY:    wandb entity (default not set)
 #   WANDB_API_KEY:   W&B API key (prompted with hidden input if unset/empty)
+#   RUNPOD_POD_ID:  if nonempty, queue pod shutdown after training
 #   DRY_RUN:         set to 1 to only print planned commands
 #
 # Notes:
@@ -153,11 +154,18 @@ schedule() {
     tsp -L "$name" bash "$job_script"
 }
 
-schedule "final-20000" \
-    "training.final_steps=20000"
+# schedule "final-20000" \
+#     "training.final_steps=20000"
 
-# schedule "final-10000" \
-#     "training.final_steps=10000"
+schedule "final-10000" \
+    "training.final_steps=10000"
+
+if [[ -n "${RUNPOD_POD_ID:-}" ]]; then
+    printf '\nCommand: tsp runpodctl stop pod %q\n' "$RUNPOD_POD_ID"
+    if [[ "$DRY_RUN" != "1" ]]; then
+        tsp runpodctl stop pod "$RUNPOD_POD_ID"
+    fi
+fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete. Commands were not scheduled.\n'
