@@ -21,6 +21,7 @@
 #   TRAINING_STEPS:  number of collection updates (default 100000)
 #   WANDB_PROJECT:   wandb project (default AtariAgent)
 #   WANDB_ENTITY:    wandb entity (default not set)
+#   WANDB_API_KEY:   W&B API key (prompted with hidden input if unset/empty)
 #   DRY_RUN:         set to 1 to only print planned commands
 #
 # Notes:
@@ -47,6 +48,20 @@ WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 SNAPSHOT_PATH="${SNAPSHOT_PATH:-}"
 DRY_RUN="${DRY_RUN:-0}"
+
+# Pass credentials only through the environment, not generated job scripts.
+while [[ -z "${WANDB_API_KEY:-}" ]]; do
+    printf 'W&B API key: ' >&2
+    if ! IFS= read -r -s WANDB_API_KEY; then
+        printf '\nError: unable to read WANDB_API_KEY; export it before running non-interactively.\n' >&2
+        exit 1
+    fi
+    printf '\n' >&2
+    if [[ -z "$WANDB_API_KEY" ]]; then
+        printf 'API key must not be empty.\n' >&2
+    fi
+done
+export WANDB_API_KEY
 
 mkdir -p "$(dirname -- "$RUN_ROOT")"
 if [[ "$DRY_RUN" != "1" ]]; then
