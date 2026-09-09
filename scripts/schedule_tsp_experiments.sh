@@ -4,6 +4,8 @@
 # 1 / value_loss_coeff:    loss.value_weight=0.5
 # 2 / consistency_weight:  loss.consistency_weight=5
 # 3 / priority_alpha:      replay.priority_alpha=0.6
+# 4 / combined:            loss.value_weight=0.5, loss.consistency_weight=5,
+#                         training.mixed_value_threshold=5000
 #
 # All experiments:
 # - enable W&B logging
@@ -12,10 +14,11 @@
 # - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
 # Usage:
-#   ./scripts/schedule_tsp_experiments.sh           # all three
-#   ./scripts/schedule_tsp_experiments.sh all       # all three
+#   ./scripts/schedule_tsp_experiments.sh           # all four
+#   ./scripts/schedule_tsp_experiments.sh all       # all four
 #   ./scripts/schedule_tsp_experiments.sh 1         # value loss only
 #   ./scripts/schedule_tsp_experiments.sh consistency_weight
+#   ./scripts/schedule_tsp_experiments.sh 4         # combined overrides
 #   ./scripts/schedule_tsp_experiments.sh 1 3       # selected experiments
 #
 # Optional env vars:
@@ -41,7 +44,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 usage() {
-    printf 'Usage: %s [all | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha ...]\n' "${0##*/}"
+    printf 'Usage: %s [all | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha | 4/combined ...]\n' "${0##*/}"
 }
 
 # Validate the complete selection before prompting or creating any jobs.
@@ -58,11 +61,12 @@ for selection in "$@"; do
                 usage >&2
                 exit 1
             fi
-            experiments=(value_loss_coeff consistency_weight priority_alpha)
+            experiments=(value_loss_coeff consistency_weight priority_alpha combined)
             ;;
         1|value_loss_coeff) experiments+=(value_loss_coeff) ;;
         2|consistency_weight) experiments+=(consistency_weight) ;;
         3|priority_alpha) experiments+=(priority_alpha) ;;
+        4|combined) experiments+=(combined) ;;
         *)
             printf 'Error: unknown experiment: %s\n' "$selection" >&2
             usage >&2
@@ -198,11 +202,12 @@ for experiment in "${experiments[@]}"; do
         continue
     fi
     case "$experiment" in
-        value_loss_coeff) override="loss.value_weight=0.5" ;;
-        consistency_weight) override="loss.consistency_weight=5" ;;
-        priority_alpha) override="replay.priority_alpha=0.6" ;;
+        value_loss_coeff) overrides=("loss.value_weight=0.5") ;;
+        consistency_weight) overrides=("loss.consistency_weight=5") ;;
+        priority_alpha) overrides=("replay.priority_alpha=0.6") ;;
+        combined) overrides=("loss.value_weight=0.5" "loss.consistency_weight=5" "training.mixed_value_threshold=5000") ;;
     esac
-    schedule "$experiment" "$override"
+    schedule "$experiment" "${overrides[@]}"
     scheduled[$experiment]=1
     job_count=$((job_count + 1))
 done
