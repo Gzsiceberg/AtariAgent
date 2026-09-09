@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Schedule a Bank Heist training experiment with task spooler (tsp).
+# Schedule independent Bank Heist experiments with task spooler (tsp).
 #
-# "final-10000": 10000 final learner-only updates.
+# 1 / value_loss_coeff:    loss.value_weight=0.5
+# 2 / consistency_weight:  loss.consistency_weight=5
+# 3 / priority_alpha:      replay.priority_alpha=0.6
+# Each experiment uses 10000 final learner-only updates.
 #
 # All experiments:
 # - enable W&B logging
@@ -10,7 +13,11 @@
 # - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
 # Usage:
-#   ./scripts/schedule_tsp_experiments.sh
+#   ./scripts/schedule_tsp_experiments.sh           # all three
+#   ./scripts/schedule_tsp_experiments.sh all       # all three
+#   ./scripts/schedule_tsp_experiments.sh 1         # value loss only
+#   ./scripts/schedule_tsp_experiments.sh consistency_weight
+#   ./scripts/schedule_tsp_experiments.sh 1 3       # selected experiments
 #
 # Optional env vars:
 #   RUN_ID:          stable label for wandb/run directories (default timestamp)
@@ -33,6 +40,37 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+usage() {
+    printf 'Usage: %s [all | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha ...]\n' "${0##*/}"
+}
+
+# Validate the complete selection before prompting or creating any jobs.
+declare -a experiments=()
+if [[ $# -eq 0 ]]; then
+    set -- all
+fi
+for selection in "$@"; do
+    case "$selection" in
+        -h|--help) usage; exit 0 ;;
+        all)
+            if [[ $# -ne 1 ]]; then
+                echo "Error: 'all' must be used alone." >&2
+                usage >&2
+                exit 1
+            fi
+            experiments=(value_loss_coeff consistency_weight priority_alpha)
+            ;;
+        1|value_loss_coeff) experiments+=(value_loss_coeff) ;;
+        2|consistency_weight) experiments+=(consistency_weight) ;;
+        3|priority_alpha) experiments+=(priority_alpha) ;;
+        *)
+            printf 'Error: unknown experiment: %s\n' "$selection" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
 
 if ! command -v tsp >/dev/null 2>&1; then
     echo "Error: task spooler 'tsp' not found." >&2
@@ -153,8 +191,22 @@ schedule() {
     tsp -L "$name" bash "$job_script"
 }
 
-schedule "final-10000" \
-    "training.final_steps=10000"
+declare -A scheduled=()
+job_count=0
+for experiment in "${experiments[@]}"; do
+    # Repeated selectors must not schedule duplicate jobs.
+    if [[ -n "${scheduled[$experiment]:-}" ]]; then
+        continue
+    fi
+    case "$experiment" in
+        value_loss_coeff) override="loss.value_weight=0.5" ;;
+        consistency_weight) override="loss.consistency_weight=5" ;;
+        priority_alpha) override="replay.priority_alpha=0.6" ;;
+    esac
+    schedule "$experiment" "training.final_steps=10000" "$override"
+    scheduled[$experiment]=1
+    job_count=$((job_count + 1))
+done
 
 if [[ -n "${RUNPOD_POD_ID:-}" ]]; then
     printf '\nCommand: tsp runpodctl stop pod %q\n' "$RUNPOD_POD_ID"
@@ -166,6 +218,6 @@ fi
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete. Commands were not scheduled.\n'
 else
-    printf '\nScheduled 1 training job via task-spooler under %s\n' "$RUN_ROOT"
+    printf '\nScheduled %s training job(s) via task-spooler under %s\n' "$job_count" "$RUN_ROOT"
     tsp -l
 fi
