@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
-# Schedule three AtariAgent training experiments with task spooler (tsp).
+# Schedule two Battle Zone training experiments with task spooler (tsp).
 #
-# 1) "full-game": full-game time limit with truncation-aware targets.
-# 2) "full-game-terminal": full-game time limit with terminal-style timeout targets.
-#
-# 3) "episodic-life-continue-terminal": per-life time limit, continue on timeout,
-#    and terminal-style timeout targets.
+# 1) "final-20000": 20000 final learner-only updates.
+# 2) "final-10000": 10000 final learner-only updates.
 #
 # All experiments:
 # - enable W&B logging
 # - keep final snapshot path enabled
-# - run only final_updates=10000 learner-only updates (default collection remains
-#   100k transitions unless overriding TRAINING_STEPS below)
+# - train on ALE/BattleZone-v5 using default settings otherwise
+# - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
 # Usage:
 #   ./scripts/schedule_tsp_experiments.sh
@@ -19,11 +16,9 @@
 # Optional env vars:
 #   RUN_ID:          stable label for wandb/run directories (default timestamp)
 #   RUN_ROOT:        experiment root directory
-#   ENVIRONMENT_ID:  gym env id (default ALE/Asterix-v5)
 #   SEED:            random seed (default 2)
 #   SNAPSHOT_PATH:   optional checkpoint to resume from with `checkpoint.resume_pre_final_path`
 #   TRAINING_STEPS:  number of collection updates (default 100000)
-#   FINAL_STEPS:     final learner-only updates (default 10000)
 #   WANDB_PROJECT:   wandb project (default AtariAgent)
 #   WANDB_ENTITY:    wandb entity (default not set)
 #   DRY_RUN:         set to 1 to only print planned commands
@@ -45,10 +40,9 @@ fi
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RUN_ROOT="${RUN_ROOT:-runs/tsp_sweep/$RUN_ID}"
-ENVIRONMENT_ID="${ENVIRONMENT_ID:-ALE/Asterix-v5}"
+ENVIRONMENT_ID="ALE/BattleZone-v5"
 SEED="${SEED:-2}"
 TRAINING_STEPS="${TRAINING_STEPS:-100000}"
-FINAL_STEPS="${FINAL_STEPS:-10000}"
 WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 SNAPSHOT_PATH="${SNAPSHOT_PATH:-}"
@@ -71,7 +65,6 @@ build_common_args() {
         "seed=$SEED"
         "environment.id=$ENVIRONMENT_ID"
         "training.steps=$TRAINING_STEPS"
-        "training.final_steps=$FINAL_STEPS"
         "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
         "checkpoint.pre_final_snapshot_path=$output_dir/checkpoints/agent_pre_final.pt"
         "evaluation.data_path=$output_dir/evaluations/agent_evaluations.json"
@@ -145,22 +138,15 @@ schedule() {
     tsp -L "$name" bash "$job_script"
 }
 
-schedule "full-game" \
-    "environment.time_limit_mode=full_game" \
-    "replay.treat_truncation_as_terminal=false"
+schedule "final-20000" \
+    "training.final_steps=20000"
 
-schedule "full-game-terminal" \
-    "environment.time_limit_mode=full_game" \
-    "replay.treat_truncation_as_terminal=true"
-
-schedule "episodic-life-continue-terminal" \
-    "environment.time_limit_mode=episodic_life" \
-    "environment.reset_game_on_timeout=false" \
-    "replay.treat_truncation_as_terminal=true"
+schedule "final-10000" \
+    "training.final_steps=10000"
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete. Commands were not scheduled.\n'
 else
-    printf '\nScheduled 3 jobs via task-spooler under %s\n' "$RUN_ROOT"
+    printf '\nScheduled 2 jobs via task-spooler under %s\n' "$RUN_ROOT"
     tsp -l
 fi
