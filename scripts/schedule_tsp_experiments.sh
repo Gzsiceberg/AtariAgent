@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Schedule two Battle Zone training experiments with task spooler (tsp).
+# Schedule a Bank Heist training experiment with task spooler (tsp).
 #
-# 1) "final-20000": 20000 final learner-only updates.
-# 2) "final-10000": 10000 final learner-only updates.
+# "final-10000": 10000 final learner-only updates.
 #
 # All experiments:
 # - enable W&B logging
 # - keep final snapshot path enabled
-# - train on ALE/BattleZone-v5 using default settings otherwise
+# - train on ALE/BankHeist-v5 using default settings otherwise
 # - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
 # Usage:
@@ -42,7 +41,7 @@ fi
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RUN_ROOT="${RUN_ROOT:-runs/tsp_sweep/$RUN_ID}"
-ENVIRONMENT_ID="ALE/BattleZone-v5"
+ENVIRONMENT_ID="ALE/BankHeist-v5"
 SEED="${SEED:-2}"
 TRAINING_STEPS="${TRAINING_STEPS:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
@@ -154,9 +153,6 @@ schedule() {
     tsp -L "$name" bash "$job_script"
 }
 
-# schedule "final-20000" \
-#     "training.final_steps=20000"
-
 schedule "final-10000" \
     "training.final_steps=10000"
 
@@ -170,6 +166,6 @@ fi
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete. Commands were not scheduled.\n'
 else
-    printf '\nScheduled 2 jobs via task-spooler under %s\n' "$RUN_ROOT"
+    printf '\nScheduled 1 training job via task-spooler under %s\n' "$RUN_ROOT"
     tsp -l
 fi
