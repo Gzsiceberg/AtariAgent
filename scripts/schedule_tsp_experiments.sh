@@ -4,7 +4,6 @@
 # 1 / value_loss_coeff:    loss.value_weight=0.5
 # 2 / consistency_weight:  loss.consistency_weight=5
 # 3 / priority_alpha:      replay.priority_alpha=0.6
-# Each experiment uses 10000 final learner-only updates.
 #
 # All experiments:
 # - enable W&B logging
@@ -203,7 +202,7 @@ for experiment in "${experiments[@]}"; do
         consistency_weight) override="loss.consistency_weight=5" ;;
         priority_alpha) override="replay.priority_alpha=0.6" ;;
     esac
-    schedule "$experiment" "training.final_steps=10000" "$override"
+    schedule "$experiment" "$override"
     scheduled[$experiment]=1
     job_count=$((job_count + 1))
 done
