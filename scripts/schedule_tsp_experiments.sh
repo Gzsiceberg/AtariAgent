@@ -9,7 +9,7 @@
 #
 # All experiments:
 # - enable W&B logging
-# - keep final snapshot path enabled
+# - disable pre-final snapshot saving
 # - train on ALE/BattleZone-v5 using default settings otherwise
 # - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
@@ -36,7 +36,7 @@
 # Notes:
 # - `tsp` must be installed and running.
 # - If SNAPSHOT_PATH is not set, each job runs full collection + final phase.
-# - `checkpoint.pre_final_snapshot_path` is still explicitly set per job.
+# - `checkpoint.pre_final_snapshot_path` is null so no pre-final snapshot is stored.
 
 set -Eeuo pipefail
 
@@ -122,7 +122,7 @@ build_common_args() {
         "environment.id=$ENVIRONMENT_ID"
         "training.steps=$TRAINING_STEPS"
         "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
-        "checkpoint.pre_final_snapshot_path=$output_dir/checkpoints/agent_pre_final.pt"
+        "checkpoint.pre_final_snapshot_path=null"
         "evaluation.data_path=$output_dir/evaluations/agent_evaluations.json"
         "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
         "evaluation.enabled=true"
