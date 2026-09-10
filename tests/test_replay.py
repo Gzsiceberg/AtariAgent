@@ -1,4 +1,6 @@
 from dataclasses import fields, replace
+from pathlib import Path
+from zipfile import ZipFile
 
 import numpy as np
 import pytest
@@ -89,7 +91,10 @@ def test_switch_per_mode_rejects_invalid_settings(mode, alpha, beta) -> None:
         replay.set_per_mode(mode, priority_alpha=alpha, priority_beta=beta)
 
 
-def test_replay_state_round_trip_restores_data_priorities_and_rng() -> None:
+@pytest.mark.parametrize("tensor_arrays", [False, True])
+def test_replay_state_round_trip_restores_data_priorities_and_rng(
+    tmp_path: Path, tensor_arrays: bool,
+) -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=2,
@@ -116,11 +121,35 @@ def test_replay_state_round_trip_restores_data_priorities_and_rng() -> None:
         discount=0.5,
         seed=999,
     )
-    state = replay.state_dict()
-    for trajectory in state["trajectories"]:
+    state = replay.state_dict(tensor_arrays=tensor_arrays)
+    original_state = replay.state_dict()
+    for trajectory, original in zip(
+        state["trajectories"], original_state["trajectories"], strict=True,
+    ):
         assert "initial_priority" not in trajectory
         assert "initial_priorities" in trajectory
-    restored.load_state_dict(state)
+        for name, value in original.items():
+            if isinstance(value, np.ndarray):
+                encoded = trajectory[name]
+                if tensor_arrays:
+                    assert isinstance(encoded, torch.Tensor)
+                    assert encoded.data_ptr() == value.ctypes.data
+                    np.testing.assert_array_equal(encoded.numpy(), value)
+                else:
+                    assert isinstance(encoded, np.ndarray)
+    for name in ("transition_ids", "priorities"):
+        if tensor_arrays:
+            assert isinstance(state[name], torch.Tensor)
+            assert state[name].data_ptr() == original_state[name].ctypes.data
+    path = tmp_path / "replay.pt"
+    torch.save(state, path)
+    if tensor_arrays:
+        # Arrays must be streamed as tensor storage, not embedded in pickle.
+        with ZipFile(path) as archive:
+            payload = archive.read("replay/data.pkl")
+            assert b"numpy" not in payload
+            assert any(name.startswith("replay/data/") for name in archive.namelist())
+    restored.load_state_dict(torch.load(path, map_location="cpu", weights_only=False))
     assert all(
         "initial_priority" not in trajectory
         for trajectory in restored.state_dict()["trajectories"]

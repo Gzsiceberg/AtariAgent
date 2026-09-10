@@ -234,7 +234,7 @@ def save_pre_final_snapshot(
         "trainer": trainer.training_state_dict(),
         "target_network": dict(target_state),
         "target_version": target_version,
-        "replay": replay.state_dict(),
+        "replay": replay.state_dict(tensor_arrays=True),
         "search_rng": agent.search.rng.getstate(),
         "rng": dict(rng_state),
         "config": OmegaConf.to_container(config, resolve=True),
@@ -260,8 +260,8 @@ def load_pre_final_snapshot(
     snapshot = torch.load(
         path,
         map_location="cpu",
-        # Replay is serialized as NumPy arrays. Only load snapshots produced
-        # locally by this training script because this enables Python pickle.
+        # Legacy replay arrays and RNG state require Python pickle. Only load
+        # trusted snapshots produced locally by this training script.
         weights_only=False,
     )
     if not isinstance(snapshot, Mapping):

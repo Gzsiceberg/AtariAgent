@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import warnings
 
 import numpy as np
 import torch
@@ -192,8 +193,26 @@ class FIFOReplayBuffer:
         """Return priorities in the same flat order used for sampling."""
         return self._priorities.copy()
 
-    def state_dict(self) -> dict[str, object]:
-        """Return the complete replay state needed to resume sampling."""
+    def state_dict(self, *, tensor_arrays: bool = False) -> dict[str, object]:
+        """Return replay state, optionally with zero-copy tensors for torch.save.
+
+        NumPy arrays are pickled into an in-memory buffer by torch.save, causing
+        large RAM spikes for frame data. Tensor storage is streamed separately.
+        Tensor views may alias read-only replay arrays: serialize them only while
+        replay is quiescent, and never mutate the returned tensors.
+        """
+        def encode(value: object) -> object:
+            if not tensor_arrays or not isinstance(value, np.ndarray):
+                return value
+            # PyTorch cannot express NumPy's read-only flag. Saving only reads
+            # this shared storage; copying it would defeat the memory benefit.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", message="The given NumPy array is not writable",
+                    category=UserWarning,
+                )
+                return torch.from_numpy(value)
+
         trajectory_fields = tuple(_StoredTrajectory.__dataclass_fields__)
         return {
             "version": 1,
@@ -204,11 +223,11 @@ class FIFOReplayBuffer:
             "discount": self.discount,
             "priority_epsilon": self._priority_epsilon,
             "trajectories": [
-                {name: getattr(trajectory, name) for name in trajectory_fields}
+                {name: encode(getattr(trajectory, name)) for name in trajectory_fields}
                 for trajectory in self._trajectories
             ],
-            "transition_ids": self._transition_ids,
-            "priorities": self._priorities,
+            "transition_ids": encode(self._transition_ids),
+            "priorities": encode(self._priorities),
             "next_transition_id": self._next_transition_id,
             "transition_count": self._transition_count,
             "action_space_size": self._action_space_size,
