@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Schedule independent Battle Zone experiments with task spooler (tsp).
+# Schedule independent Atari experiments with task spooler (tsp).
 #
 # 1 / value_loss_coeff:    loss.value_weight=0.5
 # 2 / consistency_weight:  loss.consistency_weight=5
@@ -8,7 +8,7 @@
 # All experiments:
 # - enable W&B logging
 # - disable pre-final snapshot saving
-# - train on ALE/BattleZone-v5 using default settings otherwise
+# - train on ENVIRONMENT_ID (default ALE/BattleZone-v5) using default settings otherwise
 # - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
 # Usage:
@@ -23,6 +23,7 @@
 #   RUN_ID:          stable label for wandb/run directories (default timestamp)
 #   RUN_ROOT:        experiment root directory
 #   SEED:            random seed (default 2)
+#   ENVIRONMENT_ID:  Atari environment (default ALE/BattleZone-v5)
 #   SNAPSHOT_PATH:   optional checkpoint to resume from with `checkpoint.resume_pre_final_path`
 #   TRAINING_STEPS:  number of collection updates (default 100000)
 #   WANDB_PROJECT:   wandb project (default AtariAgent)
@@ -79,7 +80,7 @@ fi
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RUN_ROOT="${RUN_ROOT:-runs/tsp_sweep/$RUN_ID}"
-ENVIRONMENT_ID="ALE/BattleZone-v5"
+ENVIRONMENT_ID="${ENVIRONMENT_ID:-ALE/BattleZone-v5}"
 SEED="${SEED:-2}"
 TRAINING_STEPS="${TRAINING_STEPS:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
