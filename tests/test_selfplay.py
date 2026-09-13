@@ -125,10 +125,6 @@ class FakeAgent:
             predicted_values=tuple(
                 float(10 * self.calls + index) for index in range(len(results))
             ),
-            behavior_policies=np.tile(
-                np.array([[0.25, 0.75]], dtype=np.float64),
-                (len(results), 1),
-            ),
         )
 
 
@@ -242,14 +238,6 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     ]
     assert worker.total_vector_steps == 5
     assert worker.total_transitions == 10
-    assert worker.last_behavior_metrics is not None
-    expected_entropy = -(0.25 * np.log(0.25) + 0.75 * np.log(0.75))
-    assert worker.last_behavior_metrics.entropy == pytest.approx(expected_entropy)
-    assert worker.last_behavior_metrics.max_probability == pytest.approx(0.75)
-    assert worker.last_behavior_metrics.effective_action_count == pytest.approx(
-        np.exp(expected_entropy)
-    )
-    assert worker.last_behavior_metrics.root_count == 4
 
 
 def test_worker_waits_for_lookahead_and_keeps_it_in_next_block() -> None:

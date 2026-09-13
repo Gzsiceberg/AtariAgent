@@ -373,35 +373,19 @@ class TreeSearch:
         temperature: float = 1.0,
     ) -> tuple[SearchResult, ...]:
         """Sample actions and create per-root objects at the replay boundary."""
-        results, _ = self.materialize_results_with_behavior(
-            batch,
-            temperature=temperature,
-        )
-        return results
-
-    def materialize_results_with_behavior(
-        self,
-        batch: SearchBatchResult,
-        *,
-        temperature: float = 1.0,
-    ) -> tuple[tuple[SearchResult, ...], NDArray[np.float64] | None]:
-        """Materialize results and return PUCT's post-temperature policy."""
         if batch.selected_actions is not None:
-            return (
-                tuple(
-                    SearchResult(
-                        action=int(action),
-                        policy_target=policy,
-                        root_value=float(value),
-                    )
-                    for value, policy, action in zip(
-                        batch.root_values,
-                        batch.policy_targets,
-                        batch.selected_actions,
-                        strict=True,
-                    )
-                ),
-                None,
+            return tuple(
+                SearchResult(
+                    action=int(action),
+                    policy_target=policy,
+                    root_value=float(value),
+                )
+                for value, policy, action in zip(
+                    batch.root_values,
+                    batch.policy_targets,
+                    batch.selected_actions,
+                    strict=True,
+                )
             )
 
         self._validate_temperature(temperature)
@@ -423,7 +407,7 @@ class TreeSearch:
                 strict=True,
             )
         )
-        return results, action_policies
+        return results
 
     @staticmethod
     def _validate_temperature(temperature: float) -> None:

@@ -6,7 +6,6 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from atariagent.evaluation import EvaluationStats
-from atariagent.selfplay import BehaviorPolicyMetrics
 
 from .config import WandbConfig, environment_slug
 from .learner import TrainMetrics
@@ -42,7 +41,6 @@ class WandbLogger:
             for namespace, step_name in (
                 ("train", "train/update"),
                 ("self_play", "self_play/update"),
-                ("behavior", "behavior/update"),
                 ("eval", "eval/update"),
                 ("reanalysis", "reanalysis/update"),
             ):
@@ -145,28 +143,6 @@ class WandbLogger:
                 }
             )
         self._run.log(data)
-
-    def log_behavior_policy(
-        self,
-        metrics: BehaviorPolicyMetrics,
-        *,
-        total_transitions: int,
-        update: int,
-    ) -> None:
-        """Log PUCT's categorical behavior policy after action temperature."""
-        if self._run is None:
-            return
-        self._run.log(
-            {
-                "behavior/total_transitions": total_transitions,
-                "behavior/update": update,
-                "behavior/policy_entropy": metrics.entropy,
-                "behavior/max_action_probability": metrics.max_probability,
-                "behavior/effective_action_count": (
-                    metrics.effective_action_count
-                ),
-            }
-        )
 
     def log_self_play(
         self,

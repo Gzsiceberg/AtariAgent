@@ -947,12 +947,6 @@ def main(config: TrainAgentConfig) -> None:
                 self_play_progress.update(
                     worker.total_transitions - previous_transitions
                 )
-                if worker.last_behavior_metrics is not None:
-                    wandb_logger.log_behavior_policy(
-                        worker.last_behavior_metrics,
-                        total_transitions=worker.total_transitions,
-                        update=update,
-                    )
                 trajectories = tuple(flatten_trajectories(grouped))
                 completed_rewards = reward_tracker.add(trajectories)
                 self_play_episode_rewards.extend(completed_rewards)

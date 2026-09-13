@@ -57,16 +57,6 @@ FULL_EPISODE_DONE_KEY = "atariagent.full_episode_done"
 
 
 @dataclass(frozen=True, slots=True)
-class BehaviorPolicyMetrics:
-    """Mean PUCT action-policy diagnostics after temperature is applied."""
-
-    entropy: float
-    max_probability: float
-    effective_action_count: float
-    root_count: int
-
-
-@dataclass(frozen=True, slots=True)
 class GameTrajectory:
     """An immutable compact block from one environment and episode.
 
@@ -455,7 +445,6 @@ class SelfPlayWorker:
         self._next_block_ids = [0] * self.num_envs
         self._initialized = False
         self._closed = False
-        self.last_behavior_metrics: BehaviorPolicyMetrics | None = None
 
     def run(
         self,
@@ -485,10 +474,6 @@ class SelfPlayWorker:
         self._ensure_initialized()
         completed: list[list[GameTrajectory]] = [[] for _ in range(self.num_envs)]
         builders = self._builders
-        behavior_entropy_sum = 0.0
-        behavior_max_probability_sum = 0.0
-        behavior_effective_actions_sum = 0.0
-        behavior_root_count = 0
 
         for _ in range(steps):
             agent_output = self.agent.act(
@@ -498,21 +483,6 @@ class SelfPlayWorker:
                 gumbel_sampling=gumbel_sampling,
             )
             self._validate_agent_output(agent_output)
-            behavior_policies = agent_output.behavior_policies
-            if behavior_policies is not None:
-                log_policies = np.zeros_like(behavior_policies)
-                np.log(
-                    behavior_policies,
-                    out=log_policies,
-                    where=behavior_policies > 0.0,
-                )
-                entropies = -(behavior_policies * log_policies).sum(axis=-1)
-                behavior_entropy_sum += float(entropies.sum())
-                behavior_max_probability_sum += float(
-                    behavior_policies.max(axis=-1).sum()
-                )
-                behavior_effective_actions_sum += float(np.exp(entropies).sum())
-                behavior_root_count += int(behavior_policies.shape[0])
 
             for index, environment in enumerate(self.environments):
                 action = agent_output.actions[index]
@@ -596,20 +566,6 @@ class SelfPlayWorker:
 
             self.total_vector_steps += 1
 
-        self.last_behavior_metrics = (
-            BehaviorPolicyMetrics(
-                entropy=behavior_entropy_sum / behavior_root_count,
-                max_probability=(
-                    behavior_max_probability_sum / behavior_root_count
-                ),
-                effective_action_count=(
-                    behavior_effective_actions_sum / behavior_root_count
-                ),
-                root_count=behavior_root_count,
-            )
-            if behavior_root_count > 0
-            else None
-        )
         return tuple(tuple(blocks) for blocks in completed)
 
     def flush(self) -> tuple[tuple[GameTrajectory, ...], ...]:
@@ -732,7 +688,6 @@ def _stacked_observation_frames(
 
 
 __all__ = [
-    "BehaviorPolicyMetrics",
     "DiscreteActionSpace",
     "Environment",
     "EnvironmentFactory",

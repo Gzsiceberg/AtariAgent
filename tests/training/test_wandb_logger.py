@@ -6,7 +6,6 @@ import pytest
 import torch
 
 from atariagent.evaluation import EvaluationStats
-from atariagent.selfplay import BehaviorPolicyMetrics
 from atariagent.training import TrainMetrics, WandbLogger, wandb_run_name
 from atariagent.training.config import WandbConfig
 
@@ -131,16 +130,6 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
     logger = WandbLogger(run)
     stats = EvaluationStats.from_rewards((1.0, 2.0, 6.0))
 
-    logger.log_behavior_policy(
-        BehaviorPolicyMetrics(
-            entropy=0.5,
-            max_probability=0.75,
-            effective_action_count=1.5,
-            root_count=8,
-        ),
-        total_transitions=400,
-        update=100,
-    )
     logger.log_self_play(
         stats,
         recent_rewards=stats.rewards,
@@ -150,12 +139,7 @@ def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
     logger.log_evaluation(stats, update=100)
     logger.finish(exit_code=0)
 
-    behavior, self_play, evaluation = run.logged
-    assert ("behavior/*", "behavior/update") in run.defined_metrics
-    assert behavior["behavior/update"] == 100
-    assert behavior["behavior/policy_entropy"] == pytest.approx(0.5)
-    assert behavior["behavior/max_action_probability"] == pytest.approx(0.75)
-    assert behavior["behavior/effective_action_count"] == pytest.approx(1.5)
+    self_play, evaluation = run.logged
     assert ("self_play/*", "self_play/update") in run.defined_metrics
     assert self_play["self_play/update"] == 100
     assert self_play["self_play/reward_mean_10"] == pytest.approx(3.0)
