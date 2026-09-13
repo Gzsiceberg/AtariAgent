@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from atariagent.evaluation import EvaluationStats
-from atariagent.selfplay import BehaviorPolicyMetrics, GameTrajectory
+from atariagent.selfplay import BehaviorPolicyMetrics
 
 from .config import WandbConfig, environment_slug
 from .learner import TrainMetrics
@@ -38,8 +38,6 @@ class WandbLogger:
 
     def __init__(self, run: _WandbRun | None = None) -> None:
         self._run = run
-        self._completed_episodes = 0
-        self._time_limit_truncated_episodes = 0
         if run is not None:
             for namespace, step_name in (
                 ("train", "train/update"),
@@ -174,36 +172,6 @@ class WandbLogger:
                 "behavior/max_action_probability": metrics.max_probability,
                 "behavior/effective_action_count": (
                     metrics.effective_action_count
-                ),
-            }
-        )
-
-    def log_self_play_truncations(
-        self,
-        trajectories: Sequence[GameTrajectory],
-        *,
-        update: int,
-    ) -> None:
-        """Log cumulative timeout counts/rates since logger initialization.
-
-        Only boundary-owning blocks count, not overlapping bootstrap tails,
-        ordinary trajectory-length cuts, or episodic-life terminations.
-        """
-        if self._run is None:
-            return
-        completed = [t for t in trajectories if t.full_episode_done]
-        if not completed:
-            return
-        self._completed_episodes += len(completed)
-        self._time_limit_truncated_episodes += sum(t.truncated for t in completed)
-        self._run.log(
-            {
-                "self_play/update": update,
-                "self_play/time_limit_truncated_episodes": (
-                    self._time_limit_truncated_episodes
-                ),
-                "self_play/time_limit_truncation_rate": (
-                    self._time_limit_truncated_episodes / self._completed_episodes
                 ),
             }
         )
