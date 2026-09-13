@@ -12,7 +12,11 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_tsp_experiments
 
 @pytest.mark.parametrize(
     "number,name,override",
-    [("5", "fp32", "training.precision=fp32"), ("6", "per_v2", "replay.per_mode=v2")],
+    [
+        ("5", "fp32", "training.precision=fp32"),
+        ("6", "per_v2", "replay.per_mode=v2"),
+        ("7", "final_per_v2", "replay.final_per_mode=v2"),
+    ],
 )
 @pytest.mark.parametrize("selector", ["number", "name", "all"])
 def test_experiment(tmp_path, number, name, override, selector):
@@ -41,7 +45,7 @@ def test_experiment(tmp_path, number, name, override, selector):
     assert result.returncode == 0, result.stderr
     assert override in (run_root / name / "job.sh").read_text()
     jobs = list(run_root.glob("*/job.sh"))
-    assert len(jobs) == (7 if selection == "all" else 1)
+    assert len(jobs) == (8 if selection == "all" else 1)
     for job in jobs:
         if job.parent.name != name:
             assert override.split("=")[0] + "=" not in job.read_text()
