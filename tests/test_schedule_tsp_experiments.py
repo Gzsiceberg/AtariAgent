@@ -10,8 +10,13 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_tsp_experiments.sh"
 
 
-@pytest.mark.parametrize("selection", ["5", "fp32", "all"])
-def test_fp32_experiment(tmp_path, selection):
+@pytest.mark.parametrize(
+    "number,name,override",
+    [("5", "fp32", "training.precision=fp32"), ("6", "per_v2", "replay.per_mode=v2")],
+)
+@pytest.mark.parametrize("selector", ["number", "name", "all"])
+def test_experiment(tmp_path, number, name, override, selector):
+    selection = {"number": number, "name": name, "all": "all"}[selector]
     binaries = tmp_path / "bin"
     binaries.mkdir()
     tsp = binaries / "tsp"
@@ -34,12 +39,12 @@ def test_fp32_experiment(tmp_path, selection):
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    assert "training.precision=fp32" in (run_root / "fp32/job.sh").read_text()
+    assert override in (run_root / name / "job.sh").read_text()
     jobs = list(run_root.glob("*/job.sh"))
-    assert len(jobs) == (6 if selection == "all" else 1)
+    assert len(jobs) == (7 if selection == "all" else 1)
     for job in jobs:
-        if job.parent.name != "fp32":
-            assert "training.precision=" not in job.read_text()
+        if job.parent.name != name:
+            assert override.split("=")[0] + "=" not in job.read_text()
 
 
 @pytest.mark.parametrize("saved_login", [False, True])
