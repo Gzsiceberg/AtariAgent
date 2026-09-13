@@ -100,8 +100,10 @@ DRY_RUN="${DRY_RUN:-0}"
 # This checks credential availability, not validity against the W&B server.
 wandb_auth_available=0
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
+    printf 'WANDB_API_KEY is set; using environment credentials.\n'
     wandb_auth_available=1
 else
+    printf 'WANDB_API_KEY is missing or empty; checking saved W&B login.\n'
     # Disable the CLI prompt and keep credential details out of the output.
     if uv run wandb login --no-verify </dev/null >/dev/null 2>&1; then
         wandb_auth_available=1
