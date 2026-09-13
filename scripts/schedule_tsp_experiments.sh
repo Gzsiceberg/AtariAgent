@@ -30,7 +30,7 @@
 #   TRAINING_STEPS:  number of collection updates (default 100000)
 #   WANDB_PROJECT:   wandb project (default AtariAgent)
 #   WANDB_ENTITY:    wandb entity (default not set)
-#   WANDB_API_KEY:   W&B API key (prompted with hidden input if unset/empty)
+#   WANDB_API_KEY:   W&B API key (prompted with hidden input if no saved auth exists)
 #   RUNPOD_POD_ID:  if nonempty, queue pod shutdown after training
 #   DRY_RUN:         set to 1 to only print planned commands
 #
@@ -92,8 +92,33 @@ WANDB_ENTITY="${WANDB_ENTITY:-}"
 SNAPSHOT_PATH="${SNAPSHOT_PATH:-}"
 DRY_RUN="${DRY_RUN:-0}"
 
-# Pass credentials only through the environment, not generated job scripts.
-while [[ -z "${WANDB_API_KEY:-}" ]]; do
+# Check W&B's credential lookup (including saved login for WANDB_BASE_URL).
+# This checks credential availability, not validity against the W&B server.
+wandb_auth_available=0
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+    wandb_auth_available=1
+else
+    auth_status=0
+    uv run python - <<'PY' || auth_status=$?
+import sys
+
+import wandb
+from wandb.sdk.lib.apikey import api_key
+
+sys.exit(0 if api_key(settings=wandb.Settings()) else 10)
+PY
+    case "$auth_status" in
+        0) wandb_auth_available=1 ;;
+        10) ;; # No credentials found; prompt below.
+        *)
+            printf 'Error: unable to check W&B credentials (exit %s).\n' "$auth_status" >&2
+            exit "$auth_status"
+            ;;
+    esac
+fi
+
+# Pass entered credentials only through the environment, not generated job scripts.
+while [[ "$wandb_auth_available" == "0" && -z "${WANDB_API_KEY:-}" ]]; do
     printf 'W&B API key: ' >&2
     if ! IFS= read -r -s WANDB_API_KEY; then
         printf '\nError: unable to read WANDB_API_KEY; export it before running non-interactively.\n' >&2
@@ -104,7 +129,9 @@ while [[ -z "${WANDB_API_KEY:-}" ]]; do
         printf 'API key must not be empty.\n' >&2
     fi
 done
-export WANDB_API_KEY
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+    export WANDB_API_KEY
+fi
 
 mkdir -p "$(dirname -- "$RUN_ROOT")"
 if [[ "$DRY_RUN" != "1" ]]; then
