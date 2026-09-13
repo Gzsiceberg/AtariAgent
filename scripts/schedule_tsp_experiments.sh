@@ -98,23 +98,10 @@ wandb_auth_available=0
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
     wandb_auth_available=1
 else
-    auth_status=0
-    uv run python - <<'PY' || auth_status=$?
-import sys
-
-import wandb
-from wandb.sdk.lib.apikey import api_key
-
-sys.exit(0 if api_key(settings=wandb.Settings()) else 10)
-PY
-    case "$auth_status" in
-        0) wandb_auth_available=1 ;;
-        10) ;; # No credentials found; prompt below.
-        *)
-            printf 'Error: unable to check W&B credentials (exit %s).\n' "$auth_status" >&2
-            exit "$auth_status"
-            ;;
-    esac
+    # Disable the CLI prompt and keep credential details out of the output.
+    if uv run wandb login --no-verify </dev/null >/dev/null 2>&1; then
+        wandb_auth_available=1
+    fi
 fi
 
 # Pass entered credentials only through the environment, not generated job scripts.

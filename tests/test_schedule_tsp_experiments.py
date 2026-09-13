@@ -10,6 +10,41 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_tsp_experiments.sh"
 
 
+@pytest.mark.parametrize("saved_login", [False, True])
+def test_real_wandb_credential_lookup(tmp_path, saved_login):
+    pytest.importorskip("wandb")
+    home = tmp_path / "home"
+    home.mkdir()
+    netrc = home / ".netrc"
+    secret = "a" * 40
+    if saved_login:
+        netrc.write_text(f"machine api.wandb.ai login user password {secret}\n")
+        netrc.chmod(0o600)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("WANDB_")
+    }
+    env.update(
+        HOME=str(home),
+        NETRC=str(netrc),
+        WANDB_CONFIG_DIR=str(home / "config"),
+        WANDB_BASE_URL="https://api.wandb.ai",
+    )
+    # Exercise the real CLI with stdin disabled, as in the scheduler.
+    result = subprocess.run(
+        ["wandb", "login", "--no-verify"],
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        env=env,
+        timeout=20,
+    )
+    assert (result.returncode == 0) == saved_login, result.stderr
+    assert secret not in result.stdout + result.stderr
+
+
 @pytest.mark.parametrize(
     "key,status,user_input,success,prompt,lookup",
     [
@@ -18,7 +53,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_tsp_experiments
         ("", 10, "entered-secret\n", True, True, True),
         ("", 10, "\nentered-secret\n", True, True, True),
         ("", 10, "", False, True, True),
-        ("", 1, "", False, False, True),
+        ("", 1, "", False, True, True),
     ],
 )
 def test_wandb_credentials(tmp_path, key, status, user_input, success, prompt, lookup):
@@ -26,7 +61,10 @@ def test_wandb_credentials(tmp_path, key, status, user_input, success, prompt, l
     binaries.mkdir()
     for name, body in {
         "tsp": "exit 99\n",
-        "uv": 'touch "$AUTH_CHECK_MARKER"\nexit "$AUTH_STATUS"\n',
+        "uv": (
+            '[[ "$*" == "run wandb login --no-verify" ]] || exit 99\n'
+            'touch "$AUTH_CHECK_MARKER"\nexit "$AUTH_STATUS"\n'
+        ),
     }.items():
         path = binaries / name
         path.write_text("#!/usr/bin/env bash\n" + body)
