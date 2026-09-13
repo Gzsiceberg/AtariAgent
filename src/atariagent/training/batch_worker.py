@@ -215,17 +215,25 @@ class BatchWorker:
                     self._raise_failure()
 
     def complete(self, ready: ReadyBatch, priorities: Tensor) -> None:
-        """Apply priorities and release this batch's bounded-capacity slot."""
+        """Update valid-root priorities, preserving priorities without targets."""
         self._require_open()
         with self._outstanding_lock:
             if ready.token not in self._outstanding:
                 raise ValueError("batch was already completed or is not owned")
             self._outstanding.remove(ready.token)
         try:
-            with self._replay_lock:
-                self.replay.update_priorities(
-                    ready.gpu_batch.indices, priorities
-                )
+            # Always transfer, even if every root is invalid: this synchronizes
+            # learner completion before releasing the pinned batch's slot.
+            cpu_priorities = priorities.detach().cpu()
+            valid_roots = ready.cpu_batch.value_mask[:, 0]
+            # Missing bootstrap targets contain placeholder zeros, not valid
+            # zero returns. Their prediction errors must not change replay PER.
+            if valid_roots.any():
+                with self._replay_lock:
+                    self.replay.update_priorities(
+                        ready.cpu_batch.indices[valid_roots],
+                        cpu_priorities[valid_roots],
+                    )
         finally:
             self._slots.release()
 

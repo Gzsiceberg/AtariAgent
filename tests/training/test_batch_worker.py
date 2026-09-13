@@ -2,10 +2,14 @@ from dataclasses import replace
 from threading import Event, Lock
 from time import monotonic, sleep
 
+import numpy as np
 import pytest
 import torch
 
+from atariagent.replay import FIFOReplayBuffer
 from atariagent.replay_batch import ReplayBatch
+from atariagent.search import SearchResult
+from atariagent.selfplay import GameTrajectory
 from atariagent.training import BatchWorker
 from atariagent.training.reanalysis import ReadyReanalysis
 
@@ -121,6 +125,73 @@ def test_worker_anneals_priority_beta_by_learner_step() -> None:
         worker.wait_idle()
 
     assert replay.priority_betas == pytest.approx([0.7])
+
+
+@pytest.mark.parametrize("valid_roots", [[True, False], [False, False], [True, True]])
+def test_worker_only_updates_priorities_with_valid_root_targets(valid_roots) -> None:
+    root_mask = torch.tensor(valid_roots)
+    batch = replace(
+        _batch().without_value_bootstraps(),
+        # Recurrent validity must not determine the root's priority update.
+        value_mask=torch.stack((root_mask, ~root_mask), dim=1),
+    )
+    replay = _FakeReplay(lambda _: batch)
+    candidates = torch.tensor([34.586, 123.0])
+    with BatchWorker(
+        replay,  # type: ignore[arg-type]
+        batch_size=2,
+        device="cpu",
+        max_in_flight=1,
+        ready_prefetch=1,
+        timeout_seconds=2.0,
+    ) as worker:
+        worker.start(0, 1)
+        ready = worker.next_ready()
+        worker.complete(ready, candidates)
+        worker.wait_idle()
+        assert worker.outstanding_count == 0
+
+    if root_mask.any():
+        indices, priorities = replay.priority_updates[0]
+        assert len(replay.priority_updates) == 1
+        torch.testing.assert_close(indices, batch.indices[root_mask])
+        torch.testing.assert_close(priorities, candidates[root_mask])
+    else:
+        assert replay.priority_updates == []
+
+
+@pytest.mark.parametrize("terminated", [False, True])
+def test_worker_preserves_invalid_timeout_priorities_but_updates_terminal_zeros(
+    terminated: bool,
+) -> None:
+    replay = FIFOReplayBuffer(4, unroll_steps=1, td_steps=2)
+    replay.add(GameTrajectory(
+        environment_index=0, episode_id=0, block_id=0, stack_size=1,
+        frames=tuple(np.zeros((1, 2, 2), dtype=np.uint8) for _ in range(5)),
+        actions=(0,) * 4, rewards=(0.0,) * 4, raw_rewards=(0.0,) * 4,
+        search_results=tuple(
+            SearchResult(action=0, policy_target=(0.5, 0.5), root_value=0.0)
+            for _ in range(4)
+        ),
+        predicted_values=(1.0,) * 4,
+        terminated=terminated, truncated=not terminated, full_episode_done=True,
+    ))
+    initial_priorities = replay.priorities
+    with BatchWorker(
+        replay, batch_size=4, device="cpu", max_in_flight=1,
+        ready_prefetch=1, timeout_seconds=2.0,
+    ) as worker:
+        worker.start(0, 1)
+        ready = worker.next_ready()
+        # Both valid terminal zeros and invalid placeholders have value zero.
+        assert torch.all(ready.cpu_batch.value_targets[:, 0] == 0)
+        assert ready.cpu_batch.value_mask[:, 0].sum().item() == (4 if terminated else 2)
+        worker.complete(ready, torch.full((4,), 34.586))
+        worker.wait_idle()
+
+    expected = initial_priorities.copy()
+    expected[:4 if terminated else 2] = 34.586
+    np.testing.assert_allclose(replay.priorities, expected)
 
 
 def test_worker_propagates_sampling_failure() -> None:

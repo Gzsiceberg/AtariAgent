@@ -44,6 +44,7 @@ class TrainMetrics:
     search_target_max_probability: Tensor
     search_target_effective_actions: Tensor
     learning_rate: float
+    # Candidate root errors; BatchWorker applies only entries with valid values.
     priorities: Tensor
 
 
