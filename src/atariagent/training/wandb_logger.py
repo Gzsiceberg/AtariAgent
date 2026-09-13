@@ -116,6 +116,13 @@ class WandbLogger:
                 metrics.search_target_effective_actions.item()
             ),
         }
+        for name in (
+            "importance_weight_mean",
+            "importance_weight_ess_fraction",
+            "representation_feature_variance",
+            "dynamics_feature_variance",
+        ):
+            data[f"train/{name}"] = getattr(metrics, name).item()
         if policy_roots_requested > 0:
             data.update(
                 {

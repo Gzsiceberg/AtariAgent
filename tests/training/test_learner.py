@@ -163,6 +163,17 @@ def test_agent_train_step_updates_all_supervised_output_heads() -> None:
     assert metrics.consistency_loss.abs() > 0.0
     assert metrics.learning_rate == pytest.approx(0.001)
     assert metrics.priorities == pytest.approx((1.000001, 1.000001))
+    assert metrics.importance_weight_mean.item() == pytest.approx(1.0)
+    assert metrics.importance_weight_ess_fraction.item() == pytest.approx(1.0)
+    for name in (
+        "importance_weight_mean", "importance_weight_ess_fraction",
+        "representation_feature_variance", "dynamics_feature_variance",
+    ):
+        diagnostic = getattr(metrics, name)
+        assert not diagnostic.requires_grad
+        assert diagnostic.ndim == 0
+        assert torch.isfinite(diagnostic)
+        assert diagnostic >= 0
     assert not torch.equal(policy_output.weight, initial_policy)
     assert not torch.equal(value_output.weight, initial_value)
     assert not torch.equal(reward_output.weight, initial_reward)

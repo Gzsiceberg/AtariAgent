@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import torch
+from einops import rearrange
 from torch import Tensor, nn
 
 from atariagent.data import Transforms
@@ -43,6 +44,11 @@ class TrainMetrics:
     search_target_entropy: Tensor
     search_target_max_probability: Tensor
     search_target_effective_actions: Tensor
+    importance_weight_mean: Tensor
+    importance_weight_ess_fraction: Tensor
+    # Across-sample population variance, averaged over latent coordinates.
+    representation_feature_variance: Tensor
+    dynamics_feature_variance: Tensor
     learning_rate: float
     # Candidate root errors; BatchWorker applies only entries with valid values.
     priorities: Tensor
@@ -130,6 +136,37 @@ class _LearnerUnroll(nn.Module):
                 mask.sum(),
             )
         )
+
+    @staticmethod
+    @torch.no_grad()
+    def _importance_statistics(weights: Tensor) -> Tensor:
+        """Measure loss scaling and weight concentration, without gradients.
+
+        ESS / batch_size measures weight concentration, not the number of
+        distinct replay states sampled. Uniform positive weights give one.
+        """
+        weights = weights.float()
+        ess_fraction = weights.sum().square() / (
+            weights.square().sum() * weights.numel()
+        ).clamp_min(torch.finfo(torch.float32).tiny)
+        return torch.stack((weights.mean(), ess_fraction))
+
+    @staticmethod
+    @torch.no_grad()
+    def _feature_variance(state: Tensor, mask: Tensor) -> Tensor:
+        """Mean coordinate-wise variance across valid samples (not space).
+
+        A spatially varying but observation-independent state must report zero.
+        Empty and singleton selections have zero population variance. Inputs
+        come from the existing augmented training forward; no extra BN updates.
+        """
+        features = rearrange(state.float(), "batch ... -> batch (...)")
+        valid = mask.bool()[:, None]
+        count = mask.float().sum().clamp_min(1.0)
+        selected = torch.where(valid, features, 0.0)
+        mean = selected.sum(dim=0) / count
+        centered = torch.where(valid, features - mean, 0.0)
+        return (centered.square().sum(dim=0) / count).mean()
 
     def _decode_values(self, logits: Tensor) -> Tensor:
         """Decode scalar predictions without the eager decoder's cached support."""
@@ -226,6 +263,10 @@ class _LearnerUnroll(nn.Module):
         policy_statistics = observations.new_zeros(4, dtype=torch.float32)
 
         state = self.representation(observations)
+        representation_feature_variance = self._feature_variance(
+            state, policy_mask[:, 0]
+        )
+        dynamics_variance_sum = observations.new_zeros((), dtype=torch.float32)
         policy_logits, value_logits = self.prediction(state)
         root_policy_loss, root_value_loss = self._prediction_losses(
             policy_logits,
@@ -257,6 +298,9 @@ class _LearnerUnroll(nn.Module):
                 actions[:, step],
                 hidden,
             )
+            dynamics_variance_sum += self._feature_variance(
+                state, action_mask[:, step]
+            ) * action_mask[:, step].sum()
             reward_error += (
                 (self._decode_values(value_prefix_logits) - prefix_targets[step]).abs()
                 * action_mask[:, step]
@@ -353,6 +397,9 @@ class _LearnerUnroll(nn.Module):
             policy_diagnostics[1],
             policy_diagnostics[2],
             normalized_losses,
+            self._importance_statistics(importance_weights),
+            representation_feature_variance,
+            dynamics_variance_sum / valid_actions,
         )
 
 
@@ -622,6 +669,9 @@ class Trainer:
                 search_target_max_probability,
                 search_target_effective_actions,
                 normalized_losses,
+                importance_statistics,
+                representation_feature_variance,
+                dynamics_feature_variance,
             ) = outputs
 
         loss.backward()
@@ -647,6 +697,10 @@ class Trainer:
             search_target_effective_actions=(
                 search_target_effective_actions.detach()
             ),
+            importance_weight_mean=importance_statistics[0],
+            importance_weight_ess_fraction=importance_statistics[1],
+            representation_feature_variance=representation_feature_variance,
+            dynamics_feature_variance=dynamics_feature_variance,
             learning_rate=learning_rate,
             priorities=new_priorities.detach(),
         )

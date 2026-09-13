@@ -202,6 +202,14 @@ uv run python scripts/train_agent.py \
 
 The W&B entity, project, and tags can also be set through overrides such as `wandb.entity=<entity>` and `wandb.tags=[atari,baseline]`. `train/value_loss` and `train/reward_loss` report MAE, `mean(abs(prediction - target))`, for decoded scalar values and cumulative reward prefixes over valid targets, without replay weighting; optimization still uses categorical cross-entropy. Search-target diagnostics include entropy, maximum action probability, and effective action count `exp(H)`. Reanalysis diagnostics include exact cache hit rate.
 
+Four learning-signal metrics are logged at `training.log_every` under `train/`:
+- `importance_weight_mean`: mean replay importance weight; small values suppress the data-loss scale.
+- `importance_weight_ess_fraction`: `(sum(w)^2 / sum(w^2)) / batch_size`; near 1 means balanced weights, small values mean concentrated weights.
+- `representation_feature_variance`: across-sample population variance of root latent features, averaged over coordinates.
+- `dynamics_feature_variance`: the same variance at each unroll depth, averaged by valid sample count; padding is excluded.
+
+Feature variances approaching zero can indicate collapse. They use the existing augmented training forwards (not extra inference passes), so compare trends rather than applying a universal cutoff. All four diagnostics are computed without gradients and do not change the training objective.
+
 ## Using AtariAgent as a research base
 
 The main extension points are:
