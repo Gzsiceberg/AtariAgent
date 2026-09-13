@@ -133,7 +133,6 @@ def create_environments(config: TrainAgentConfig) -> list[Environment]:
                     screen_size=config.environment.screen_size,
                     max_episode_steps=config.environment.max_episode_steps,
                     time_limit_mode=config.environment.time_limit_mode,
-                    reset_game_on_timeout=config.environment.reset_game_on_timeout,
                     grayscale_obs=config.environment.grayscale,
                     terminal_on_life_loss=config.environment.episodic_life,
                 )

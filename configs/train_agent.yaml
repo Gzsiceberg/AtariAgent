@@ -16,8 +16,6 @@ environment:
   # episodic_life: each life-loss reset starts a new budget (V2 wrapper order).
   # Without episodic_life enabled, both modes limit the full game.
   time_limit_mode: episodic_life # full_game or episodic_life
-  # Only for episodic_life time limits; false continues the game after timeout.
-  reset_game_on_timeout: true
   grayscale: false
   episodic_life: true
 

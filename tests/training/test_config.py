@@ -60,19 +60,6 @@ def test_replay_per_mode_can_select_v2() -> None:
     assert config.replay.per_mode == "v2"
 
 
-def test_timeout_game_reset_can_be_disabled() -> None:
-    register_train_agent_config()
-    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
-    with initialize_config_dir(version_base=None, config_dir=config_dir):
-        default = compose(config_name="train_agent")
-        disabled = compose(
-            config_name="train_agent",
-            overrides=["environment.reset_game_on_timeout=false"],
-        )
-    assert default.environment.reset_game_on_timeout is True
-    assert disabled.environment.reset_game_on_timeout is False
-
-
 def test_timeout_terminal_targets_can_be_enabled() -> None:
     register_train_agent_config()
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")

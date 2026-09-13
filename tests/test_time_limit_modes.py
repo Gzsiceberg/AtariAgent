@@ -75,11 +75,15 @@ def test_life_reset_time_budget_and_timeout_reset(
             _, _, terminated, truncated, info = env.step(1)
             assert not terminated
             assert truncated == (step == remaining_steps - 1)
-            assert info[FULL_EPISODE_DONE_KEY] == truncated
+            assert info[FULL_EPISODE_DONE_KEY] == (truncated and mode == "full_game")
 
-        env.reset()  # A timeout must reset the game, not just advance a no-op.
-        assert base_environment.reset_calls == 2
-        assert base_environment.steps == 0
+        env.reset()
+        if mode == "full_game":
+            assert base_environment.reset_calls == 2
+            assert base_environment.steps == 0
+        else:
+            assert base_environment.reset_calls == 1
+            assert base_environment.steps == 6
     finally:
         env.close()
 
@@ -112,11 +116,10 @@ def test_default_keeps_full_game_wrapper_order(base_environment):
         env.close()
 
 
-@pytest.mark.parametrize("reset_game", [False, True])
-def test_episodic_life_timeout_restart_is_optional(base_environment, reset_game):
+def test_episodic_life_timeout_continues_game_with_fresh_budget(base_environment):
     env = make_atari_environment(
         "mock", max_episode_steps=3, time_limit_mode="episodic_life",
-        terminal_on_life_loss=True, reset_game_on_timeout=reset_game,
+        terminal_on_life_loss=True,
     )
     try:
         env.reset()
@@ -125,35 +128,16 @@ def test_episodic_life_timeout_restart_is_optional(base_environment, reset_game)
         for _ in range(3):
             _, _, terminated, truncated, info = env.step(1)
         assert truncated and not terminated
-        assert info[FULL_EPISODE_DONE_KEY] == reset_game
+        assert not info[FULL_EPISODE_DONE_KEY]
         env.reset()
-        assert base_environment.reset_calls == (2 if reset_game else 1)
-        assert base_environment.steps == (0 if reset_game else 6)
-        if not reset_game:
-            # Continuing the game still starts a fresh time budget.
-            for step in range(3):
-                _, _, terminated, truncated, info = env.step(1)
-                assert not terminated
-                assert truncated == (step == 2)
-                assert not info[FULL_EPISODE_DONE_KEY]
-    finally:
-        env.close()
-
-
-@pytest.mark.parametrize("mode", ["full_game", "episodic_life"])
-def test_disabled_timeout_restart_does_not_affect_non_life_limits(
-    base_environment, mode
-):
-    env = make_atari_environment(
-        "mock", max_episode_steps=3, time_limit_mode=mode,
-        terminal_on_life_loss=False, reset_game_on_timeout=False,
-    )
-    try:
-        env.reset()
-        for _ in range(3):
-            env.step(1)
-        env.reset()
-        assert base_environment.reset_calls == 2
+        assert base_environment.reset_calls == 1
+        assert base_environment.steps == 6
+        # Continuing the game still starts a fresh time budget.
+        for step in range(3):
+            _, _, terminated, truncated, info = env.step(1)
+            assert not terminated
+            assert truncated == (step == 2)
+            assert not info[FULL_EPISODE_DONE_KEY]
     finally:
         env.close()
 
