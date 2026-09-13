@@ -1,6 +1,5 @@
 """Exercise the scheduler with isolated tsp queues and no actual training."""
 
-import csv
 import json
 import os
 from pathlib import Path
@@ -69,6 +68,8 @@ done
         "TEST_PYTHON": sys.executable,
         "RUN_ROOT": str(tmp_path / "runs with spaces"),
         "DRY_RUN": "0",
+        "START_GAME": "1",
+        "END_GAME": "26",
         "WANDB_PROJECT": "test-project",
         "WANDB_ENTITY": "test-entity",
         "TRAINING_CALLS": str(tmp_path / "training_calls"),
@@ -120,6 +121,56 @@ def test_wandb_name_does_not_duplicate_default_seed(batch, run_id, suffix):
     ) in args
 
 
+def test_three_ranges_cover_all_games_with_isolated_outputs(batch):
+    root, env = batch
+    env = {**env, "DRY_RUN": "1"}
+    env.pop("RUN_ROOT")
+    selected = []
+    for start, end in ((1, 9), (10, 18), (19, 26)):
+        result = run_batch(root, {
+            **env, "START_GAME": str(start), "END_GAME": str(end),
+        })
+        assert result.returncode == 0, result.stderr
+        run_root = root / f"runs/game_experiments/test-run/games_{start}-{end}"
+        games = (run_root / "games.tsv").read_text().splitlines()
+        assert len(games) == end - start + 1
+        assert len(list(run_root.glob("*/default/job.sh"))) == len(games)
+        selected.extend(games)
+    assert len(set(selected)) == 26
+    assert selected[0] == "asterix|ALE/Asterix-v5"
+    assert selected[9] == "crazy-climber|ALE/CrazyClimber-v5"
+    assert selected[18] == "kung-fu-master|ALE/KungFuMaster-v5"
+    assert selected[-1] == "up-n-down|ALE/UpNDown-v5"
+    assert not Path(env["TS_SOCKET"]).exists()
+
+
+@pytest.mark.parametrize("start,end", [
+    ("0", "9"), ("10", "9"), ("1", "27"), ("abc", "26"),
+    ("01", "9"), ("1", "999999999999999999999"),
+])
+def test_invalid_game_range(batch, start, end):
+    root, env = batch
+    result = run_batch(root, {**env, "START_GAME": start, "END_GAME": end})
+    assert result.returncode != 0
+    assert "Game range must satisfy" in result.stderr
+    assert not Path(env["RUN_ROOT"]).exists()
+
+
+def test_single_game_range_schedules_only_selected_game(batch):
+    root, env = batch
+    env = {**env, "START_GAME": "26", "END_GAME": "26"}
+    result = run_batch(root, env)
+    assert result.returncode == 0, result.stderr
+    jobs = (Path(env["RUN_ROOT"]) / "tsp_jobs.tsv").read_text().splitlines()
+    assert [line.split("\t")[1] for line in jobs] == ["up-n-down"]
+    subprocess.run(
+        ["tsp", "-w", jobs[-1].split("\t")[0]], env=env, check=True, timeout=10,
+    )
+    assert Path(env["TRAINING_CALLS"]).read_text().splitlines() == [
+        "environment.id=ALE/UpNDown-v5",
+    ]
+
+
 def test_dry_run_generates_simple_jobs(batch):
     root, env = batch
     result = run_batch(root, {**env, "DRY_RUN": "1"})
@@ -149,9 +200,9 @@ def test_games_run_once_and_failure_does_not_block_queue(batch, fail):
     assert result.returncode == 0, result.stderr
     run_root = Path(env["RUN_ROOT"])
     jobs = (run_root / "tsp_jobs.tsv").read_text().splitlines()
-    assert len(jobs) == 27
-    assert jobs[-1].endswith("\tsummary")
-    assert len({line.split("\t")[0] for line in jobs}) == 27
+    assert len(jobs) == 26
+    assert all(not line.endswith("\tsummary") for line in jobs)
+    assert len({line.split("\t")[0] for line in jobs}) == 26
     outcomes = [
         subprocess.run(
             ["tsp", "-w", line.split("\t")[0]], env=env, timeout=15,
@@ -159,7 +210,7 @@ def test_games_run_once_and_failure_does_not_block_queue(batch, fail):
         ).returncode
         for line in jobs
     ]
-    expected_outcomes = [0] * 27
+    expected_outcomes = [0] * 26
     if fail:
         expected_outcomes[1] = 7
     assert outcomes == expected_outcomes
@@ -172,10 +223,7 @@ def test_games_run_once_and_failure_does_not_block_queue(batch, fail):
         assert log.read_text() == "training stdout\ntraining stderr\n"
     assert len(list(run_root.glob("*/default/training.log"))) == 26
     assert not (run_root / "batch_status.txt").exists()
-    with (run_root / "results.csv").open() as source:
-        rows = list(csv.DictReader(source))
-    assert len(rows) == 28
-    assert {"human_paper", "efficientzero_paper", "efficientzero_paper_v2"} <= rows[0].keys()
+    assert not (run_root / "results.csv").exists()
 
 
 def test_launcher_exits_without_waiting_or_changing_slots(batch):
@@ -191,7 +239,7 @@ def test_launcher_exits_without_waiting_or_changing_slots(batch):
     assert subprocess.check_output(["tsp", "-S"], env=env, text=True).strip() == "3"
     assert not Path(env["TRAINING_CALLS"]).exists()
     jobs = (Path(env["RUN_ROOT"]) / "tsp_jobs.tsv").read_text().splitlines()
-    assert len(jobs) == 27
+    assert len(jobs) == 26
     for line in jobs:
         assert subprocess.check_output(
             ["tsp", "-s", line.split("\t")[0]], env=env, text=True,
@@ -216,21 +264,11 @@ def test_rerun_skips_completed_games_and_schedules_missing_or_incomplete(batch):
     assert result.returncode == 0, result.stderr
     assert result.stdout.count("Skipping completed game:") == 24
     jobs = (run_root / "tsp_jobs.tsv").read_text().splitlines()
-    assert [line.split("\t")[1] for line in jobs] == ["bank-heist", "alien", "summary"]
+    assert [line.split("\t")[1] for line in jobs] == ["bank-heist", "alien"]
     for line in jobs:
         subprocess.run(["tsp", "-w", line.split("\t")[0]], env=env, check=True, timeout=10)
-    with (run_root / "results.csv").open() as source:
-        rows = {row["game"]: row for row in csv.DictReader(source)}
-    assert rows["alien"]["status"] == "pending"
-    assert rows["bank-heist"]["status"] == "partial"
-    assert rows["asterix"]["atariagent_mean"] == "100.0"
-    assert not (run_root / "paper_scores.csv").exists()
-    with (root / "data/atari_100k_paper_scores.csv").open() as source:
-        reader = csv.DictReader(source)
-        reader.fieldnames = [name.strip() for name in reader.fieldnames]
-        reference = next(row for row in reader if row["game"].strip() == "asterix")
-    assert float(rows["asterix"]["efficientzero_paper_v2"]) == float(reference["efficientzero_v2"])
-    # Mark remaining games complete; rerun must enqueue only a fresh summary.
+    assert not (run_root / "results.csv").exists()
+    # Mark remaining games complete; rerun must enqueue nothing.
     for game in ("bank-heist", "alien"):
         path = run_root / game / "default/evaluations/agent_evaluations.json"
         path.write_text(json.dumps({"evaluations": [
@@ -240,38 +278,28 @@ def test_rerun_skips_completed_games_and_schedules_missing_or_incomplete(batch):
     assert result.returncode == 0, result.stderr
     assert result.stdout.count("Skipping completed game:") == 26
     updated_jobs = (run_root / "tsp_jobs.tsv").read_text().splitlines()
-    assert updated_jobs[:-1] == jobs
-    assert updated_jobs[-1].endswith("\tsummary")
-    subprocess.run(
-        ["tsp", "-w", updated_jobs[-1].split("\t")[0]], env=env, check=True, timeout=10,
-    )
-    with (run_root / "results.csv").open() as source:
-        rows = {row["game"]: row for row in csv.DictReader(source)}
-    assert rows["alien"]["status"] == "complete"
-    assert rows["alien"]["atariagent_mean"] == "200.0"
-    assert rows["normed-mean"]["aggregate_game_count"] == "26"
+    assert updated_jobs == jobs
+    assert "Scheduled 0 game jobs" in result.stdout
+    assert not (run_root / "results.csv").exists()
     assert not (run_root / "summary-job.sh").exists()
     assert not list(run_root.glob("summary-job.*.sh"))
     assert not list(run_root.glob(".*.lock"))
 
 
-def test_summary_is_queued_directly_after_games(batch):
+def test_no_summary_is_queued_after_games(batch):
     root, env = batch
     env["BLOCK_GAME"] = "ALE/Asterix-v5"
     result = run_batch(root, env)
     assert result.returncode == 0, result.stderr
     run_root = Path(env["RUN_ROOT"])
     jobs = (run_root / "tsp_jobs.tsv").read_text().splitlines()
-    summary_id = jobs[-1].split("\t")[0]
-    assert subprocess.check_output(
-        ["tsp", "-s", summary_id], env=env, text=True,
-    ).strip() == "queued"
-    info = subprocess.check_output(["tsp", "-i", summary_id], env=env, text=True)
-    assert "Command: uv run python scripts/summarize_game_experiments.py summarize" in info
-    assert not (run_root / "results.csv").exists()
+    assert len(jobs) == 26
+    assert jobs[-1].endswith("\tup-n-down")
+    assert "Summary command:" not in result.stdout
+    last_job_id = jobs[-1].split("\t")[0]
     Path(env["RELEASE_TRAINING"]).touch()
-    subprocess.run(["tsp", "-w", summary_id], env=env, check=True, timeout=10)
-    assert (run_root / "results.csv").exists()
+    subprocess.run(["tsp", "-w", last_job_id], env=env, check=True, timeout=10)
+    assert not (run_root / "results.csv").exists()
 
 
 def test_seed_defaults_and_explicit_override_are_isolated(batch):

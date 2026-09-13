@@ -3,7 +3,7 @@
 # Uses configs/train_agent.yaml defaults, enables W&B, and disables the large
 # pre-final snapshot. Each game runs once; failures do not block other games.
 # This script exits after enqueueing. No supervision or power management.
-# Run only one batch at a time; wait for its summary before rerunning.
+# Run only one batch per output directory; wait for its jobs to finish before rerunning.
 #
 # Usage:
 #   uv sync --extra wandb --frozen
@@ -14,16 +14,18 @@
 # Optional env vars:
 #   SEED:           training seed (default 2)
 #   RUN_ID:         run label (default seed_$SEED)
-#   RUN_ROOT:       output root (default runs/game_experiments/$RUN_ID)
+#   RUN_ROOT:       output root (default runs/game_experiments/$RUN_ID;
+#                   partial ranges append /games_START-END)
+#   START_GAME:     first game number, inclusive (default 1)
+#   END_GAME:       last game number, inclusive (default 26)
+#   TS_SOCKET:      task-spooler queue socket (use a separate queue per instance)
 #   WANDB_PROJECT:  W&B project (default AtariAgent)
 #   WANDB_ENTITY:   optional W&B entity
 #   DRY_RUN:        set to 1 to generate scripts without scheduling
 #
-# Requires tsp -S 1 so the summary runs after all games.
 # Monitor with tsp -l or tsp -t JOB_ID.
-# Job IDs (including the final summary job) are recorded in $RUN_ROOT/tsp_jobs.tsv.
-# The summary job updates $RUN_ROOT/results.csv, comparing available evaluations
-# with data/atari_100k_paper_scores.csv (random, human, EfficientZero V1/V2 scores).
+# Game job IDs are recorded in $RUN_ROOT/tsp_jobs.tsv.
+# No summary job is scheduled.
 # Rerun the same command after the batch finishes to skip completed games
 # and schedule the rest.
 # Completion means the final evaluation reached update 120000. Incomplete games
@@ -32,6 +34,17 @@
 # Examples:
 #   SEED=3 ./scripts/train_game_experiments.sh
 #   RUN_ID=my-old-run SEED=2 ./scripts/train_game_experiments.sh
+#
+# Three instances (on separate machines, the default tsp queue is fine):
+#   START_GAME=1 END_GAME=9 ./scripts/train_game_experiments.sh
+#   START_GAME=10 END_GAME=18 ./scripts/train_game_experiments.sh
+#   START_GAME=19 END_GAME=26 ./scripts/train_game_experiments.sh
+# On the same machine, in each terminal first set a unique queue, e.g.:
+#   export TS_SOCKET="/tmp/atari-${USER}-part1.socket"  # part2 / part3 elsewhere
+#   tsp -S 1
+# Also select a different GPU per terminal with CUDA_VISIBLE_DEVICES if needed.
+# Explicit RUN_ROOT overrides range isolation: use distinct roots per instance.
+# Each range gets its own manifest and job list.
 
 set -Eeuo pipefail
 
@@ -48,8 +61,19 @@ if [[ ! "$SEED" =~ ^(0|[1-9][0-9]{0,9})$ ]] || (( SEED > 4294967295 )); then
     printf 'SEED must be an integer between 0 and 4294967295.\n' >&2
     exit 1
 fi
+START_GAME="${START_GAME:-1}"
+END_GAME="${END_GAME:-26}"
+if [[ ! "$START_GAME" =~ ^[1-9][0-9]?$ || ! "$END_GAME" =~ ^[1-9][0-9]?$ ]] ||
+    (( START_GAME > END_GAME || END_GAME > 26 )); then
+    printf 'Game range must satisfy 1 <= START_GAME <= END_GAME <= 26 (integers, no leading zeros).\n' >&2
+    exit 1
+fi
 RUN_ID="${RUN_ID:-seed_$SEED}"
-RUN_ROOT="${RUN_ROOT:-runs/game_experiments/$RUN_ID}"
+DEFAULT_RUN_ROOT="runs/game_experiments/$RUN_ID"
+if (( START_GAME != 1 || END_GAME != 26 )); then
+    DEFAULT_RUN_ROOT+="/games_${START_GAME}-${END_GAME}"
+fi
+RUN_ROOT="${RUN_ROOT:-$DEFAULT_RUN_ROOT}"
 EXPERIMENT_NAME="default"
 WANDB_RUN_SUFFIX=""
 if [[ "$RUN_ID" != "seed_$SEED" ]]; then
@@ -81,33 +105,36 @@ fi
 printf '%s\n' "$SEED" >"$RUN_ROOT/seed.txt"
 
 GAME_MANIFEST="$RUN_ROOT/games.tsv"
-cat >"$GAME_MANIFEST" <<'GAMES'
-asterix|ALE/Asterix-v5
-bank-heist|ALE/BankHeist-v5
-battle-zone|ALE/BattleZone-v5
-alien|ALE/Alien-v5
-amidar|ALE/Amidar-v5
-assault|ALE/Assault-v5
-boxing|ALE/Boxing-v5
-breakout|ALE/Breakout-v5
-chopper-command|ALE/ChopperCommand-v5
-crazy-climber|ALE/CrazyClimber-v5
-demon-attack|ALE/DemonAttack-v5
-freeway|ALE/Freeway-v5
-frostbite|ALE/Frostbite-v5
-gopher|ALE/Gopher-v5
-hero|ALE/Hero-v5
-jamesbond|ALE/Jamesbond-v5
-kangaroo|ALE/Kangaroo-v5
-krull|ALE/Krull-v5
-kung-fu-master|ALE/KungFuMaster-v5
-ms-pacman|ALE/MsPacman-v5
-pong|ALE/Pong-v5
-private-eye|ALE/PrivateEye-v5
-qbert|ALE/Qbert-v5
-road-runner|ALE/RoadRunner-v5
-seaquest|ALE/Seaquest-v5
-up-n-down|ALE/UpNDown-v5
+# Stable game IDs: do not renumber when changing scheduling order.
+# Keep the two-column manifest format used by the summary tool.
+awk -F '|' -v start="$START_GAME" -v end="$END_GAME" \
+    '$1 >= start && $1 <= end { print $2 "|" $3 }' >"$GAME_MANIFEST" <<'GAMES'
+1|asterix|ALE/Asterix-v5
+2|bank-heist|ALE/BankHeist-v5
+3|battle-zone|ALE/BattleZone-v5
+4|alien|ALE/Alien-v5
+5|amidar|ALE/Amidar-v5
+6|assault|ALE/Assault-v5
+7|boxing|ALE/Boxing-v5
+8|breakout|ALE/Breakout-v5
+9|chopper-command|ALE/ChopperCommand-v5
+10|crazy-climber|ALE/CrazyClimber-v5
+11|demon-attack|ALE/DemonAttack-v5
+12|freeway|ALE/Freeway-v5
+13|frostbite|ALE/Frostbite-v5
+14|gopher|ALE/Gopher-v5
+15|hero|ALE/Hero-v5
+16|jamesbond|ALE/Jamesbond-v5
+17|kangaroo|ALE/Kangaroo-v5
+18|krull|ALE/Krull-v5
+19|kung-fu-master|ALE/KungFuMaster-v5
+20|ms-pacman|ALE/MsPacman-v5
+21|pong|ALE/Pong-v5
+22|private-eye|ALE/PrivateEye-v5
+23|qbert|ALE/Qbert-v5
+24|road-runner|ALE/RoadRunner-v5
+25|seaquest|ALE/Seaquest-v5
+26|up-n-down|ALE/UpNDown-v5
 GAMES
 
 schedule() {
@@ -170,34 +197,16 @@ schedule() {
     printf 'Queued as tsp job %s\n' "$job_id"
 }
 
-schedule_summary() {
-    local job_id
-    local -a args=(
-        uv run python scripts/summarize_game_experiments.py summarize "$RUN_ROOT"
-        --experiment-name "$EXPERIMENT_NAME"
-        --expected-final-update "$EXPECTED_FINAL_UPDATE"
-        --paper-scores "$REPO_ROOT/data/atari_100k_paper_scores.csv"
-    )
-    printf '\nSummary command: '
-    printf '%q ' "${args[@]}"
-    printf '\n'
-    [[ "$DRY_RUN" != "1" ]] || return 0
-
-    job_id="$(tsp -L "$RUN_ID/seed_$SEED/summary" "${args[@]}")"
-    printf '%s\tsummary\n' "$job_id" >>"$RUN_ROOT/tsp_jobs.tsv"
-    printf 'Queued summary as tsp job %s: %s/results.csv\n' "$job_id" "$RUN_ROOT"
-}
-
+printf 'Selected game numbers %s–%s\n' "$START_GAME" "$END_GAME"
 touch "$RUN_ROOT/tsp_jobs.tsv"
 while IFS='|' read -r game environment_id; do
     [[ -n "$game" ]] || continue
     schedule "$game" "$environment_id"
 done <"$GAME_MANIFEST"
-schedule_summary
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf '\nDry run complete. Commands were not scheduled.\n'
 else
-    printf '\nScheduled %s game jobs plus summary; skipped %s games under %s\n' "$SCHEDULED" "$SKIPPED" "$RUN_ROOT"
+    printf '\nScheduled %s game jobs; skipped %s games under %s\n' "$SCHEDULED" "$SKIPPED" "$RUN_ROOT"
     tsp -l
 fi
