@@ -42,8 +42,6 @@ class ReadyReanalysis:
     value_roots_requested: int = 0
     value_roots_searched: int = 0
     value_cache_hits: int = 0
-    cache_target_age_mean: float = 0.0
-    cache_target_age_max: int = 0
 
 
 def replay_batch_nbytes(batch: ReplayBatch) -> int:
@@ -280,8 +278,6 @@ class ReanalysisPipeline:
             value_roots_requested=int(result["value_roots_requested"]),
             value_roots_searched=int(result["value_roots_searched"]),
             value_cache_hits=int(result["value_cache_hits"]),
-            cache_target_age_mean=float(result["cache_target_age_mean"]),
-            cache_target_age_max=int(result["cache_target_age_max"]),
         )
 
     def close(self) -> None:

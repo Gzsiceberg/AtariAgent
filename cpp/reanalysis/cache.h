@@ -22,8 +22,6 @@ struct CachePreparation {
     std::vector<CacheMiss> misses;
     std::int64_t roots_searched = 0;
     std::int64_t cache_hits = 0;
-    double cache_target_age_sum = 0.0;
-    std::int64_t cache_target_age_max = 0;
 };
 
 struct ValueCachePreparation {

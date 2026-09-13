@@ -830,8 +830,6 @@ def main(config: TrainAgentConfig) -> None:
                     policy_roots_requested=ready.policy_roots_requested,
                     policy_roots_searched=ready.policy_roots_searched,
                     cache_hits=ready.cache_hits,
-                    cache_target_age_mean=ready.cache_target_age_mean,
-                    cache_target_age_max=ready.cache_target_age_max,
                 )
                 progress_stats: dict[str, str] = {
                     # "loss": f"{metrics.loss:.3f}",
@@ -861,10 +859,6 @@ def main(config: TrainAgentConfig) -> None:
                                 ),
                                 "hit": (
                                     f"{ready.cache_hits / ready.policy_roots_requested:.0%}"
-                                ),
-                                "age": (
-                                    f"{ready.cache_target_age_mean:.0f}/"
-                                    f"{ready.cache_target_age_max}"
                                 ),
                                 "cache": str(batch_worker.cache_size),
                             }

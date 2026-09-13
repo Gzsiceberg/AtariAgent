@@ -146,10 +146,6 @@ public:
                 if (!expired) {
                     targets.copy_entry(flat, cached->second);
                     ++result.cache_hits;
-                    result.cache_target_age_sum += static_cast<double>(age);
-                    result.cache_target_age_max = std::max(
-                        result.cache_target_age_max, age
-                    );
                     continue;
                 }
             }

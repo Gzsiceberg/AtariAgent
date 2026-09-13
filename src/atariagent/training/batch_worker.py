@@ -35,8 +35,6 @@ class ReadyBatch:
     policy_roots_requested: int = 0
     policy_roots_searched: int = 0
     cache_hits: int = 0
-    cache_target_age_mean: float = 0.0
-    cache_target_age_max: int = 0
 
     def wait_for_current_stream(self, device: torch.device | str) -> None:
         """Make the current training stream wait for this batch's transfer."""
@@ -375,8 +373,6 @@ class BatchWorker:
                     policy_roots_requested=result.policy_roots_requested,
                     policy_roots_searched=result.policy_roots_searched,
                     cache_hits=result.cache_hits,
-                    cache_target_age_mean=result.cache_target_age_mean,
-                    cache_target_age_max=result.cache_target_age_max,
                 )
             except BaseException:
                 self._discard_token(token)
@@ -433,8 +429,6 @@ class BatchWorker:
         policy_roots_requested: int = 0,
         policy_roots_searched: int = 0,
         cache_hits: int = 0,
-        cache_target_age_mean: float = 0.0,
-        cache_target_age_max: int = 0,
     ) -> ReadyBatch:
         started = perf_counter()
         cpu_batch = cpu_batch.with_selected_value_targets(
@@ -472,8 +466,6 @@ class BatchWorker:
             policy_roots_requested=policy_roots_requested,
             policy_roots_searched=policy_roots_searched,
             cache_hits=cache_hits,
-            cache_target_age_mean=cache_target_age_mean,
-            cache_target_age_max=cache_target_age_max,
         )
 
     def _put_ready(self, ready: ReadyBatch) -> None:

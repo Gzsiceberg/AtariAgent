@@ -255,11 +255,6 @@ public:
         result["value_roots_requested"] = job->value_roots_requested;
         result["value_roots_searched"] = job->value_roots_searched;
         result["value_cache_hits"] = job->value_cache_hits;
-        result["cache_target_age_mean"] = job->cache_hits > 0
-            ? job->cache_target_age_sum
-                / static_cast<double>(job->cache_hits)
-            : 0.0;
-        result["cache_target_age_max"] = job->cache_target_age_max;
         result["cache_size"] = cache_size_;
         job->original_batch = py::none();
         return result;
@@ -363,8 +358,6 @@ private:
         std::int64_t value_roots_requested = 0;
         std::int64_t value_roots_searched = 0;
         std::int64_t value_cache_hits = 0;
-        double cache_target_age_sum = 0.0;
-        std::int64_t cache_target_age_max = 0;
         std::int64_t trained_step = 0;
         double root_noise_temperature = 0.0;
         bool gumbel_sampling = false;
@@ -657,8 +650,6 @@ private:
             job->cache_misses = std::move(prepared.misses);
             job->roots_searched = prepared.roots_searched;
             job->cache_hits = prepared.cache_hits;
-            job->cache_target_age_sum = prepared.cache_target_age_sum;
-            job->cache_target_age_max = prepared.cache_target_age_max;
             job->search_value_targets = std::move(
                 prepared.search_value_targets
             );

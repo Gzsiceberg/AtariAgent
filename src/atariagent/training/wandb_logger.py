@@ -99,8 +99,6 @@ class WandbLogger:
         policy_roots_requested: int = 0,
         policy_roots_searched: int = 0,
         cache_hits: int = 0,
-        cache_target_age_mean: float = 0.0,
-        cache_target_age_max: int = 0,
     ) -> None:
         """Log optimizer, policy, and optional reanalysis diagnostics."""
         if self._run is None:
@@ -137,12 +135,6 @@ class WandbLogger:
                     "reanalysis/update": update,
                     "reanalysis/cache_hit_rate": (
                         cache_hits / policy_roots_requested
-                    ),
-                    "reanalysis/cache_target_age_mean_updates": (
-                        cache_target_age_mean
-                    ),
-                    "reanalysis/cache_target_age_max_updates": (
-                        cache_target_age_max
                     ),
                     "reanalysis/policy_roots_requested": (
                         policy_roots_requested

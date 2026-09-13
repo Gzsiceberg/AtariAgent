@@ -255,8 +255,6 @@ def test_native_pipeline_reuses_cache_and_clears_on_weights() -> None:
         assert cached.value_roots_searched == 0
         assert cached.value_cache_hits == 4
         assert pipeline.value_cache_size == 4
-        assert cached.cache_target_age_mean == pytest.approx(0.0)
-        assert cached.cache_target_age_max == 0
         assert pipeline.cache_size == 3
         torch.testing.assert_close(
             cached.batch.value_targets,
@@ -312,8 +310,6 @@ def test_native_pipeline_expires_cached_targets_at_ttl() -> None:
 
         assert cached.policy_roots_searched == 0
         assert cached.cache_hits == 4
-        assert cached.cache_target_age_mean == pytest.approx(199.0)
-        assert cached.cache_target_age_max == 199
         assert expired.policy_roots_searched == 3
         assert expired.cache_hits == 0
         assert expired.value_roots_searched == 0
