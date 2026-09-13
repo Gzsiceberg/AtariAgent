@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Schedule independent Atari experiments with task spooler (tsp).
 #
+# 0 / baseline:            default settings
 # 1 / value_loss_coeff:    loss.value_weight=0.5
 # 2 / consistency_weight:  loss.consistency_weight=5
 # 3 / priority_alpha:      replay.priority_alpha=0.6
@@ -13,8 +14,10 @@
 # - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
 # Usage:
-#   ./scripts/schedule_tsp_experiments.sh           # all four
-#   ./scripts/schedule_tsp_experiments.sh all       # all four
+#   ./scripts/schedule_tsp_experiments.sh           # all five
+#   ./scripts/schedule_tsp_experiments.sh all       # all five
+#   ./scripts/schedule_tsp_experiments.sh 0         # baseline
+#   ./scripts/schedule_tsp_experiments.sh baseline
 #   ./scripts/schedule_tsp_experiments.sh 1         # value loss only
 #   ./scripts/schedule_tsp_experiments.sh consistency_weight
 #   ./scripts/schedule_tsp_experiments.sh 3         # priority alpha 0.6
@@ -45,7 +48,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 usage() {
-    printf 'Usage: %s [all | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha | 4/value_and_consistency ...]\n' "${0##*/}"
+    printf 'Usage: %s [all | 0/baseline | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha | 4/value_and_consistency ...]\n' "${0##*/}"
 }
 
 # Validate the complete selection before prompting or creating any jobs.
@@ -62,8 +65,9 @@ for selection in "$@"; do
                 usage >&2
                 exit 1
             fi
-            experiments=(value_loss_coeff consistency_weight priority_alpha value_and_consistency)
+            experiments=(baseline value_loss_coeff consistency_weight priority_alpha value_and_consistency)
             ;;
+        0|baseline) experiments+=(baseline) ;;
         1|value_loss_coeff) experiments+=(value_loss_coeff) ;;
         2|consistency_weight) experiments+=(consistency_weight) ;;
         3|priority_alpha) experiments+=(priority_alpha) ;;
@@ -218,6 +222,7 @@ for experiment in "${experiments[@]}"; do
         continue
     fi
     case "$experiment" in
+        baseline) overrides=() ;;
         value_loss_coeff) overrides=("loss.value_weight=0.5") ;;
         consistency_weight) overrides=("loss.consistency_weight=5") ;;
         priority_alpha) overrides=("replay.priority_alpha=0.6") ;;
