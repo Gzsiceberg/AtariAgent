@@ -37,7 +37,6 @@ def test_zero_without_eviction(version):
     assert report["truncated_blocks"] == 0
     assert report["covers_all_inserted_transitions"]
     assert report["evicted_transitions"] == 0
-    assert not report["treat_truncation_as_terminal"]
 
 
 def test_overlap_is_not_double_counted_as_episode():

@@ -44,7 +44,6 @@ class ReplayConfig:
 
     max_transitions: int = 10_000
     warmup_transitions: int = 2_000
-    treat_truncation_as_terminal: bool = False
     per_mode: str = "v1"
     final_per_mode: str | None = None
     priority_alpha: float = 0.6

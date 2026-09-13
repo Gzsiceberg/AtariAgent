@@ -75,9 +75,6 @@ def audit_snapshot(snapshot: Mapping) -> dict:
             [t["environment_index"], t["episode_id"], t["block_id"]]
             for t in truncated
         ],
-        "treat_truncation_as_terminal": replay.get(
-            "treat_truncation_as_terminal", False
-        ),
         "config": config,
         "action_reward_digest": fingerprint([
             {k: t[k] for k in (

@@ -595,7 +595,6 @@ def main(config: TrainAgentConfig) -> None:
             config.replay.max_transitions,
             unroll_steps=config.training.unroll_steps,
             td_steps=config.training.td_steps,
-            treat_truncation_as_terminal=config.replay.treat_truncation_as_terminal,
             discount=discount,
             per_mode=config.replay.per_mode,
             priority_alpha=config.replay.priority_alpha,

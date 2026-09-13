@@ -878,48 +878,39 @@ def test_failed_trajectory_preparation_does_not_evict_existing_data() -> None:
     assert sorted(batch.frames[:, 0, 0, 0, 0].tolist()) == [0, 1]
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_timeout_terminal_targets_are_opt_in(enabled: bool) -> None:
+def test_timeout_masks_incomplete_value_targets() -> None:
     replay = FIFOReplayBuffer(
         10, unroll_steps=2, td_steps=3, discount=0.5,
-        treat_truncation_as_terminal=enabled,
     )
     trajectory = make_trajectory(4, truncated=True)
     replay.add(trajectory)
     stored = replay.state_dict()["trajectories"][0]
     assert stored["truncated"] and not stored["terminated"]
     np.testing.assert_array_equal(
-        stored["value_valid_mask"], [True, enabled, enabled, enabled, enabled]
+        stored["value_valid_mask"], [True, False, False, False, False]
     )
-    if enabled:
-        # Same targets and initial priorities as a genuine terminal trajectory.
-        terminal = FIFOReplayBuffer(10, unroll_steps=2, td_steps=3, discount=0.5)
-        terminal.add(make_trajectory(4, terminated=True))
-        expected = terminal.state_dict()["trajectories"][0]
-        np.testing.assert_allclose(stored["value_targets"], expected["value_targets"])
-        np.testing.assert_allclose(replay.priorities, terminal.priorities)
-        batch = replay.sample(4)
-        for i in range(batch.batch_size):
-            position = int(batch.frames[i, 0, 0, 0, 0])
-            values, valid, bootstrap = reference_value_targets(
-                make_trajectory(4, terminated=True), position,
-                target_count=3, td_steps=3, discount=0.5,
-            )
-            np.testing.assert_allclose(batch.value_targets[i], values)
-            np.testing.assert_array_equal(batch.value_mask[i], valid)
-            np.testing.assert_array_equal(batch.value_bootstrap_mask[i], bootstrap)
+    batch = replay.sample(4)
+    for i in range(batch.batch_size):
+        position = int(batch.frames[i, 0, 0, 0, 0])
+        values, valid, bootstrap = reference_value_targets(
+            trajectory, position,
+            target_count=3, td_steps=3, discount=0.5,
+        )
+        np.testing.assert_allclose(batch.value_targets[i], values)
+        np.testing.assert_array_equal(batch.value_mask[i], valid)
+        np.testing.assert_array_equal(batch.value_bootstrap_mask[i], bootstrap)
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_timeout_target_mode_checkpoint_compatibility(enabled: bool) -> None:
-    replay = FIFOReplayBuffer(10, treat_truncation_as_terminal=enabled)
+def test_truncated_targets_survive_checkpoint_round_trip() -> None:
+    replay = FIFOReplayBuffer(10)
     replay.add(make_trajectory(4, truncated=True))
-    state = replay.state_dict()
-    restored = FIFOReplayBuffer(10, treat_truncation_as_terminal=enabled)
-    restored.load_state_dict(state)
+    restored = FIFOReplayBuffer(10)
+    restored.load_state_dict(replay.state_dict())
     np.testing.assert_allclose(restored.priorities, replay.priorities)
-    with pytest.raises(ValueError, match="treat_truncation_as_terminal"):
-        FIFOReplayBuffer(10, treat_truncation_as_terminal=not enabled).load_state_dict(state)
-    if not enabled:
-        del state["treat_truncation_as_terminal"]
-        restored.load_state_dict(state)
+    expected = replay.state_dict()["trajectories"][0]
+    actual = restored.state_dict()["trajectories"][0]
+    assert actual["truncated"] and not actual["terminated"]
+    np.testing.assert_allclose(actual["value_targets"], expected["value_targets"])
+    np.testing.assert_array_equal(
+        actual["value_valid_mask"], expected["value_valid_mask"]
+    )
