@@ -16,3 +16,4 @@ runs
 .pi
 *.log
 measurements
+.env

@@ -21,10 +21,13 @@ def batch(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     for name in (
-        "train_game_experiments.sh", "atari_100k_paper_scores.csv",
+        "train_game_experiments.sh",
         "summarize_game_experiments.py",
     ):
         shutil.copy2(SOURCE_ROOT / "scripts" / name, scripts / name)
+    data = tmp_path / "data"
+    data.mkdir()
+    shutil.copy2(SOURCE_ROOT / "data/atari_100k_paper_scores.csv", data)
     binaries = tmp_path / "bin"
     binaries.mkdir()
     mocks = {
@@ -221,7 +224,8 @@ def test_rerun_skips_completed_games_and_schedules_missing_or_incomplete(batch):
     assert rows["alien"]["status"] == "pending"
     assert rows["bank-heist"]["status"] == "partial"
     assert rows["asterix"]["atariagent_mean"] == "100.0"
-    with (run_root / "paper_scores.csv").open() as source:
+    assert not (run_root / "paper_scores.csv").exists()
+    with (root / "data/atari_100k_paper_scores.csv").open() as source:
         reader = csv.DictReader(source)
         reader.fieldnames = [name.strip() for name in reader.fieldnames]
         reference = next(row for row in reader if row["game"].strip() == "asterix")

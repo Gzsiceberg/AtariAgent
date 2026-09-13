@@ -101,7 +101,7 @@ def summarize(
     expected_final_update: int,
     paper_scores_path: Path,
 ) -> Path:
-    """Write an atomic CSV summary for every game in the run manifest."""
+    """Summarize each game's highest evaluation mean in an atomic CSV."""
     rows: list[dict[str, object]] = []
     normalized_scores: list[float] = []
     paper_scores, paper_aggregates = read_paper_scores(paper_scores_path)
@@ -123,6 +123,7 @@ def summarize(
             "environment": environment_id,
             "status": "pending",
             "final_update": "",
+            "best_update": "",
             "atariagent_mean": "",
             "atariagent_median": "",
             "atariagent_episode_std": "",
@@ -140,7 +141,8 @@ def summarize(
             if evaluations:
                 final = evaluations[-1]
                 final_update = int(final["update"])
-                mean = float(final["mean"])
+                best = max(evaluations, key=lambda evaluation: float(evaluation["mean"]))
+                mean = float(best["mean"])
                 normalized_score = (mean - random_score) / normalization_range
                 normalized_scores.append(normalized_score)
                 row.update(
@@ -150,9 +152,10 @@ def summarize(
                         else "partial"
                     ),
                     final_update=final_update,
+                    best_update=int(best["update"]),
                     atariagent_mean=mean,
-                    atariagent_median=float(final["median"]),
-                    atariagent_episode_std=float(final["std"]),
+                    atariagent_median=float(best["median"]),
+                    atariagent_episode_std=float(best["std"]),
                     human_normalized_score=normalized_score,
                     score_ratio=mean / efficientzero_v1,
                 )
@@ -170,6 +173,7 @@ def summarize(
                 "environment": "",
                 "status": "aggregate",
                 "final_update": "",
+                "best_update": "",
                 "atariagent_mean": "",
                 "atariagent_median": "",
                 "atariagent_episode_std": "",
@@ -220,7 +224,7 @@ def parse_args() -> argparse.Namespace:
     summarize_parser.add_argument(
         "--paper-scores",
         type=Path,
-        default=Path(__file__).with_name("atari_100k_paper_scores.csv"),
+        default=Path(__file__).resolve().parents[1] / "data" / "atari_100k_paper_scores.csv",
         help="CSV containing human and EfficientZero V1/V2 reference scores",
     )
 
