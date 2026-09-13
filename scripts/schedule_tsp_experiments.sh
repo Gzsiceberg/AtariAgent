@@ -4,7 +4,7 @@
 # 1 / value_loss_coeff:    loss.value_weight=0.5
 # 2 / consistency_weight:  loss.consistency_weight=5
 # 3 / priority_alpha:      replay.priority_alpha=0.6
-# 4 / combined:            loss.value_weight=0.5, loss.consistency_weight=5
+# 4 / value_and_consistency: loss.value_weight=0.5, loss.consistency_weight=5
 #
 # All experiments:
 # - enable W&B logging
@@ -18,7 +18,7 @@
 #   ./scripts/schedule_tsp_experiments.sh 1         # value loss only
 #   ./scripts/schedule_tsp_experiments.sh consistency_weight
 #   ./scripts/schedule_tsp_experiments.sh 3         # priority alpha 0.6
-#   ./scripts/schedule_tsp_experiments.sh 4         # combined overrides
+#   ./scripts/schedule_tsp_experiments.sh 4         # value and consistency overrides
 #   ./scripts/schedule_tsp_experiments.sh 1 4       # selected experiments
 #
 # Optional env vars:
@@ -45,7 +45,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 usage() {
-    printf 'Usage: %s [all | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha | 4/combined ...]\n' "${0##*/}"
+    printf 'Usage: %s [all | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha | 4/value_and_consistency ...]\n' "${0##*/}"
 }
 
 # Validate the complete selection before prompting or creating any jobs.
@@ -62,12 +62,12 @@ for selection in "$@"; do
                 usage >&2
                 exit 1
             fi
-            experiments=(value_loss_coeff consistency_weight priority_alpha combined)
+            experiments=(value_loss_coeff consistency_weight priority_alpha value_and_consistency)
             ;;
         1|value_loss_coeff) experiments+=(value_loss_coeff) ;;
         2|consistency_weight) experiments+=(consistency_weight) ;;
         3|priority_alpha) experiments+=(priority_alpha) ;;
-        4|combined) experiments+=(combined) ;;
+        4|value_and_consistency) experiments+=(value_and_consistency) ;;
         *)
             printf 'Error: unknown experiment: %s\n' "$selection" >&2
             usage >&2
@@ -221,7 +221,7 @@ for experiment in "${experiments[@]}"; do
         value_loss_coeff) overrides=("loss.value_weight=0.5") ;;
         consistency_weight) overrides=("loss.consistency_weight=5") ;;
         priority_alpha) overrides=("replay.priority_alpha=0.6") ;;
-        combined) overrides=("loss.value_weight=0.5" "loss.consistency_weight=5") ;;
+        value_and_consistency) overrides=("loss.value_weight=0.5" "loss.consistency_weight=5") ;;
     esac
     schedule "$experiment" "${overrides[@]}"
     scheduled[$experiment]=1
