@@ -76,7 +76,7 @@ class FakeEnvironment:
         self.closed = False
 
     def _observation(self) -> np.ndarray:
-        value = self.episode * 100 + self.episode_step
+        value = (self.episode * 100 + self.episode_step) % 256
         return np.full((4, 2, 2, 3), value, dtype=np.uint8)
 
     def reset(self, *, seed: int | None = None):
@@ -154,7 +154,7 @@ def test_episodic_life_continues_after_life_loss_and_resets_on_game_over() -> No
 def test_worker_batches_games_and_persists_them_between_runs() -> None:
     agent = FakeAgent()
     first_environment = FakeEnvironment(episode_length=2)
-    second_environment = FakeEnvironment(episode_length=100)
+    second_environment = FakeEnvironment(episode_length=6)
     worker = SelfPlayWorker(
         agent,
         environments=[first_environment, second_environment],
@@ -221,11 +221,15 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
     assert second_run[0][0].episode_id == 1
     assert second_run[1] == ()
 
-    partial = worker.flush()
-    assert [len(block) for block in partial[0]] == [1]
-    assert partial[0][0].episode_id == 2
-    assert [len(block) for block in partial[1]] == [5]
-    assert [int(frame[0, 0, 0]) for frame in partial[1][0].frames] == [
+    assert worker.total_vector_steps == 5
+    assert worker.total_transitions == 10
+    completed = worker.run(1)
+    assert [len(block) for block in completed[0]] == [2]
+    assert completed[0][0].episode_id == 2
+    assert [len(block) for block in completed[1]] == [6]
+    assert completed[0][0].terminated
+    assert completed[1][0].terminated
+    assert [int(frame[0, 0, 0]) for frame in completed[1][0].frames] == [
         0,
         0,
         0,
@@ -235,9 +239,10 @@ def test_worker_batches_games_and_persists_them_between_runs() -> None:
         3,
         4,
         5,
+        6,
     ]
-    assert worker.total_vector_steps == 5
-    assert worker.total_transitions == 10
+    assert worker.total_vector_steps == 6
+    assert worker.total_transitions == 12
 
 
 def test_worker_waits_for_lookahead_and_keeps_it_in_next_block() -> None:
@@ -263,12 +268,16 @@ def test_worker_waits_for_lookahead_and_keeps_it_in_next_block() -> None:
     assert not trajectory.terminated
     assert trajectory.rewards == (2.5,) * 7
 
-    future = worker.flush()[0][0]
-    assert len(future) == 2
-    assert future.lookahead_steps == 0
+    # Continue until the next block has its own complete lookahead.
+    assert worker.run(4)[0] == ()
+    future = worker.run(1)[0][0]
+    assert len(future) == 5
+    assert future.stored_transition_count == 7
+    assert future.lookahead_steps == 2
     assert future.block_id == 1
-    assert future.actions == trajectory.actions[-2:]
-    assert future.search_results == trajectory.search_results[-2:]
+    assert not future.terminated
+    assert future.actions[:2] == trajectory.actions[-2:]
+    assert future.search_results[:2] == trajectory.search_results[-2:]
 
 
 def test_terminal_during_lookahead_finalizes_both_blocks() -> None:

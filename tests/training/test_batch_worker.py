@@ -46,6 +46,7 @@ class _FakeReplay:
         self._sample = sample
         self.priority_updates: list[tuple[torch.Tensor, torch.Tensor]] = []
         self.priority_betas: list[float] = []
+        self.priorities = np.array([9.0, 0.125, 3.0])
 
     def sample(
         self,
@@ -127,8 +128,8 @@ def test_worker_anneals_priority_beta_by_learner_step() -> None:
     assert replay.priority_betas == pytest.approx([0.7])
 
 
-@pytest.mark.parametrize("valid_roots", [[True, False], [False, False], [True, True]])
-def test_worker_only_updates_priorities_with_valid_root_targets(valid_roots) -> None:
+@pytest.mark.parametrize("valid_roots", [[True, False], [False, True], [False, False], [True, True]])
+def test_worker_assigns_invalid_roots_minimum_valid_priority(valid_roots) -> None:
     root_mask = torch.tensor(valid_roots)
     batch = replace(
         _batch().without_value_bootstraps(),
@@ -136,7 +137,8 @@ def test_worker_only_updates_priorities_with_valid_root_targets(valid_roots) -> 
         value_mask=torch.stack((root_mask, ~root_mask), dim=1),
     )
     replay = _FakeReplay(lambda _: batch)
-    candidates = torch.tensor([34.586, 123.0])
+    candidates = torch.tensor([34.586, 123.0], requires_grad=True)
+    original = candidates.clone()
     with BatchWorker(
         replay,  # type: ignore[arg-type]
         batch_size=2,
@@ -151,17 +153,18 @@ def test_worker_only_updates_priorities_with_valid_root_targets(valid_roots) -> 
         worker.wait_idle()
         assert worker.outstanding_count == 0
 
-    if root_mask.any():
-        indices, priorities = replay.priority_updates[0]
-        assert len(replay.priority_updates) == 1
-        torch.testing.assert_close(indices, batch.indices[root_mask])
-        torch.testing.assert_close(priorities, candidates[root_mask])
-    else:
-        assert replay.priority_updates == []
+    assert len(replay.priority_updates) == 1
+    indices, priorities = replay.priority_updates[0]
+    minimum = candidates[root_mask].min() if root_mask.any() else 0.125
+    expected = torch.where(root_mask, candidates, minimum)
+    torch.testing.assert_close(indices, batch.indices)
+    torch.testing.assert_close(priorities, expected)
+    torch.testing.assert_close(candidates, original)
+    assert not priorities.requires_grad
 
 
 @pytest.mark.parametrize("terminated", [False, True])
-def test_worker_preserves_invalid_timeout_priorities_but_updates_terminal_zeros(
+def test_worker_replaces_invalid_timeout_errors_but_updates_terminal_zeros(
     terminated: bool,
 ) -> None:
     replay = FIFOReplayBuffer(4, unroll_steps=1, td_steps=2)
@@ -176,7 +179,6 @@ def test_worker_preserves_invalid_timeout_priorities_but_updates_terminal_zeros(
         predicted_values=(1.0,) * 4,
         terminated=terminated, truncated=not terminated, full_episode_done=True,
     ))
-    initial_priorities = replay.priorities
     with BatchWorker(
         replay, batch_size=4, device="cpu", max_in_flight=1,
         ready_prefetch=1, timeout_seconds=2.0,
@@ -186,11 +188,15 @@ def test_worker_preserves_invalid_timeout_priorities_but_updates_terminal_zeros(
         # Both valid terminal zeros and invalid placeholders have value zero.
         assert torch.all(ready.cpu_batch.value_targets[:, 0] == 0)
         assert ready.cpu_batch.value_mask[:, 0].sum().item() == (4 if terminated else 2)
-        worker.complete(ready, torch.full((4,), 34.586))
+        # Use distinct valid errors and NaN invalid candidates to establish
+        # that placeholder errors cannot enter either the minimum or updates.
+        ids = ready.cpu_batch.indices
+        valid = ready.cpu_batch.value_mask[:, 0]
+        candidates = torch.where(valid, (ids + 1).float() / 10, float("nan"))
+        worker.complete(ready, candidates)
         worker.wait_idle()
 
-    expected = initial_priorities.copy()
-    expected[:4 if terminated else 2] = 34.586
+    expected = [0.1, 0.2, 0.3, 0.4] if terminated else [0.1, 0.2, 0.1, 0.1]
     np.testing.assert_allclose(replay.priorities, expected)
 
 

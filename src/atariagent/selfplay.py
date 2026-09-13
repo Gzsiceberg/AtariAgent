@@ -143,7 +143,7 @@ class GameTrajectory:
             or self.lookahead_steps >= required_steps
         ):
             # Terminal blocks need no bootstrap. A zero-lookahead block is an
-            # incomplete flush whose unavailable targets are masked by replay.
+            # incomplete block whose unavailable targets are masked by replay.
             return
         raise ValueError(
             "trajectory lookahead_steps must be greater than or equal to "
@@ -566,36 +566,6 @@ class SelfPlayWorker:
 
             self.total_vector_steps += 1
 
-        return tuple(tuple(blocks) for blocks in completed)
-
-    def flush(self) -> tuple[tuple[GameTrajectory, ...], ...]:
-        """Finalize non-empty partial blocks without resetting environments.
-
-        This is intended for inspection or shutdown. Training collection should
-        normally keep partial builders across calls to avoid artificial block
-        boundaries.
-        """
-        if self._closed:
-            raise RuntimeError("cannot flush a closed self-play worker")
-        self._ensure_initialized()
-        completed: list[list[GameTrajectory]] = [[] for _ in range(self.num_envs)]
-        for index, builders in enumerate(self._builders):
-            active_builder = builders[-1]
-            completed[index].extend(
-                builder.finalize(
-                    terminated=False,
-                    truncated=False,
-                    full_episode_done=False,
-                )
-                for builder in builders
-                if len(builder) > 0
-            )
-            # A non-empty active block consumed its reserved identity. An empty
-            # one was created only to retain a just-completed block's tail and
-            # can safely reuse the same identity after flushing.
-            if len(active_builder) > 0:
-                self._next_block_ids[index] += 1
-            self._builders[index] = [self._new_builder(index)]
         return tuple(tuple(blocks) for blocks in completed)
 
     def close(self) -> None:

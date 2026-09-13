@@ -50,7 +50,8 @@ class TrainMetrics:
     representation_feature_variance: Tensor
     dynamics_feature_variance: Tensor
     learning_rate: float
-    # Candidate root errors; BatchWorker applies only entries with valid values.
+    # Candidate root errors; BatchWorker replaces invalid-root entries with
+    # the minimum valid priority (or replay minimum for all-invalid batches).
     priorities: Tensor
 
 

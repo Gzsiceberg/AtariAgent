@@ -214,8 +214,12 @@ class BatchWorker:
                 if self._run_done.is_set() and self._ready.empty():
                     self._raise_failure()
 
+    @torch.no_grad()
     def complete(self, ready: ReadyBatch, priorities: Tensor) -> None:
-        """Update valid-root priorities, preserving priorities without targets."""
+        """Update priorities; invalid roots use the minimum valid batch priority.
+
+        If no root has a valid value target, use the current replay minimum.
+        """
         self._require_open()
         with self._outstanding_lock:
             if ready.token not in self._outstanding:
@@ -224,16 +228,23 @@ class BatchWorker:
         try:
             # Always transfer, even if every root is invalid: this synchronizes
             # learner completion before releasing the pinned batch's slot.
-            cpu_priorities = priorities.detach().cpu()
+            cpu_priorities = priorities.cpu()
             valid_roots = ready.cpu_batch.value_mask[:, 0]
-            # Missing bootstrap targets contain placeholder zeros, not valid
-            # zero returns. Their prediction errors must not change replay PER.
-            if valid_roots.any():
-                with self._replay_lock:
-                    self.replay.update_priorities(
-                        ready.cpu_batch.indices[valid_roots],
-                        cpu_priorities[valid_roots],
+            with self._replay_lock:
+                if not valid_roots.all():
+                    # Never use errors against missing-target placeholder zeros.
+                    # Read the fallback under the same lock as priority updates.
+                    minimum = (
+                        cpu_priorities[valid_roots].min()
+                        if valid_roots.any()
+                        else float(self.replay.priorities.min())
                     )
+                    cpu_priorities = torch.where(
+                        valid_roots, cpu_priorities, minimum
+                    )
+                self.replay.update_priorities(
+                    ready.cpu_batch.indices, cpu_priorities
+                )
         finally:
             self._slots.release()
 
