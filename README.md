@@ -239,11 +239,13 @@ AtariAgent retains the central EfficientZero learning ideas while redesigning th
 | Primary scope | Atari 100k | Discrete and continuous control across Atari and DeepMind Control | Atari 100k |
 | Atari search | PUCT MCTS, normally 50 simulations | Gumbel top-*m* sequential halving, normally 16 simulations | Native PUCT by default; native Gumbel is also available |
 | Value targets | Bootstrapped *n*-step targets; policy reanalysis and root-value targets are separately configured | Mixed TD/search value targets with full policy reanalysis | V2-style mixed value targets and delayed-target-network reanalysis |
-| Prioritized replay | Priority exponent 0.6; importance exponent annealed from 0.4 to 1.0; new samples use the current maximum | Priority and importance exponents 1.0 with a 0.1 weight floor | V1 sampling, weighting, and new-sample priority behavior |
+| Prioritized replay | Priority exponent 0.6; importance exponent annealed from 0.4 to 1.0; standard launcher inserts at the current maximum | Priority and importance exponents 1.0 with a 0.1 weight floor; maximum-priority insertion | Configurable V1/V2 sampling and weighting; V2 maximum-priority insertion in both modes |
 | Runtime architecture | Distributed Ray workers with a C++/Cython tree | Distributed Ray workers with Cython/C++ search | Python learner with an asynchronous in-process C++ reanalysis worker |
 | Reanalysis reuse | Recomputes sampled targets in reanalysis workers | Recomputes sampled targets in reanalysis workers | Caches targets by replay state and searches only cache misses |
 | Hardware objective | Official README recommends four RTX 3090 GPUs for high-throughput training | Official example launches with two GPUs and supports broader workloads | Consumer single-GPU experiments |
 | License | GPL-3.0 | GPL-3.0 | MIT |
+
+New trajectories receive a shared priority `max(current_buffer_max, max(trajectory_errors))`, matching V2 replay insertion. The buffer maximum defaults to **1 only when empty**, is measured before FIFO eviction, and is not a historical maximum. Trajectory errors are individual prediction/bootstrap absolute errors plus epsilon, excluding lookahead-only starts; insertion does not add epsilon again. Existing transition priorities are unchanged, and subsequent learner updates set individual priorities. Snapshot loading preserves saved priorities rather than reinitializing them. Stored `initial_priorities` retain the raw individual errors for compatibility.
 
 Target-network publication clears both policy and value caches on its fixed 1,000-update schedule. Independently, `reanalysis.cache_target_ttl` expires policy/search entries after a bounded number of learner updates (200 by default). Raw bootstrap values need no TTL because they are deterministic for fixed target-network weights.
 

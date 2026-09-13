@@ -652,7 +652,7 @@ def test_prioritized_replay_matches_v2_sampling_weights() -> None:
     assert batch.importance_weights.min() == pytest.approx(0.1)
 
 
-def test_new_replay_transitions_use_error_not_current_maximum_priority() -> None:
+def test_new_trajectory_error_can_exceed_current_maximum_priority() -> None:
     replay = FIFOReplayBuffer(max_transitions=10, priority_epsilon=1e-6)
     replay.add(make_trajectory(2, terminated=True))
     replay.update_priorities([0, 1], [2.0, 5.0])
@@ -671,7 +671,7 @@ def test_new_replay_transitions_use_error_not_current_maximum_priority() -> None
 
 
 @pytest.mark.parametrize("per_mode", ["v1", "v2"])
-def test_initial_priorities_use_individual_prediction_errors(per_mode: str) -> None:
+def test_insertion_uses_v2_maximum_but_preserves_individual_errors(per_mode: str) -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
@@ -689,8 +689,8 @@ def test_initial_priorities_use_individual_prediction_errors(per_mode: str) -> N
     )
 
     # Prediction-bootstrapped targets are [11, 17], giving errors [1, 3].
-    # The lookahead transition is not inserted as a replay start.
-    np.testing.assert_allclose(replay.priorities, [1.000001, 3.000001])
+    # Lookahead is not inserted; both starts receive the trajectory maximum.
+    np.testing.assert_allclose(replay.priorities, [3.000001, 3.000001])
 
     replay.update_priorities([0, 1], [100.0, 200.0])
     initial = replay.state_dict()["trajectories"][0]["initial_priorities"]
@@ -705,7 +705,7 @@ def test_initial_priorities_use_individual_prediction_errors(per_mode: str) -> N
         )
     )
     np.testing.assert_allclose(
-        replay.priorities, [100.0, 200.0, 1.000001, 3.000001]
+        replay.priorities, [100.0, 200.0, 200.0, 200.0]
     )
 
 
@@ -726,7 +726,10 @@ def test_initial_priorities_handle_terminal_tail_and_zero_error(per_mode: str) -
     )
     # Targets: [1 + .5*2 + .25*3, 2 + .5*3, 3]. Terminal-tail
     # returns do not bootstrap, and exact predictions retain positive epsilon.
-    np.testing.assert_allclose(replay.priorities, [1e-6, 0.500001, 1e-6])
+    initial = replay.state_dict()["trajectories"][0]["initial_priorities"]
+    np.testing.assert_allclose(initial, [1e-6, 0.500001, 1e-6])
+    # Empty-buffer maximum is 1, not the maximum error (0.500001).
+    np.testing.assert_array_equal(replay.priorities, [1.0, 1.0, 1.0])
 
     restored = FIFOReplayBuffer(
         max_transitions=10, unroll_steps=1, td_steps=2,
@@ -736,7 +739,7 @@ def test_initial_priorities_handle_terminal_tail_and_zero_error(per_mode: str) -
     np.testing.assert_array_equal(restored.priorities, replay.priorities)
 
 
-def test_first_replay_transitions_use_prediction_error_priority() -> None:
+def test_first_replay_transitions_use_maximum_error_above_one() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=2,
         unroll_steps=1,
@@ -752,7 +755,68 @@ def test_first_replay_transitions_use_prediction_error_priority() -> None:
         )
     )
 
-    np.testing.assert_allclose(replay.priorities, [1.000001, 3.000001])
+    np.testing.assert_allclose(replay.priorities, [3.000001, 3.000001])
+
+
+@pytest.mark.parametrize("per_mode", ["v1", "v2"])
+@pytest.mark.parametrize("capacity", [3, 6])
+@pytest.mark.parametrize(
+    "existing,errors,expected",
+    [
+        (None, [0.0, 0.0, 0.0], 1.0),
+        (None, [0.0, 0.5, 2.0], 2.000001),
+        ([2.0, 10.0, 3.0], [0.01, 0.5, 2.0], 10.0),
+        ([2.0, 10.0, 3.0], [0.01, 20.0, 2.0], 20.000001),
+        # Neither a permanent floor of 1 nor a historical maximum is used.
+        ([0.1, 0.2, 0.3], [0.0, 0.0, 0.0], 0.3),
+        ([0.1, 0.2, 0.3], [0.0, 0.5, 0.0], 0.500001),
+    ],
+)
+def test_maximum_insertion_matches_v2_branches(per_mode, capacity, existing, errors, expected):
+    replay = FIFOReplayBuffer(
+        max_transitions=capacity, unroll_steps=1, td_steps=1,
+        discount=0.0, per_mode=per_mode, priority_epsilon=1e-6,
+    )
+    if existing is not None:
+        # Start with high errors, then lower them through learner updates.
+        replay.add(make_trajectory(3, terminated=True, predicted_values=(101., 102., 103.)))
+        replay.update_priorities([0, 1, 2], existing)
+    replay.add(make_trajectory(
+        3, episode_id=1, terminated=True,
+        predicted_values=tuple(i + 1 + error for i, error in enumerate(errors)),
+    ))
+    # At capacity=3 the previous maximum is evicted by this insertion, but
+    # must still seed the new trajectory, matching insertion-before-eviction.
+    prefix = existing if existing is not None and capacity == 6 else []
+    np.testing.assert_allclose(replay.priorities, [*prefix, *([expected] * 3)])
+    # Sampling-mode differences must not prevent individual priority updates.
+    first_id = 3 if existing is not None else 0
+    replay.update_priorities([first_id], [0.125])
+    assert replay.priorities[-3] == 0.125
+    np.testing.assert_allclose(replay.priorities[-2:], [expected, expected])
+
+
+@pytest.mark.parametrize("per_mode", ["v1", "v2"])
+def test_maximum_insertion_extends_sequentially_and_survives_restore(per_mode):
+    replay = FIFOReplayBuffer(
+        max_transitions=10, unroll_steps=1, td_steps=1, discount=0.0,
+        per_mode=per_mode,
+    )
+    replay.extend([
+        make_trajectory(2, episode_id=0, terminated=True, predicted_values=(1., 22.)),
+        make_trajectory(2, episode_id=1, terminated=True, predicted_values=(1., 2.)),
+    ])
+    np.testing.assert_allclose(replay.priorities, [20.000001] * 4)
+    # Restore current priorities verbatim, not original insertion errors.
+    replay.update_priorities(range(4), [0.1, 0.2, 0.3, 0.4])
+    restored = FIFOReplayBuffer(
+        max_transitions=10, unroll_steps=1, td_steps=1, discount=0.0,
+        per_mode=per_mode,
+    )
+    restored.load_state_dict(replay.state_dict())
+    np.testing.assert_array_equal(restored.priorities, replay.priorities)
+    restored.add(make_trajectory(2, episode_id=2, terminated=True, predicted_values=(1., 2.)))
+    np.testing.assert_allclose(restored.priorities, [0.1, 0.2, 0.3, 0.4, 0.4, 0.4])
 
 
 def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:

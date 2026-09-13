@@ -59,8 +59,11 @@ class FIFOReplayBuffer:
     """Store prepared trajectories with FIFO prioritized sampling.
 
     Target horizons and discount are fixed for the buffer lifetime.
-    Both modes initialize priorities from per-transition prediction/bootstrap
-    errors. V1 uses configurable alpha/beta and unfloored importance weights;
+    Both modes use EfficientZero V2 maximum-priority insertion: every new
+    trajectory start receives max(current buffer maximum, trajectory error
+    maximum), with a buffer maximum of 1 only when empty. Stored
+    initial_priorities retain the individual prediction/bootstrap errors.
+    V1 uses configurable alpha/beta and unfloored importance weights;
     V2 forces alpha=beta=1 and a 0.1 normalized importance-weight floor.
     Trailing lookahead transitions remain local target context and are not
     replay starts. Reanalysis remains outside this buffer.
@@ -370,6 +373,20 @@ class FIFOReplayBuffer:
             if frame_shape != self._frame_shape:
                 raise ValueError("all trajectories must use the same frame shape")
 
+        # Match EZ V2 save_trajectory: use the live buffer maximum (not a
+        # historical high-water mark) and the maximum error of replay starts,
+        # excluding lookahead. Errors already include epsilon; do not add it
+        # again. Compute before eviction so insertion sees the current buffer.
+        buffer_maximum = (
+            float(self._priorities.max()) if self._transition_count else 1.0
+        )
+        insertion_priority = max(
+            buffer_maximum, float(stored.initial_priorities.max())
+        )
+        insertion_priorities = np.full(
+            trajectory_length, insertion_priority, dtype=np.float64
+        )
+
         evicted_trajectories = 0
         evicted_transitions = 0
         state_ids, self._next_reanalysis_state_id = self._intern_state_ids(
@@ -390,8 +407,8 @@ class FIFOReplayBuffer:
             self._transition_ids = self._transition_ids[evicted_transitions:]
             self._priorities = self._priorities[evicted_transitions:]
 
-        # Insertion uses each transition's prediction/bootstrap error in both
-        # PER modes, independently of the existing replay maximum.
+        # Existing priorities remain unchanged; only new starts receive the
+        # shared maximum. Learner updates subsequently assign individual errors.
         transition_ids = np.arange(
             self._next_transition_id,
             self._next_transition_id + trajectory_length,
@@ -402,7 +419,7 @@ class FIFOReplayBuffer:
         self._priorities = np.concatenate(
             (
                 self._priorities,
-                stored.initial_priorities,
+                insertion_priorities,
             )
         )
 

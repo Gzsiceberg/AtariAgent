@@ -32,8 +32,9 @@ self_play:
 replay:
   max_transitions: 100000
   warmup_transitions: 2000
-  # Both modes initialize priorities from per-transition prediction/bootstrap
-  # errors. "v1" uses the alpha/beta settings below without an IS-weight floor;
+  # Both modes use V2 maximum-priority insertion: each new trajectory gets
+  # max(buffer maximum, trajectory error maximum); empty buffer maximum is 1.
+  # "v1" uses the alpha/beta settings below without an IS-weight floor;
   # "v2" forces alpha=beta=1 and a 0.1 normalized importance-weight floor.
   per_mode: v1  # v1 or v2
   # Optional in-memory switch after collection, without a snapshot/restart.
