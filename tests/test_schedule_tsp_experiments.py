@@ -10,6 +10,38 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_tsp_experiments.sh"
 
 
+@pytest.mark.parametrize("selection", ["5", "fp32", "all"])
+def test_fp32_experiment(tmp_path, selection):
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    tsp = binaries / "tsp"
+    tsp.write_text("#!/usr/bin/env bash\nexit 99\n")
+    tsp.chmod(0o755)
+    run_root = tmp_path / "runs"
+    result = subprocess.run(
+        ["bash", str(SCRIPT), selection],
+        env={
+            **os.environ,
+            "PATH": f"{binaries}:{os.environ['PATH']}",
+            "WANDB_API_KEY": "test-secret",
+            "RUN_ROOT": str(run_root),
+            "RUN_ID": "test",
+            "DRY_RUN": "1",
+            "RUNPOD_POD_ID": "",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "training.precision=fp32" in (run_root / "fp32/job.sh").read_text()
+    jobs = list(run_root.glob("*/job.sh"))
+    assert len(jobs) == (6 if selection == "all" else 1)
+    for job in jobs:
+        if job.parent.name != "fp32":
+            assert "training.precision=" not in job.read_text()
+
+
 @pytest.mark.parametrize("saved_login", [False, True])
 def test_real_wandb_credential_lookup(tmp_path, saved_login):
     pytest.importorskip("wandb")
