@@ -9,6 +9,7 @@
 # 5 / fp32:                training.precision=fp32
 # 6 / per_v2:              replay.per_mode=v2
 # 7 / final_per_v2:        replay.final_per_mode=v2
+# 8 / priority_beta:       replay.priority_alpha=1, beta schedule 0.26 -> 0.65
 #
 # All experiments:
 # - enable W&B logging
@@ -17,8 +18,8 @@
 # - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
 # Usage:
-#   ./scripts/schedule_tsp_experiments.sh           # all eight
-#   ./scripts/schedule_tsp_experiments.sh all       # all eight
+#   ./scripts/schedule_tsp_experiments.sh           # all nine
+#   ./scripts/schedule_tsp_experiments.sh all       # all nine
 #   ./scripts/schedule_tsp_experiments.sh 0         # baseline
 #   ./scripts/schedule_tsp_experiments.sh baseline
 #   ./scripts/schedule_tsp_experiments.sh 1         # value loss only
@@ -28,6 +29,7 @@
 #   ./scripts/schedule_tsp_experiments.sh 5         # float32 instead of bfloat16
 #   ./scripts/schedule_tsp_experiments.sh 6         # PER v2
 #   ./scripts/schedule_tsp_experiments.sh 7         # PER v2 in the final phase
+#   ./scripts/schedule_tsp_experiments.sh 8         # alpha 1, beta 0.26 -> 0.65
 #   ./scripts/schedule_tsp_experiments.sh 1 4       # selected experiments
 #
 # Optional env vars:
@@ -54,7 +56,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 usage() {
-    printf 'Usage: %s [all | 0/baseline | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha | 4/value_and_consistency | 5/fp32 | 6/per_v2 | 7/final_per_v2 ...]\n' "${0##*/}"
+    printf 'Usage: %s [all | 0/baseline | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha | 4/value_and_consistency | 5/fp32 | 6/per_v2 | 7/final_per_v2 | 8/priority_beta ...]\n' "${0##*/}"
 }
 
 # Validate the complete selection before prompting or creating any jobs.
@@ -71,7 +73,7 @@ for selection in "$@"; do
                 usage >&2
                 exit 1
             fi
-            experiments=(baseline value_loss_coeff consistency_weight priority_alpha value_and_consistency fp32 per_v2 final_per_v2)
+            experiments=(baseline value_loss_coeff consistency_weight priority_alpha value_and_consistency fp32 per_v2 final_per_v2 priority_beta)
             ;;
         0|baseline) experiments+=(baseline) ;;
         1|value_loss_coeff) experiments+=(value_loss_coeff) ;;
@@ -81,6 +83,7 @@ for selection in "$@"; do
         5|fp32) experiments+=(fp32) ;;
         6|per_v2) experiments+=(per_v2) ;;
         7|final_per_v2) experiments+=(final_per_v2) ;;
+        8|priority_beta) experiments+=(priority_beta) ;;
         *)
             printf 'Error: unknown experiment: %s\n' "$selection" >&2
             usage >&2
@@ -240,6 +243,7 @@ for experiment in "${experiments[@]}"; do
         value_loss_coeff) overrides=("loss.value_weight=0.5") ;;
         consistency_weight) overrides=("loss.consistency_weight=5") ;;
         priority_alpha) overrides=("replay.priority_alpha=0.6") ;;
+        priority_beta) overrides=("replay.priority_alpha=1" "replay.priority_beta_initial=0.26" "replay.priority_beta_final=0.65") ;;
         value_and_consistency) overrides=("loss.value_weight=0.5" "loss.consistency_weight=5") ;;
     esac
     schedule "$experiment" "${overrides[@]}"
