@@ -23,7 +23,7 @@
 # Monitor with tsp -l or tsp -t JOB_ID.
 # Job IDs (including the final summary job) are recorded in $RUN_ROOT/tsp_jobs.tsv.
 # The summary job updates $RUN_ROOT/results.csv, comparing available evaluations
-# with $RUN_ROOT/paper_scores.csv (random, human, EfficientZero V1/V2 scores).
+# with data/atari_100k_paper_scores.csv (random, human, EfficientZero V1/V2 scores).
 # Rerun the same command after the batch finishes to skip completed games
 # and schedule the rest.
 # Completion means the final evaluation reached update 120000. Incomplete games
@@ -80,12 +80,6 @@ if [[ "$saved_seed" != "$SEED" ]]; then
 fi
 printf '%s\n' "$SEED" >"$RUN_ROOT/seed.txt"
 
-# Preserve reference data for optional comparisons using
-# scripts/summarize_game_experiments.py. These are not stopping criteria, and
-# single-seed results are not like-for-like reproductions of multi-seed papers.
-if [[ ! -f "$RUN_ROOT/paper_scores.csv" ]]; then
-    cp "$REPO_ROOT/scripts/atari_100k_paper_scores.csv" "$RUN_ROOT/paper_scores.csv"
-fi
 GAME_MANIFEST="$RUN_ROOT/games.tsv"
 cat >"$GAME_MANIFEST" <<'GAMES'
 asterix|ALE/Asterix-v5
@@ -182,7 +176,7 @@ schedule_summary() {
         uv run python scripts/summarize_game_experiments.py summarize "$RUN_ROOT"
         --experiment-name "$EXPERIMENT_NAME"
         --expected-final-update "$EXPECTED_FINAL_UPDATE"
-        --paper-scores "$RUN_ROOT/paper_scores.csv"
+        --paper-scores "$REPO_ROOT/data/atari_100k_paper_scores.csv"
     )
     printf '\nSummary command: '
     printf '%q ' "${args[@]}"
