@@ -152,8 +152,8 @@ def test_agent_train_step_updates_all_supervised_output_heads() -> None:
 
     assert metrics.loss == pytest.approx(
         2.0 * metrics.policy_loss
-        + 0.25 * 2.0 * metrics.value_loss
-        + metrics.reward_loss
+        + 0.25 * 2.0 * torch.log(torch.tensor(601.0))
+        + torch.log(torch.tensor(601.0))
         + 5.0 * metrics.consistency_loss
     )
     assert metrics.policy_loss > 0.0
@@ -375,15 +375,20 @@ def test_logged_losses_ignore_importance_weights_and_padding(
     )
     metrics = trainer.train_step(batch)
     log_two = torch.log(torch.tensor(2.0)).item()
+    # Uniform logits on support [0, 1] decode from transformed scalar 0.5.
+    decoded = (((1 + 4 * 0.001 * (0.5 + 1 + 0.001)) ** 0.5 - 1)
+               / (2 * 0.001)) ** 2 - 1
     for name, count, expected in (
         ("policy", valid_steps, log_two),
-        ("value", max(valid_steps - 1, 0), log_two),
-        ("reward", valid_steps, log_two),
+        ("value", max(valid_steps - 1, 0), abs(decoded)),
+        ("reward", valid_steps, abs(decoded)),
         ("consistency", valid_steps, -1.0),
     ):
         normalized = getattr(metrics, f"{name}_loss")
         assert not normalized.requires_grad
-        assert normalized.item() == pytest.approx(expected if count else 0.0)
+        assert normalized.item() == pytest.approx(
+            expected if count else 0.0, rel=1e-3
+        )
     # The optimization objective still uses weights and fixed unroll scaling.
     expected_loss = importance_weight / 2 * (
         valid_steps * log_two
@@ -446,21 +451,22 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
     assert representation.weight.grad == pytest.approx(-0.1875)
 
 
-def test_agent_scales_root_and_recurrent_losses_together() -> None:
+@pytest.mark.parametrize("lstm_horizon", [1, 2])
+def test_agent_logs_mean_absolute_error(lstm_horizon: int) -> None:
     trainer = Trainer(
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),
         consistency_network=_ZeroConsistency(),
         unroll_steps=2,
-        lstm_horizon=2,
+        lstm_horizon=lstm_horizon,
     )
     batch = ReplayBatch(
         frames=torch.randint(0, 256, (2, 6, 1, 96, 96), dtype=torch.uint8),
         actions=torch.zeros(2, 2, 1, dtype=torch.long),
-        rewards=torch.zeros(2, 2),
+        rewards=torch.tensor([[1.0, 2.0], [-1.0, -2.0]]),
         policy_targets=torch.full((2, 3, 3), 1.0 / 3.0),
-        value_targets=torch.zeros(2, 3),
+        value_targets=torch.tensor([[1.0, 2.0, 3.0], [-1.0, -2.0, -3.0]]),
         action_mask=torch.ones(2, 2, dtype=torch.bool),
         policy_mask=torch.ones(2, 3, dtype=torch.bool),
         value_mask=torch.ones(2, 3, dtype=torch.bool),
@@ -473,10 +479,10 @@ def test_agent_scales_root_and_recurrent_losses_together() -> None:
     assert metrics.policy_loss == pytest.approx(
         torch.log(torch.tensor(3.0)).item()
     )
-    assert metrics.value_loss == pytest.approx(
-        torch.log(torch.tensor(601.0)).item()
-    )
-    assert metrics.reward_loss == pytest.approx(torch.log(torch.tensor(601.0)).item())
+    # Uniform symmetric-support logits decode to zero before the update.
+    # Positive and negative targets contribute equally to MAE.
+    assert metrics.value_loss == pytest.approx(2.0)
+    assert metrics.reward_loss == pytest.approx(1.5 if lstm_horizon == 1 else 2.0)
     assert metrics.consistency_loss == 0.0
     assert metrics.search_target_entropy == pytest.approx(
         torch.log(torch.tensor(3.0)).item()

@@ -36,8 +36,8 @@ class TrainMetrics:
     loss: Tensor
     # Unweighted means over valid targets, for learning diagnostics.
     policy_loss: Tensor
-    value_loss: Tensor
-    reward_loss: Tensor
+    value_loss: Tensor  # Mean absolute error of decoded scalar values.
+    reward_loss: Tensor  # Same metric for cumulative reward prefixes.
     consistency_loss: Tensor
     gradient_norm: Tensor
     search_target_entropy: Tensor
@@ -131,7 +131,7 @@ class _LearnerUnroll(nn.Module):
         )
 
     def _decode_values(self, logits: Tensor) -> Tensor:
-        """Decode root values without the eager decoder's cached support."""
+        """Decode scalar predictions without the eager decoder's cached support."""
         logits = logits.detach().float()
         probabilities = torch.softmax(logits, dim=-1)
         support = torch.arange(
@@ -240,6 +240,11 @@ class _LearnerUnroll(nn.Module):
             policy_mask[:, 0],
         )
         predicted_root_values = self._decode_values(value_logits)
+        value_error = (
+            (predicted_root_values - value_targets[:, 0]).abs()
+            * value_mask[:, 0]
+        ).sum()
+        reward_error = observations.new_zeros((), dtype=torch.float32)
         priorities = (
             predicted_root_values - value_targets[:, 0]
         ).abs() + self.priority_epsilon
@@ -251,6 +256,10 @@ class _LearnerUnroll(nn.Module):
                 actions[:, step],
                 hidden,
             )
+            reward_error += (
+                (self._decode_values(value_prefix_logits) - prefix_targets[step]).abs()
+                * action_mask[:, step]
+            ).sum()
             recurrent_reward_loss += ReplayBatch._scalar_loss(
                 value_prefix_logits,
                 prefix_targets[step],
@@ -270,6 +279,10 @@ class _LearnerUnroll(nn.Module):
             )
             recurrent_policy_loss += step_policy_loss
             recurrent_value_loss += step_value_loss
+            value_error += (
+                (self._decode_values(value_logits) - value_targets[:, step + 1]).abs()
+                * value_mask[:, step + 1]
+            ).sum()
             policy_statistics += self._policy_statistics(
                 policy_targets[:, step + 1],
                 policy_mask[:, step + 1],
@@ -327,9 +340,8 @@ class _LearnerUnroll(nn.Module):
             (
                 (root_policy_loss + recurrent_policy_loss).detach().float().sum()
                 / policy_mask.sum().clamp_min(1),
-                (root_value_loss + recurrent_value_loss).detach().float().sum()
-                / value_mask.sum().clamp_min(1),
-                recurrent_reward_loss.detach().float().sum() / valid_actions,
+                value_error / value_mask.sum().clamp_min(1),
+                reward_error / valid_actions,
                 recurrent_consistency_loss.detach().float().sum() / valid_actions,
             )
         )
