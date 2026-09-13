@@ -230,6 +230,9 @@ def load_agent_checkpoint(
             environment_config["frame_skip"]
         )
         lstm_horizon = int(training_config["lstm_horizon"])
+        precision = str(training_config.get("precision", "fp32"))
+        if precision not in {"fp32", "bf16"}:
+            raise ValueError("precision must be fp32 or bf16")
         if search_algorithm == "gumbel":
             num_simulations, num_top_actions = efficientzero_atari_gumbel_settings(
                 action_space_size,
@@ -243,13 +246,14 @@ def load_agent_checkpoint(
     print(
         "Evaluation search: "
         f"num_simulations={num_simulations}, "
-        f"num_top_actions={num_top_actions}"
+        f"num_top_actions={num_top_actions}, precision={precision}"
     )
 
     image_channels = 1 if grayscale else 3
     agent = AtariAgent(
         frame_stack * image_channels,
         action_space_size,
+        precision=precision,
         search_config=SearchConfig(
             num_simulations=num_simulations,
             discount=discount,

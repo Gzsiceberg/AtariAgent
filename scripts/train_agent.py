@@ -551,6 +551,7 @@ def main(config: TrainAgentConfig) -> None:
                 c_scale=config.self_play.c_scale,
             ),
             search_rng=random.Random(config.seed),
+            precision=config.training.precision,
         ).to(device)
         trainer = Trainer(
             agent.representation_network,

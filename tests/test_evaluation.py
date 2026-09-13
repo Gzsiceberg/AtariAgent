@@ -116,7 +116,8 @@ def test_evaluate_agent_rejects_invalid_parallelism() -> None:
         evaluate_agent(GreedyAgent(), OneStepEnvironment, episodes=1, num_envs=0)
 
 
-def test_load_agent_checkpoint_applies_search_overrides(monkeypatch) -> None:
+@pytest.mark.parametrize("precision", [None, "fp32", "bf16"])
+def test_load_agent_checkpoint_applies_search_overrides(monkeypatch, precision) -> None:
     checkpoint = {
         "config": {
             "environment": {
@@ -135,13 +136,17 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch) -> None:
         "prediction": {},
     }
 
+    if precision is not None:
+        checkpoint["config"]["training"]["precision"] = precision
+
     class FakeNetwork:
         def load_state_dict(self, state_dict) -> None:
             assert state_dict == {}
 
     class FakeAgent:
-        def __init__(self, in_channels, action_space_size, *, search_config) -> None:
+        def __init__(self, in_channels, action_space_size, *, search_config, precision) -> None:
             assert in_channels == 4
+            self.precision = precision
             self.action_space_size = action_space_size
             self.search_config = search_config
             self.representation_network = FakeNetwork()
@@ -169,6 +174,7 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch) -> None:
     )
 
     assert agent.action_space_size == 6
+    assert agent.precision == (precision or "fp32")
     assert agent.search_config.search_algorithm == "puct"
     assert agent.search_config.num_simulations == 50
     assert saved_config is checkpoint["config"]

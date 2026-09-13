@@ -100,6 +100,10 @@ def categorical_to_scalar(
         actual = logits.shape[-1] if logits.ndim else 0
         raise ValueError(f"expected {support_size} support logits, got {actual}")
 
+    # Both root values and recurrent prefixes must be decoded in FP32 under
+    # autocast: BF16 cannot accurately represent the inverse transform.
+    if logits.dtype in (torch.float16, torch.bfloat16):
+        logits = logits.float()
     probabilities = torch.softmax(logits, dim=-1)
     support = _categorical_support(
         support_min,
@@ -246,8 +250,12 @@ class AtariAgent(nn.Module):
         value_decoder: ScalarDecoder = categorical_to_scalar,
         value_prefix_decoder: ScalarDecoder = categorical_to_scalar,
         mcts_rng: random.Random | None = None,
+        precision: str = "fp32",
     ) -> None:
         super().__init__()
+        if precision not in {"fp32", "bf16"}:
+            raise ValueError("precision must be fp32 or bf16")
+        self.precision = precision
         if action_space_size <= 0:
             raise ValueError("action_space_size must be positive")
         if search_rng is not None and mcts_rng is not None:
@@ -301,22 +309,29 @@ class AtariAgent(nn.Module):
         if was_training:
             self.eval()
         try:
-            states = self.representation_network(observations)
-            policy_logits, value_logits = self.prediction_network(states)
-            self.recurrent_evaluator.validate_policy(policy_logits, states.shape[0])
-            values = self.recurrent_evaluator.decode(
-                self.recurrent_evaluator.value_decoder,
-                value_logits,
-                "value_decoder",
-            )
+            # Match the native reanalysis precision for root inference AND
+            # every recurrent search expansion. Parameters remain FP32.
+            with torch.autocast(
+                device_type=observations.device.type,
+                dtype=torch.bfloat16,
+                enabled=self.precision == "bf16",
+            ):
+                states = self.representation_network(observations)
+                policy_logits, value_logits = self.prediction_network(states)
+                self.recurrent_evaluator.validate_policy(policy_logits, states.shape[0])
+                values = self.recurrent_evaluator.decode(
+                    self.recurrent_evaluator.value_decoder,
+                    value_logits,
+                    "value_decoder",
+                )
 
-            search_batch = self.search.search_batch(
-                states,
-                values,
-                policy_logits,
-                root_noise_temperature=root_noise_temperature,
-                gumbel_sampling=gumbel_sampling,
-            )
+                search_batch = self.search.search_batch(
+                    states,
+                    values,
+                    policy_logits,
+                    root_noise_temperature=root_noise_temperature,
+                    gumbel_sampling=gumbel_sampling,
+                )
             search_results = self.search.materialize_results(
                 search_batch,
                 temperature=temperature,
