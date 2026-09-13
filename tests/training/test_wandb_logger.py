@@ -35,12 +35,8 @@ def make_train_metrics() -> TrainMetrics:
         consistency_loss=torch.tensor(-0.5),
         gradient_norm=torch.tensor(5.0),
         search_target_entropy=torch.tensor(0.1),
-        network_policy_entropy=torch.tensor(0.2),
-        policy_kl_divergence=torch.tensor(0.3),
         search_target_max_probability=torch.tensor(0.4),
-        network_policy_max_probability=torch.tensor(0.5),
         search_target_effective_actions=torch.tensor(1.1),
-        network_policy_effective_actions=torch.tensor(1.2),
         learning_rate=0.2,
         priorities=torch.ones(2),
     )
@@ -85,27 +81,10 @@ def test_wandb_logger_emits_training_metrics() -> None:
             "train/consistency_loss": -0.5,
             "train/gradient_norm": 5.0,
             "train/search_target_entropy": pytest.approx(0.1),
-            "train/network_policy_entropy": pytest.approx(0.2),
-            "train/policy_kl_divergence": pytest.approx(0.3),
             "train/search_target_max_probability": pytest.approx(0.4),
-            "train/network_policy_max_probability": pytest.approx(0.5),
             "train/search_target_effective_actions": pytest.approx(1.1),
-            "train/network_policy_effective_actions": pytest.approx(1.2),
         }
     ]
-
-
-@pytest.mark.parametrize("ready_count", [0, 2])
-def test_wandb_logger_emits_prefetch_ready_count(ready_count: int) -> None:
-    run = FakeRun()
-    logger = WandbLogger(run)
-
-    logger.log_training(
-        make_train_metrics(), update=10, prefetch_ready_batches=ready_count
-    )
-
-    assert run.logged[0]["train/update"] == 10
-    assert run.logged[0]["train/prefetch_ready_batches"] == ready_count
 
 
 def test_wandb_logger_emits_reanalysis_metrics() -> None:

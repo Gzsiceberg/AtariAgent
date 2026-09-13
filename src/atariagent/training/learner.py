@@ -41,12 +41,8 @@ class TrainMetrics:
     consistency_loss: Tensor
     gradient_norm: Tensor
     search_target_entropy: Tensor
-    network_policy_entropy: Tensor
-    policy_kl_divergence: Tensor
     search_target_max_probability: Tensor
-    network_policy_max_probability: Tensor
     search_target_effective_actions: Tensor
-    network_policy_effective_actions: Tensor
     learning_rate: float
     priorities: Tensor
 
@@ -113,35 +109,23 @@ class _LearnerUnroll(nn.Module):
 
     @staticmethod
     def _policy_statistics(
-        policy_logits: Tensor,
         policy_targets: Tensor,
         policy_mask: Tensor,
     ) -> Tensor:
-        """Return unweighted sums of policy diagnostics and valid-root count."""
-        logits = policy_logits.detach().float()
+        """Return unweighted sums of search-target diagnostics and valid-root count."""
         targets = policy_targets.detach().float()
         mask = policy_mask.to(dtype=torch.float32)
-        log_probabilities = torch.log_softmax(logits, dim=-1)
-        probabilities = log_probabilities.exp()
         target_log_probabilities = torch.where(
             targets > 0.0,
             targets.clamp_min(torch.finfo(torch.float32).tiny).log(),
             torch.zeros_like(targets),
         )
         target_entropy = -(targets * target_log_probabilities).sum(dim=-1)
-        network_entropy = -(probabilities * log_probabilities).sum(dim=-1)
-        kl_divergence = (
-            targets * (target_log_probabilities - log_probabilities)
-        ).sum(dim=-1)
         return torch.stack(
             (
                 (target_entropy * mask).sum(),
-                (network_entropy * mask).sum(),
-                (kl_divergence * mask).sum(),
                 (targets.amax(dim=-1) * mask).sum(),
-                (probabilities.amax(dim=-1) * mask).sum(),
                 (target_entropy.exp() * mask).sum(),
-                (network_entropy.exp() * mask).sum(),
                 mask.sum(),
             )
         )
@@ -238,7 +222,7 @@ class _LearnerUnroll(nn.Module):
         recurrent_value_loss = observations.new_zeros(batch_size)
         recurrent_reward_loss = observations.new_zeros(batch_size)
         recurrent_consistency_loss = observations.new_zeros(batch_size)
-        policy_statistics = observations.new_zeros(8, dtype=torch.float32)
+        policy_statistics = observations.new_zeros(4, dtype=torch.float32)
 
         state = self.representation(observations)
         policy_logits, value_logits = self.prediction(state)
@@ -252,7 +236,6 @@ class _LearnerUnroll(nn.Module):
             0,
         )
         policy_statistics += self._policy_statistics(
-            policy_logits,
             policy_targets[:, 0],
             policy_mask[:, 0],
         )
@@ -288,7 +271,6 @@ class _LearnerUnroll(nn.Module):
             recurrent_policy_loss += step_policy_loss
             recurrent_value_loss += step_value_loss
             policy_statistics += self._policy_statistics(
-                policy_logits,
                 policy_targets[:, step + 1],
                 policy_mask[:, step + 1],
             )
@@ -337,8 +319,8 @@ class _LearnerUnroll(nn.Module):
             + self.reward_weight * reward_loss
             + self.consistency_weight * consistency_loss
         )
-        valid_policy_roots = policy_statistics[7].clamp_min(1.0)
-        policy_diagnostics = policy_statistics[:7] / valid_policy_roots
+        valid_policy_roots = policy_statistics[3].clamp_min(1.0)
+        policy_diagnostics = policy_statistics[:3] / valid_policy_roots
         # Logging only: do not let replay weights or padding dilute these means.
         valid_actions = action_mask.sum().clamp_min(1)
         normalized_losses = torch.stack(
@@ -357,10 +339,6 @@ class _LearnerUnroll(nn.Module):
             policy_diagnostics[0],
             policy_diagnostics[1],
             policy_diagnostics[2],
-            policy_diagnostics[3],
-            policy_diagnostics[4],
-            policy_diagnostics[5],
-            policy_diagnostics[6],
             normalized_losses,
         )
 
@@ -628,12 +606,8 @@ class Trainer:
                 loss,
                 new_priorities,
                 search_target_entropy,
-                network_policy_entropy,
-                policy_kl_divergence,
                 search_target_max_probability,
-                network_policy_max_probability,
                 search_target_effective_actions,
-                network_policy_effective_actions,
                 normalized_losses,
             ) = outputs
 
@@ -654,19 +628,11 @@ class Trainer:
             consistency_loss=normalized_losses[3].detach(),
             gradient_norm=gradient_norm.detach(),
             search_target_entropy=search_target_entropy.detach(),
-            network_policy_entropy=network_policy_entropy.detach(),
-            policy_kl_divergence=policy_kl_divergence.detach(),
             search_target_max_probability=(
                 search_target_max_probability.detach()
             ),
-            network_policy_max_probability=(
-                network_policy_max_probability.detach()
-            ),
             search_target_effective_actions=(
                 search_target_effective_actions.detach()
-            ),
-            network_policy_effective_actions=(
-                network_policy_effective_actions.detach()
             ),
             learning_rate=learning_rate,
             priorities=new_priorities.detach(),

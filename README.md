@@ -200,7 +200,7 @@ uv run python scripts/train_agent.py \
     wandb.project=AtariAgent
 ```
 
-The W&B entity, project, and tags can also be set through overrides such as `wandb.entity=<entity>` and `wandb.tags=[atari,baseline]`. Policy diagnostics include search-target entropy, network-policy entropy, target-to-network KL divergence, maximum action probability, and effective action count `exp(H)`. Reanalysis diagnostics include exact cache hit rate.
+The W&B entity, project, and tags can also be set through overrides such as `wandb.entity=<entity>` and `wandb.tags=[atari,baseline]`. Search-target diagnostics include entropy, maximum action probability, and effective action count `exp(H)`. Reanalysis diagnostics include exact cache hit rate.
 
 ## Using AtariAgent as a research base
 

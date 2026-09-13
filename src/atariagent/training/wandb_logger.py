@@ -93,7 +93,6 @@ class WandbLogger:
         metrics: TrainMetrics,
         *,
         update: int,
-        prefetch_ready_batches: int | None = None,
         policy_roots_requested: int = 0,
         policy_roots_searched: int = 0,
         cache_hits: int = 0,
@@ -110,23 +109,13 @@ class WandbLogger:
             "train/consistency_loss": metrics.consistency_loss.item(),
             "train/gradient_norm": metrics.gradient_norm.item(),
             "train/search_target_entropy": metrics.search_target_entropy.item(),
-            "train/network_policy_entropy": metrics.network_policy_entropy.item(),
-            "train/policy_kl_divergence": metrics.policy_kl_divergence.item(),
             "train/search_target_max_probability": (
                 metrics.search_target_max_probability.item()
-            ),
-            "train/network_policy_max_probability": (
-                metrics.network_policy_max_probability.item()
             ),
             "train/search_target_effective_actions": (
                 metrics.search_target_effective_actions.item()
             ),
-            "train/network_policy_effective_actions": (
-                metrics.network_policy_effective_actions.item()
-            ),
         }
-        if prefetch_ready_batches is not None:
-            data["train/prefetch_ready_batches"] = prefetch_ready_batches
         if policy_roots_requested > 0:
             data.update(
                 {
