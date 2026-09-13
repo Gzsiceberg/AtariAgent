@@ -3,19 +3,21 @@
 #
 # 1 / value_loss_coeff:    loss.value_weight=0.5
 # 2 / consistency_weight:  loss.consistency_weight=5
+# 3 / priority_alpha:      replay.priority_alpha=0.6
 # 4 / combined:            loss.value_weight=0.5, loss.consistency_weight=5
 #
 # All experiments:
 # - enable W&B logging
 # - disable pre-final snapshot saving
-# - train on ENVIRONMENT_ID (default ALE/BattleZone-v5) using default settings otherwise
+# - train on ENVIRONMENT_ID (default ALE/Qbert-v5) using default settings otherwise
 # - run full collection before the final phase unless SNAPSHOT_PATH is provided
 #
 # Usage:
-#   ./scripts/schedule_tsp_experiments.sh           # all three
-#   ./scripts/schedule_tsp_experiments.sh all       # all three
+#   ./scripts/schedule_tsp_experiments.sh           # all four
+#   ./scripts/schedule_tsp_experiments.sh all       # all four
 #   ./scripts/schedule_tsp_experiments.sh 1         # value loss only
 #   ./scripts/schedule_tsp_experiments.sh consistency_weight
+#   ./scripts/schedule_tsp_experiments.sh 3         # priority alpha 0.6
 #   ./scripts/schedule_tsp_experiments.sh 4         # combined overrides
 #   ./scripts/schedule_tsp_experiments.sh 1 4       # selected experiments
 #
@@ -23,7 +25,7 @@
 #   RUN_ID:          stable label for wandb/run directories (default timestamp)
 #   RUN_ROOT:        experiment root directory
 #   SEED:            random seed (default 2)
-#   ENVIRONMENT_ID:  Atari environment (default ALE/BattleZone-v5)
+#   ENVIRONMENT_ID:  Atari environment (default ALE/Qbert-v5; ALE/ added if omitted)
 #   SNAPSHOT_PATH:   optional checkpoint to resume from with `checkpoint.resume_pre_final_path`
 #   TRAINING_STEPS:  number of collection updates (default 100000)
 #   WANDB_PROJECT:   wandb project (default AtariAgent)
@@ -43,7 +45,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 usage() {
-    printf 'Usage: %s [all | 1/value_loss_coeff | 2/consistency_weight | 4/combined ...]\n' "${0##*/}"
+    printf 'Usage: %s [all | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha | 4/combined ...]\n' "${0##*/}"
 }
 
 # Validate the complete selection before prompting or creating any jobs.
@@ -60,10 +62,11 @@ for selection in "$@"; do
                 usage >&2
                 exit 1
             fi
-            experiments=(value_loss_coeff consistency_weight combined)
+            experiments=(value_loss_coeff consistency_weight priority_alpha combined)
             ;;
         1|value_loss_coeff) experiments+=(value_loss_coeff) ;;
         2|consistency_weight) experiments+=(consistency_weight) ;;
+        3|priority_alpha) experiments+=(priority_alpha) ;;
         4|combined) experiments+=(combined) ;;
         *)
             printf 'Error: unknown experiment: %s\n' "$selection" >&2
@@ -80,7 +83,8 @@ fi
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RUN_ROOT="${RUN_ROOT:-runs/tsp_sweep/$RUN_ID}"
-ENVIRONMENT_ID="${ENVIRONMENT_ID:-ALE/BattleZone-v5}"
+ENVIRONMENT_ID="${ENVIRONMENT_ID:-ALE/Qbert-v5}"
+ENVIRONMENT_ID="ALE/${ENVIRONMENT_ID#ALE/}"
 SEED="${SEED:-2}"
 TRAINING_STEPS="${TRAINING_STEPS:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-AtariAgent}"
@@ -202,6 +206,7 @@ for experiment in "${experiments[@]}"; do
     case "$experiment" in
         value_loss_coeff) overrides=("loss.value_weight=0.5") ;;
         consistency_weight) overrides=("loss.consistency_weight=5") ;;
+        priority_alpha) overrides=("replay.priority_alpha=0.6") ;;
         combined) overrides=("loss.value_weight=0.5" "loss.consistency_weight=5") ;;
     esac
     schedule "$experiment" "${overrides[@]}"
