@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Submit baseline, value_loss_coeff, per_v2, mixed_value_threshold, and
-# target_update_interval experiments to jobd's shared controller queue. No local files or credentials are sent to workers.
+# Submit baseline, value_loss_coeff, per_v2, mixed_value_threshold,
+# target_update_interval, and gumbel experiments to jobd's shared controller queue.
+# No local files or credentials are sent to workers.
 #
-# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | 6 | 9 | 10 | experiment names]
+# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | 6 | 9 | 10 | 11 | experiment names]
 # Example: DRY_RUN=1 ./scripts/schedule_jobd_experiments.sh baseline per_v2
 #
 # Submission environment:
@@ -25,7 +26,7 @@
 set -Eeuo pipefail
 
 usage() {
-    echo "Usage: ${0##*/} [all | 0/baseline | 1/value_loss_coeff | 6/per_v2 | 9/mixed_value_threshold | 10/target_update_interval ...]"
+    echo "Usage: ${0##*/} [all | 0/baseline | 1/value_loss_coeff | 6/per_v2 | 9/mixed_value_threshold | 10/target_update_interval | 11/gumbel ...]"
 }
 
 declare -a experiments=()
@@ -38,13 +39,14 @@ for selection in "$@"; do
                 echo "Error: 'all' must be used alone." >&2
                 exit 1
             fi
-            experiments=(baseline value_loss_coeff per_v2 mixed_value_threshold target_update_interval)
+            experiments=(baseline value_loss_coeff per_v2 mixed_value_threshold target_update_interval gumbel)
             ;;
         0|baseline) experiments+=(baseline) ;;
         1|value_loss_coeff) experiments+=(value_loss_coeff) ;;
         6|per_v2) experiments+=(per_v2) ;;
         9|mixed_value_threshold) experiments+=(mixed_value_threshold) ;;
         10|target_update_interval) experiments+=(target_update_interval) ;;
+        11|gumbel) experiments+=(gumbel) ;;
         *) printf 'Error: unknown experiment: %s\n' "$selection" >&2; usage >&2; exit 1 ;;
     esac
 done
@@ -92,6 +94,7 @@ for experiment in "${experiments[@]}"; do
         per_v2) overrides=("replay.per_mode=v2") ;;
         mixed_value_threshold) overrides=("training.mixed_value_threshold=10000") ;;
         target_update_interval) overrides=("reanalysis.target_update_interval=500") ;;
+        gumbel) overrides=("search=gumbel") ;;
     esac
     output_dir="$RUN_ROOT/$experiment"
     args=(
