@@ -5,6 +5,7 @@ all:
         worker_example:
           ansible_host: YOUR_INSTANCE_IP
           ansible_port: 22
+          instance_id: YOUR_VAST_INSTANCE_ID  # Required by queue_stop.yml
       vars:
         ansible_user: root
         ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15'

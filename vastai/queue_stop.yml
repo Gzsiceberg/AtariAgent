@@ -1,0 +1,67 @@
+---
+# Usage: ansible-playbook -i /path/to/inventory.yml vastai/queue_stop.yml
+# Add --limit worker_name to target one instance.
+# Requires root SSH access, uv, and an already-running jobd worker.
+# Run once per instance: rerunning submits another local stop job.
+# Local jobs run after current work and when the remote queue has no pending job.
+# Stopping preserves disks; storage charges continue.
+- name: Queue instance self-stop after remote work
+  hosts: workers
+  gather_facts: false
+  tasks:
+    - name: Require a valid Vast.ai instance ID
+      ansible.builtin.assert:
+        that: instance_id | string is match('^[0-9]+$')
+
+    - name: Require an existing jobd worker
+      ansible.builtin.command: pgrep -x jobd-worker
+      changed_when: false
+
+    - name: Install the official Vast.ai CLI
+      ansible.builtin.command: /root/.local/bin/uv tool install vastai
+      register: vastai_install
+      changed_when: "'Installed' in vastai_install.stderr"
+
+    - name: Configure only the instance-scoped API key
+      ansible.builtin.shell: |
+        /root/.local/bin/uv run --no-project --no-config python - <<'PY'
+        import os
+        from pathlib import Path
+
+        os.umask(0o077)
+        env = dict(
+            entry.split(b"=", 1)
+            for entry in Path("/proc/1/environ").read_bytes().split(b"\0")
+            if b"=" in entry
+        )
+        expected = {{ instance_id | string | to_json }}
+        if env[b"CONTAINER_ID"].decode() != expected:
+            raise RuntimeError("Unexpected instance identity")
+        key = env[b"CONTAINER_API_KEY"].strip()
+        if not key:
+            raise RuntimeError("Missing instance-scoped API key")
+        target = Path("/root/.config/vastai/vast_api_key")
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if target.is_symlink():
+            raise RuntimeError("Refusing to write credentials through a symlink")
+        if target.exists() and target.read_bytes().strip() != key:
+            raise RuntimeError("Refusing to replace a different API key")
+        target.write_bytes(key)
+        target.chmod(0o600)
+        PY
+      no_log: true
+
+    - name: Queue this instance's stop command locally
+      ansible.builtin.command:
+        argv:
+          - /root/.local/bin/jobd
+          - --local
+          - /root/.local/bin/vastai
+          - stop
+          - instance
+          - '{{ instance_id | string }}'
+      register: stop_job
+
+    - name: Report the queued job
+      ansible.builtin.debug:
+        msg: 'Instance {{ instance_id }}: {{ stop_job.stdout }} queued to stop when remote work is drained.'
