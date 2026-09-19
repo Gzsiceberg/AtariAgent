@@ -2,7 +2,7 @@
 # Usage: ansible-playbook -i /path/to/inventory.yml vastai/queue_stop.yml
 # Add --limit worker_name to target one instance.
 # Requires root SSH access, uv, and an already-running jobd worker.
-# Run once per instance: rerunning submits another local stop job.
+# Safe to rerun: inspect the live local queue under a per-worker lock.
 # Local jobs run after current work and when the remote queue has no pending job.
 # Stopping preserves disks; storage charges continue.
 - name: Queue instance self-stop after remote work
@@ -51,17 +51,13 @@
         PY
       no_log: true
 
-    - name: Queue this instance's stop command locally
-      ansible.builtin.command:
-        argv:
-          - /root/.local/bin/jobd
-          - --local
-          - /root/.local/bin/vastai
-          - stop
-          - instance
-          - '{{ instance_id | string }}'
+    - name: Ensure this instance has a pending local stop job
+      ansible.builtin.script:
+        cmd: '../scripts/ensure_local_stop.py {{ instance_id }}'
+        executable: /usr/bin/python3
       register: stop_job
+      changed_when: (stop_job.stdout | from_json).changed
 
-    - name: Report the queued job
+    - name: Report pending stop job IDs
       ansible.builtin.debug:
-        msg: 'Instance {{ instance_id }}: {{ stop_job.stdout }} queued to stop when remote work is drained.'
+        msg: 'Instance {{ instance_id }}: {{ (stop_job.stdout | from_json).job_ids }} will stop when remote work is drained.'

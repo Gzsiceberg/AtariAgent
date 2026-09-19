@@ -1,21 +1,25 @@
 ---
 # Fresh Ubuntu 24.04 workers only. The agent provisions read-only repository
 # access and the worker-token file before running this playbook.
-- name: Prepare and bootstrap workers independently
+- name: Prepare workers independently without activating them
   hosts: workers
   gather_facts: false
   strategy: free
   vars:
     worker_token_file: "{{ lookup('env', 'HOME') }}/.local/state/atariagent/provision/worker-token"
+    jobd_queue: default
+    jobd_controller: https://jobd-controller.aflashsheng.workers.dev
   tasks:
     - name: Require the worker token before setup
       ansible.builtin.assert:
         that: lookup('file', worker_token_file) | trim | length > 0
       no_log: true
 
-    - name: Wait for SSH and Python
-      ansible.builtin.wait_for_connection:
-        timeout: 600
+    # Run only after the instance is ready. Do not hide changed keys or auth
+    # failures inside a long wait_for_connection retry loop.
+    - name: Check SSH and Python
+      ansible.builtin.raw: command -v python3
+      changed_when: false
 
     - name: Refuse to interrupt an existing worker
       ansible.builtin.shell: |
@@ -56,6 +60,8 @@
         chdir: '{{ repo_root }}'
       environment:
         JOBD_WORKER_TOKEN: "{{ lookup('file', worker_token_file) | trim }}"
+        JOBD_QUEUE: '{{ jobd_queue }}'
+        JOBD_CONTROLLER: '{{ jobd_controller }}'
       async: 7200
       poll: 0
       register: bootstrap_job
@@ -81,5 +87,5 @@
         that:
           - bootstrap_result.finished | default(false) | bool
           - bootstrap_result.rc | default(-1) | int == 0
-        success_msg: 'Bootstrap complete; worker is ready.'
+        success_msg: 'Preparation complete; worker is stopped. Run activate.yml explicitly.'
         fail_msg: 'Bootstrap failed, timed out, or status is unavailable. Inspect /root/bootstrap.log before retrying.'

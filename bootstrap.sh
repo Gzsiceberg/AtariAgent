@@ -14,6 +14,10 @@ if pgrep -x jobd-worker >/dev/null; then
     exit 1
 fi
 
+ready_dir="$HOME/.local/state/atariagent"
+mkdir -p "$ready_dir"
+rm -f "$ready_dir/prepared-revision"
+
 echo '[1/5] Syncing dependencies'
 uv sync --frozen --extra wandb
 
@@ -35,8 +39,7 @@ curl -fsSL https://github.com/Gzsiceberg/jobd/releases/latest/download/install.s
 echo '[4/5] Verifying worker token'
 jobd auth verify-worker-token
 
-echo '[5/5] Starting worker'
-# start never interrupts an already-running worker, unlike restart.
-jobd worker start
+echo '[5/5] Recording prepared revision (worker remains stopped)'
+git rev-parse HEAD > "$ready_dir/prepared-revision"
 
-echo 'Bootstrap complete'
+echo 'Preparation complete; activate separately with vastai/activate.yml'

@@ -49,7 +49,7 @@ def run_bootstrap(env):
     return result, trace
 
 
-def test_bootstrap_verifies_before_start(bootstrap_env):
+def test_bootstrap_prepares_without_starting_worker(bootstrap_env):
     result, trace = run_bootstrap(bootstrap_env)
     assert result.returncode == 0
     assert trace.splitlines() == [
@@ -57,18 +57,25 @@ def test_bootstrap_verifies_before_start(bootstrap_env):
         "uv run --no-sync python -",
         "install",
         "jobd auth verify-worker-token",
-        "jobd worker start",
     ]
-    assert "Bootstrap complete" in result.stdout
+    assert "Preparation complete" in result.stdout
+    marker = Path(bootstrap_env["HOME"]) / ".local/state/atariagent/prepared-revision"
+    assert len(marker.read_text().strip()) == 40
+    assert "jobd worker" not in trace
 
 
-@pytest.mark.parametrize("failure", ["UV_EXIT", "READINESS_EXIT", "CURL_EXIT", "VERIFY_EXIT"])
+@pytest.mark.parametrize(
+    "failure", ["UV_EXIT", "READINESS_EXIT", "CURL_EXIT", "VERIFY_EXIT"]
+)
 def test_failure_prevents_worker_start(bootstrap_env, failure):
     bootstrap_env[failure] = "1"
     result, trace = run_bootstrap(bootstrap_env)
     assert result.returncode != 0
     assert "jobd worker" not in trace
     assert "Bootstrap failed" in result.stderr
+    assert not (
+        Path(bootstrap_env["HOME"]) / ".local/state/atariagent/prepared-revision"
+    ).exists()
 
 
 def test_existing_worker_is_not_interrupted(bootstrap_env):

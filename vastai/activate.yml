@@ -1,0 +1,35 @@
+---
+# Explicit activation only; never restarts an existing worker.
+# W&B verification is intentionally omitted. Queue secrets remain in jobd.
+- name: Activate prepared workers
+  hosts: workers
+  gather_facts: false
+  vars:
+    worker_token_file: "{{ lookup('env', 'HOME') }}/.local/state/atariagent/provision/worker-token"
+    jobd_queue: default
+    jobd_controller: https://jobd-controller.aflashsheng.workers.dev
+  tasks:
+    - name: Activate exactly the prepared checkout
+      ansible.builtin.shell: |
+        set -Eeuo pipefail
+        export PATH=/root/.local/bin:$PATH
+        unset JOBD_MASTER_KEY
+        if pgrep -x jobd-worker >/dev/null; then
+          echo 'Existing worker: refusing activation or restart.' >&2
+          exit 1
+        fi
+        test "$(git rev-parse HEAD)" = "$(cat /root/.local/state/atariagent/prepared-revision)"
+        jobd auth verify-worker-token
+        jobd worker start
+      args:
+        executable: /bin/bash
+        chdir: '{{ repo_root }}'
+      environment:
+        JOBD_WORKER_TOKEN: "{{ lookup('file', worker_token_file) | trim }}"
+        JOBD_QUEUE: '{{ jobd_queue }}'
+        JOBD_CONTROLLER: '{{ jobd_controller }}'
+        JOBD_LOCAL_PERSIST: 'true'
+      no_log: true
+
+- name: Install the local stop safeguard after activation
+  ansible.builtin.import_playbook: queue_stop.yml

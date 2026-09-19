@@ -1,45 +1,154 @@
 # Vast.ai worker setup
 
-Use fresh Ubuntu 24.04 instances with root SSH access and Python installed. Never run setup over an existing jobd worker.
+Use the existing Vast CLI and Ansible playbooks. No provisioning daemon or billing
+watchdog is needed. Fresh Ubuntu 24.04 instances only; never prepare over an
+existing jobd worker. **Preparation and activation are separate.**
 
-## Agent preparation
+## 1. Keep one private inventory
 
-1. On the current host, ensure Ansible, jobd, and authenticated `gh` are available.
-2. Generate `/root/.ssh/atari_deploy` on each instance and register its public key as a **read-only** GitHub deploy key. Keep private keys on their instances. Add GitHub's published SSH host keys to each instance's `known_hosts`.
-3. Ask the user for the worker-token duration. Create one shared token on the current host:
+```bash
+umask 077
+state="$HOME/.local/state/atariagent/provision"
+mkdir -p "$state"
+chmod 700 "$state"
+# First use only; never overwrite an existing inventory.
+test -e "$state/inventory.yml" || cp vastai/inventory.example.yml "$state/inventory.yml"
+chmod 600 "$state/inventory.yml"
+```
+
+Add each new instance to this inventory rather than creating another inventory.
+Record its instance ID, SSH endpoint, preparation status and token expiry. Do not
+put token values in inventory. Always use `--limit` when running playbooks against
+new workers. Keep credentials, rental responses and provisioning logs in this
+private directory, never in Git.
+
+## 2. Rent safely
+
+Check availability and price **including 50 GB storage** immediately before renting.
+If a broad search misses an offer, recheck its known `machine_id`; do not assume it
+is unavailable. Review CPU performance and verification status as described in
+`vastai_instances.md`. Never substitute offers without approval.
+
+For each approved offer, give the rental a unique label and save that label before
+submitting. Capture the rental response directly to a private file: it contains
+an instance API key. Print only the success flag and new instance ID.
+
+```bash
+# Set OFFER to the user-approved offer ID. Run once, not in an automatic retry loop.
+(
+set -euo pipefail
+set -C  # Refuse to overwrite an earlier rental intent or response.
+umask 077
+label="atari-${OFFER}-$(date +%s)"
+printf '%s\n' "$label" > "$state/rental-${OFFER}.label"
+vastai create instance "$OFFER" \
+  --image nvidia/cuda:13.0.2-devel-ubuntu24.04 --disk 50 --ssh --direct \
+  --cancel-unavail --label "$label" \
+  --onstart-cmd 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3' \
+  --raw > "$state/rental-${OFFER}.json" 2> "$state/rental-${OFFER}.err"
+uv run python - "$state/rental-${OFFER}.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as file:
+    result = json.load(file)
+print({key: result.get(key) for key in ('success', 'new_contract')})
+PY
+)
+```
+
+After a timeout, malformed response or client error, **do not retry creation**.
+Inspect account instances for the saved unique label and record any resulting
+instance ID first. A failed client response does not mean rental failed. Do not
+print raw rental responses or delete their records to start over.
+
+Attach the submitting machine's SSH public key to the new instance before waiting
+for SSH. Add its endpoint to the existing inventory immediately.
+
+## 3. Check SSH before provisioning
+
+Use `BatchMode=yes`, a short `ConnectTimeout`, and `StrictHostKeyChecking=accept-new`.
+Make an explicit SSH probe and inspect its error before launching Ansible:
+
+- Timeout/refused while the instance is loading: wait and retry within a deadline.
+- Authentication failure: check the attached public key; do not blindly retry.
+- Missing Python: inspect the instance's startup installation.
+- **Changed host key: stop immediately.** Independently verify its fingerprint or
+  ask whether to stop/destroy the instance. Never automatically remove known keys
+  or use `StrictHostKeyChecking=no`.
+
+New host keys use trust on first use; Vast's verification status is not SSH identity
+verification. Do not suppress SSH stderr in a readiness loop.
+
+## 4. Prepare, without starting training
+
+On the submitting host, ensure `ansible-playbook`, `jobd`, and authenticated `gh`
+are available. Commit and push the intended bootstrap revision to `main` first.
+
+1. Generate `/root/.ssh/atari_deploy` on each instance. Register its public key as
+   a **read-only** GitHub deploy key; keep the private key on that instance.
+2. Install GitHub's published SSH host keys from `https://api.github.com/meta`
+   in each instance's `known_hosts` (not unverified `ssh-keyscan` output).
+3. Ask for the worker-token lifetime, then generate a new token on the submitting
+   host. Use a distinct private file for each batch so existing credentials are
+   not overwritten:
 
    ```bash
-   umask 077
-   state="$HOME/.local/state/atariagent/provision"
-   mkdir -p "$state"
-   chmod 700 "$state"
-   jobd auth create-worker-token --duration USER_CHOSEN_DURATION > "$state/worker-token"
-   chmod 600 "$state/worker-token"
+   token_file="$state/worker-token-$(date +%Y%m%d_%H%M%S)"
+   jobd auth create-worker-token --duration USER_CHOSEN_DURATION > "$token_file"
+   chmod 600 "$token_file"
    ```
 
-   Never copy `JOBD_MASTER_KEY` to instances. Supply `WANDB_API_KEY` through jobd queue secrets, not SSH.
-4. Copy `vastai/inventory.example.yml` to `$state/inventory.yml` and fill in SSH addresses and ports. Ensure the desired bootstrap changes are pushed to `main`.
-
-## Run Ansible
-
-```bash
-ansible-playbook -i "$state/inventory.yml" vastai/setup.yml
-```
-
-Ansible installs system dependencies, clones `main`, installs uv, and launches bootstrap with **async**. Each instance progresses independently. Bootstrap syncs dependencies, checks OpenCV/CUDA, installs latest jobd, verifies the token, then starts the worker.
-
-Ansible reports success or failure. Logs stay in `/root/bootstrap.log` on each instance. It also prints async job IDs for manual `async_status` checks if disconnected. Do not rerun setup blindly after a failure or disconnect.
-
-To add an instance, add its SSH details to the inventory and use `--limit new_worker_name`.
-
-## Verify W&B authentication
-
-Submit authentication-only jobs from the current host:
+   Record its expiry alongside the corresponding inventory entries. Never copy
+   `JOBD_MASTER_KEY` to workers. W&B authentication is supplied through jobd queue
+   secrets; **no W&B verification step is required**.
 
 ```bash
-jobd bash -c 'cd /workspace/AtariAgent && exec /root/.local/bin/uv run --no-sync python scripts/verify_wandb_auth.py'
+ansible-playbook -i "$state/inventory.yml" vastai/setup.yml \
+  --limit new_worker_names -e "worker_token_file=$token_file"
 ```
 
-Check successful execution on every instance; shared-queue jobs may land on the same worker. The test creates no W&B run and removes temporary login files.
+Setup installs dependencies, clones `main`, and runs bootstrap asynchronously.
+Bootstrap checks CUDA and the token and records the prepared Git revision. It
+**does not start jobd**. Logs stay at `/root/bootstrap.log`; Ansible reports async
+IDs. After a disconnect, inspect that async job before rerunning—do not launch
+overlapping preparation. Mark successful instances prepared in the inventory.
 
-Reusing a token preserves its original expiry. Token expiry does **not** stop rental billing.
+## 5. Activate explicitly and ensure a stop job
+
+```bash
+ansible-playbook -i "$state/inventory.yml" vastai/activate.yml \
+  --limit prepared_worker_names -e "worker_token_file=$token_file"
+```
+
+Activation checks the prepared revision and token and refuses an already-running
+worker. It starts jobd without restarting anything, enables persistent local jobs,
+and runs `queue_stop.yml`. Workers may immediately consume queued training jobs.
+Existing workers are not restarted to change persistence settings.
+
+Stop scheduling is safe to rerun:
+
+```bash
+ansible-playbook -i "$state/inventory.yml" vastai/queue_stop.yml --limit worker_names
+```
+
+It checks the live JSON local queue under a file lock and skips an existing queued
+or running stop command for that instance. Inspection errors fail closed; uncertain
+submissions are not automatically retried. The reported job IDs can be recorded in
+the inventory. Existing duplicates are reported, not deleted. Use this playbook
+for all self-stop submissions so callers share the lock.
+
+## If any step fails
+
+Report the instance ID, failed stage and continued billing immediately. Ask the
+user to choose **keep running, stop, or destroy**. Never leave the billing consequence
+implicit and never destroy an instance without approval. Proceed independently
+with other healthy instances; preserve successful setup rather than restarting it.
+
+- Stop preserves disks; storage charges continue.
+- Destroy permanently deletes instance data.
+- Confirm the actual state with Vast after either request.
+- Local stop jobs run after current work and a successful empty controller claim.
+  They cannot guarantee shutdown if the worker crashes, the controller is
+  unreachable or its token expires. **Token expiry is not a billing deadline.**
+
+No background monitor is installed. If a hard spending cutoff is required, agree
+on that separately; do not silently add a daemon or assume local stop jobs enforce it.
