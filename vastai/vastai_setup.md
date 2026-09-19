@@ -1,13 +1,45 @@
 # Vast.ai worker setup
 
-1. Generate an SSH key on each instance and add it as a read-only deploy key for this repository.
-2. Clone AtariAgent on each instance and install `uv` if needed.
-3. On the current host, use `jobd` to create one worker key. Ask the user for its duration; never assume it. Never copy `JOBD_MASTER_KEY` to instances.
-4. Pass this `JOBD_WORKER_TOKEN` through the Ansible task's `environment`, using a protected variable and `no_log: true` to avoid exposing credentials. Supply `WANDB_API_KEY` through jobd-worker, not the SSH environment.
-5. Use **Ansible async** to launch `bootstrap.sh` on every instance from its repository directory. Set `async` to a sufficient setup timeout (for example, `7200` seconds) and `poll: 0`. No worker should already be running during setup.
-6. Save each instance's `ansible_job_id`, then monitor with `async_status`. Launch all instances before polling; each starts its worker independently when ready. Do not use a `nohup` wrapper or `bootstrap.exit` file.
-7. Check `finished`, `rc`, `stdout`, and `stderr` for each instance. A successful launch is not successful completion: require exit code `0`. Investigate failures or timeouts before retrying, without exposing credentials.
+Use fresh Ubuntu 24.04 instances with root SSH access and Python installed. Never run setup over an existing jobd worker.
 
-Bootstrap syncs dependencies, installs the latest jobd, checks `JOBD_WORKER_TOKEN`, restarts the worker, then verifies the token. Verification failure does not stop an already-started worker.
+## Agent preparation
 
-Finally, submit remote smoke-test jobs on every instance **only to verify W&B authentication** using credentials supplied by jobd-worker. Use `wandb.login(key=os.environ["WANDB_API_KEY"], verify=True)` and require a successful result. Do not call `wandb.init()`, start training, or create any W&B runs. Never print the API key.
+1. On the current host, ensure Ansible, jobd, and authenticated `gh` are available.
+2. Generate `/root/.ssh/atari_deploy` on each instance and register its public key as a **read-only** GitHub deploy key. Keep private keys on their instances. Add GitHub's published SSH host keys to each instance's `known_hosts`.
+3. Ask the user for the worker-token duration. Create one shared token on the current host:
+
+   ```bash
+   umask 077
+   state="$HOME/.local/state/atariagent/provision"
+   mkdir -p "$state"
+   chmod 700 "$state"
+   jobd auth create-worker-token --duration USER_CHOSEN_DURATION > "$state/worker-token"
+   chmod 600 "$state/worker-token"
+   ```
+
+   Never copy `JOBD_MASTER_KEY` to instances. Supply `WANDB_API_KEY` through jobd queue secrets, not SSH.
+4. Copy `vastai/inventory.example.yml` to `$state/inventory.yml` and fill in SSH addresses and ports. Ensure the desired bootstrap changes are pushed to `main`.
+
+## Run Ansible
+
+```bash
+ansible-playbook -i "$state/inventory.yml" vastai/setup.yml
+```
+
+Ansible installs system dependencies, clones `main`, installs uv, and launches bootstrap with **async**. Each instance progresses independently. Bootstrap syncs dependencies, checks OpenCV/CUDA, installs latest jobd, verifies the token, then starts the worker.
+
+Ansible reports success or failure. Logs stay in `/root/bootstrap.log` on each instance. It also prints async job IDs for manual `async_status` checks if disconnected. Do not rerun setup blindly after a failure or disconnect.
+
+To add an instance, add its SSH details to the inventory and use `--limit new_worker_name`.
+
+## Verify W&B authentication
+
+Submit authentication-only jobs from the current host:
+
+```bash
+jobd bash -c 'cd /workspace/AtariAgent && exec /root/.local/bin/uv run --no-sync python scripts/verify_wandb_auth.py'
+```
+
+Check successful execution on every instance; shared-queue jobs may land on the same worker. The test creates no W&B run and removes temporary login files.
+
+Reusing a token preserves its original expiry. Token expiry does **not** stop rental billing.

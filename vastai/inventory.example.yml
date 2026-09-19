@@ -1,0 +1,12 @@
+all:
+  children:
+    workers:
+      hosts:
+        worker_example:
+          ansible_host: YOUR_INSTANCE_IP
+          ansible_port: 22
+      vars:
+        ansible_user: root
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15'
+        repo_root: /workspace/AtariAgent
+        repo_url: git@github.com:Gzsiceberg/AtariAgent.git

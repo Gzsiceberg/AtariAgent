@@ -1,0 +1,85 @@
+---
+# Fresh Ubuntu 24.04 workers only. The agent provisions read-only repository
+# access and the worker-token file before running this playbook.
+- name: Prepare and bootstrap workers independently
+  hosts: workers
+  gather_facts: false
+  strategy: free
+  vars:
+    worker_token_file: "{{ lookup('env', 'HOME') }}/.local/state/atariagent/provision/worker-token"
+  tasks:
+    - name: Require the worker token before setup
+      ansible.builtin.assert:
+        that: lookup('file', worker_token_file) | trim | length > 0
+      no_log: true
+
+    - name: Wait for SSH and Python
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
+    - name: Refuse to interrupt an existing worker
+      ansible.builtin.shell: |
+        for comm in /proc/[0-9]*/comm; do
+          if [ "$(cat "$comm" 2>/dev/null)" = jobd-worker ]; then
+            echo 'A jobd worker is already running; refusing setup.' >&2
+            exit 1
+          fi
+        done
+      changed_when: false
+
+    - name: Install system dependencies
+      ansible.builtin.apt:
+        name: [git, curl, ca-certificates, build-essential, cmake, procps, libxcb1, libgl1, libglib2.0-0t64]
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Clone the repository
+      ansible.builtin.git:
+        repo: '{{ repo_url }}'
+        dest: '{{ repo_root }}'
+        version: main
+        key_file: /root/.ssh/atari_deploy
+
+    - name: Install uv
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+      args:
+        executable: /bin/bash
+        creates: /root/.local/bin/uv
+
+    - name: Launch bootstrap asynchronously with a private log
+      ansible.builtin.shell: |
+        umask 077
+        exec ./bootstrap.sh > /root/bootstrap.log 2>&1
+      args:
+        chdir: '{{ repo_root }}'
+      environment:
+        JOBD_WORKER_TOKEN: "{{ lookup('file', worker_token_file) | trim }}"
+      async: 7200
+      poll: 0
+      register: bootstrap_job
+      no_log: true
+
+    - name: Report async ID for manual status checks if disconnected
+      ansible.builtin.debug:
+        msg: 'Bootstrap job {{ bootstrap_job.ansible_job_id }}; log: /root/bootstrap.log'
+
+    - name: Wait for bootstrap completion
+      ansible.builtin.async_status:
+        jid: '{{ bootstrap_job.ansible_job_id }}'
+      register: bootstrap_result
+      until: bootstrap_result.finished | default(false) | bool
+      retries: 480
+      delay: 15
+      failed_when: false
+      ignore_errors: true
+      no_log: true
+
+    - name: Report success or point to the failure log
+      ansible.builtin.assert:
+        that:
+          - bootstrap_result.finished | default(false) | bool
+          - bootstrap_result.rc | default(-1) | int == 0
+        success_msg: 'Bootstrap complete; worker is ready.'
+        fail_msg: 'Bootstrap failed, timed out, or status is unavailable. Inspect /root/bootstrap.log before retrying.'
