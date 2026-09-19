@@ -1,147 +1,100 @@
-"""Exercise the scheduler with isolated tsp queues and no actual training."""
+"""Test jobd submissions without a controller or actual training."""
 
 import json
 import os
 from pathlib import Path
-import shutil
-import shlex
 import subprocess
 import sys
 
 import pytest
 
 
-SOURCE_ROOT = Path(__file__).resolve().parents[1]
-pytestmark = pytest.mark.skipif(not shutil.which("tsp"), reason="Task Spooler not installed")
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/train_game_experiments.sh"
 
 
 @pytest.fixture
 def batch(tmp_path):
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    for name in (
-        "train_game_experiments.sh",
-        "summarize_game_experiments.py",
-    ):
-        shutil.copy2(SOURCE_ROOT / "scripts" / name, scripts / name)
-    data = tmp_path / "data"
-    data.mkdir()
-    shutil.copy2(SOURCE_ROOT / "data/atari_100k_paper_scores.csv", data)
     binaries = tmp_path / "bin"
     binaries.mkdir()
-    mocks = {
-        **{
-            name: '#!/usr/bin/env bash\nprintf "%s\\n" "$0" >> "$UNEXPECTED_CALLS"\nexit 99\n'
-            for name in ("sudo", "systemd-inhibit", "systemctl", "nvidia-smi")
-        },
-        "uv": '''#!/usr/bin/env bash
-if [[ "$1 $2 $3" == 'run python scripts/summarize_game_experiments.py' ]]; then
-    shift 2
-    exec "$TEST_PYTHON" "$@"
-fi
-[[ "$1 $2 $3" == 'run python scripts/train_agent.py' ]] || {
-    printf '%s\\n' "$*" >> "$UNEXPECTED_CALLS"
-    exit 99
-}
-for arg in "$@"; do
-    if [[ "$arg" == environment.id=* ]]; then
-        printf '%s\\n' "$arg" >> "$TRAINING_CALLS"
-        printf 'training stdout\\n'
-        printf 'training stderr\\n' >&2
-        if [[ "$arg" == "environment.id=${FAIL_GAME:-}" ]]; then exit 7; fi
-        if [[ "$arg" == "environment.id=${BLOCK_GAME:-}" ]]; then
-            while [[ ! -e "$RELEASE_TRAINING" ]]; do sleep 0.05; done
-        fi
-    fi
-done
-''',
-    }
-    for name, content in mocks.items():
-        path = binaries / name
-        path.write_text(content)
-        path.chmod(0o755)
-    env = {
+    jobd = binaries / "jobd"
+    jobd.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['CALLS'], 'a') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "sys.exit(int(os.environ.get('SUBMIT_FAILURE', '0')))\n"
+    )
+    jobd.chmod(0o755)
+    uv = binaries / "uv"
+    uv.write_text('#!/bin/bash\nprintf "training output\\n"\nexit "${TRAIN_FAILURE:-0}"\n')
+    uv.chmod(0o755)
+    repo = tmp_path / "worker checkout"
+    repo.mkdir()
+    return {
         **os.environ,
         "PATH": f"{binaries}:{os.environ['PATH']}",
+        "CALLS": str(tmp_path / "calls.jsonl"),
+        "WORKER_REPO_ROOT": str(repo),
+        "RUN_ROOT": "runs with spaces/test",
         "RUN_ID": "test-run",
-        "SEED": "2",
-        "TEST_PYTHON": sys.executable,
-        "RUN_ROOT": str(tmp_path / "runs with spaces"),
-        "DRY_RUN": "0",
         "START_GAME": "1",
         "END_GAME": "26",
+        "SEED": "2",
+        "DRY_RUN": "0",
         "WANDB_PROJECT": "test-project",
         "WANDB_ENTITY": "test-entity",
-        "TRAINING_CALLS": str(tmp_path / "training_calls"),
-        "UNEXPECTED_CALLS": str(tmp_path / "unexpected_calls"),
-        "TS_SOCKET": str(tmp_path / "tsp.socket"),
-        "TS_SLOTS": "1",
-        "FAIL_GAME": "",
-        "BLOCK_GAME": "",
-        "RELEASE_TRAINING": str(tmp_path / "release_training"),
     }
-    yield tmp_path, env
-    (tmp_path / "release").touch()
-    Path(env["RELEASE_TRAINING"]).touch()
-    if Path(env["TS_SOCKET"]).exists():
-        subprocess.run(["tsp", "-S", "1"], env=env, check=True, timeout=10)
-        jobs_path = Path(env["RUN_ROOT"]) / "tsp_jobs.tsv"
-        if jobs_path.exists():
-            for line in jobs_path.read_text().splitlines():
-                subprocess.run(
-                    ["tsp", "-w", line.split("\t")[0]], env=env,
-                    check=False, timeout=10,
-                )
-        subprocess.run(["tsp", "-K"], env=env, check=False, timeout=10)
-    assert not Path(env["UNEXPECTED_CALLS"]).exists()
 
 
-def run_batch(root, env):
+def run_batch(env):
     return subprocess.run(
-        ["bash", str(root / "scripts/train_game_experiments.sh")],
-        env=env, capture_output=True, text=True, timeout=15,
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=15,
     )
 
 
-@pytest.mark.parametrize("run_id, suffix", [(None, ""), ("seed_2", ""), ("test-run", "_test-run")])
-def test_wandb_name_does_not_duplicate_default_seed(batch, run_id, suffix):
-    root, env = batch
-    env = {**env, "DRY_RUN": "1"}
-    if run_id is None:
-        env.pop("RUN_ID")
-    else:
-        env["RUN_ID"] = run_id
-    result = run_batch(root, env)
+def calls(env):
+    return [json.loads(line) for line in Path(env["CALLS"]).read_text().splitlines()]
+
+
+def test_all_games_are_queued_without_local_writes(batch):
+    result = run_batch(batch)
     assert result.returncode == 0, result.stderr
-    worker = Path(env["RUN_ROOT"]) / "battle-zone/default/job.sh"
-    args = shlex.split(worker.read_text().splitlines()[3])
-    assert (
-        "wandb.name='${environment_slug:${environment.id}}_default_seed${seed}"
-        f"{suffix}'"
-    ) in args
+    jobs = calls(batch)
+    assert jobs[-1] == ["-l"]
+    assert len(jobs) == 27
+    assert len({job[5] for job in jobs[:-1]}) == 26
+    assert "environment.id=ALE/Asterix-v5" in jobs[0]
+    assert "environment.id=ALE/UpNDown-v5" in jobs[-2]
+    assert not (Path(batch["WORKER_REPO_ROOT"]) / batch["RUN_ROOT"]).exists()
+    for job in jobs[:-1]:
+        assert job[:2] == ["bash", "-ec"]
+        assert "uv run --no-sync python scripts/train_agent.py" in job[2]
+        assert "seed=2" in job
+        assert "checkpoint.pre_final_snapshot_path=null" in job
+        assert "wandb.entity=test-entity" in job
+        assert "wandb.project=test-project" in job
 
 
-def test_three_ranges_cover_all_games_with_isolated_outputs(batch):
-    root, env = batch
-    env = {**env, "DRY_RUN": "1"}
-    env.pop("RUN_ROOT")
-    selected = []
+def test_dry_run_has_no_side_effects(batch):
+    result = run_batch({**batch, "DRY_RUN": "1"})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("Command:") == 26
+    assert "nothing submitted or written" in result.stdout
+    assert not Path(batch["CALLS"]).exists()
+    assert not (Path(batch["WORKER_REPO_ROOT"]) / batch["RUN_ROOT"]).exists()
+
+
+def test_ranges_cover_all_games_with_isolated_outputs(batch):
+    batch.pop("RUN_ROOT")
     for start, end in ((1, 9), (10, 18), (19, 26)):
-        result = run_batch(root, {
-            **env, "START_GAME": str(start), "END_GAME": str(end),
-        })
+        env = {**batch, "START_GAME": str(start), "END_GAME": str(end)}
+        result = run_batch(env)
         assert result.returncode == 0, result.stderr
-        run_root = root / f"runs/game_experiments/test-run/games_{start}-{end}"
-        games = (run_root / "games.tsv").read_text().splitlines()
-        assert len(games) == end - start + 1
-        assert len(list(run_root.glob("*/default/job.sh"))) == len(games)
-        selected.extend(games)
-    assert len(set(selected)) == 26
-    assert selected[0] == "asterix|ALE/Asterix-v5"
-    assert selected[9] == "crazy-climber|ALE/CrazyClimber-v5"
-    assert selected[18] == "kung-fu-master|ALE/KungFuMaster-v5"
-    assert selected[-1] == "up-n-down|ALE/UpNDown-v5"
-    assert not Path(env["TS_SOCKET"]).exists()
+        jobs = calls(env)[-(end - start + 2):-1]
+        assert len(jobs) == end - start + 1
+        assert all(f"/games_{start}-{end}/" in job[5] for job in jobs)
+    jobs = [job for job in calls(batch) if job != ["-l"]]
+    assert len({job[5] for job in jobs}) == 26
 
 
 @pytest.mark.parametrize("start,end", [
@@ -149,183 +102,38 @@ def test_three_ranges_cover_all_games_with_isolated_outputs(batch):
     ("01", "9"), ("1", "999999999999999999999"),
 ])
 def test_invalid_game_range(batch, start, end):
-    root, env = batch
-    result = run_batch(root, {**env, "START_GAME": start, "END_GAME": end})
+    result = run_batch({**batch, "START_GAME": start, "END_GAME": end})
     assert result.returncode != 0
     assert "Game range must satisfy" in result.stderr
-    assert not Path(env["RUN_ROOT"]).exists()
-
-
-def test_single_game_range_schedules_only_selected_game(batch):
-    root, env = batch
-    env = {**env, "START_GAME": "26", "END_GAME": "26"}
-    result = run_batch(root, env)
-    assert result.returncode == 0, result.stderr
-    jobs = (Path(env["RUN_ROOT"]) / "tsp_jobs.tsv").read_text().splitlines()
-    assert [line.split("\t")[1] for line in jobs] == ["up-n-down"]
-    subprocess.run(
-        ["tsp", "-w", jobs[-1].split("\t")[0]], env=env, check=True, timeout=10,
-    )
-    assert Path(env["TRAINING_CALLS"]).read_text().splitlines() == [
-        "environment.id=ALE/UpNDown-v5",
-    ]
-
-
-def test_dry_run_generates_simple_jobs(batch):
-    root, env = batch
-    result = run_batch(root, {**env, "DRY_RUN": "1"})
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.count("Command: ") == 26
-    assert not Path(env["TS_SOCKET"]).exists()
-    assert not Path(env["TRAINING_CALLS"]).exists()
-    workers = list(Path(env["RUN_ROOT"]).glob("*/default/job.sh"))
-    assert len(workers) == 26
-    for worker in workers:
-        subprocess.run(["bash", "-n", str(worker)], check=True)
-        content = worker.read_text()
-        assert len(content.splitlines()) == 4
-        assert "seed=2" in content
-        assert "checkpoint.pre_final_snapshot_path=null" in content
-        assert "wandb.entity=test-entity" in content
-        assert "wandb.project=test-project" in content
-        assert "2>&1 | tee " in content
-
-
-@pytest.mark.parametrize("fail", [False, True])
-def test_games_run_once_and_failure_does_not_block_queue(batch, fail):
-    root, env = batch
-    if fail:
-        env["FAIL_GAME"] = "ALE/BankHeist-v5"
-    result = run_batch(root, env)
-    assert result.returncode == 0, result.stderr
-    run_root = Path(env["RUN_ROOT"])
-    jobs = (run_root / "tsp_jobs.tsv").read_text().splitlines()
-    assert len(jobs) == 26
-    assert all(not line.endswith("\tsummary") for line in jobs)
-    assert len({line.split("\t")[0] for line in jobs}) == 26
-    outcomes = [
-        subprocess.run(
-            ["tsp", "-w", line.split("\t")[0]], env=env, timeout=15,
-            check=False,
-        ).returncode
-        for line in jobs
-    ]
-    expected_outcomes = [0] * 26
-    if fail:
-        expected_outcomes[1] = 7
-    assert outcomes == expected_outcomes
-    expected_calls = [
-        f"environment.id={line.split('|')[1]}"
-        for line in (run_root / "games.tsv").read_text().splitlines()
-    ]
-    assert Path(env["TRAINING_CALLS"]).read_text().splitlines() == expected_calls
-    for log in run_root.glob("*/default/training.log"):
-        assert log.read_text() == "training stdout\ntraining stderr\n"
-    assert len(list(run_root.glob("*/default/training.log"))) == 26
-    assert not (run_root / "batch_status.txt").exists()
-    assert not (run_root / "results.csv").exists()
-
-
-def test_launcher_exits_without_waiting_or_changing_slots(batch):
-    root, env = batch
-    subprocess.run(["tsp", "-S", "3"], env=env, check=True, timeout=10)
-    subprocess.run(
-        ["tsp", "-N", "3", "bash", "-c",
-         'while [[ ! -e "$1" ]]; do sleep 0.05; done', "bash", str(root / "release")],
-        env=env, check=True, timeout=10,
-    )
-    result = run_batch(root, env)
-    assert result.returncode == 0, result.stderr
-    assert subprocess.check_output(["tsp", "-S"], env=env, text=True).strip() == "3"
-    assert not Path(env["TRAINING_CALLS"]).exists()
-    jobs = (Path(env["RUN_ROOT"]) / "tsp_jobs.tsv").read_text().splitlines()
-    assert len(jobs) == 26
-    for line in jobs:
-        assert subprocess.check_output(
-            ["tsp", "-s", line.split("\t")[0]], env=env, text=True,
-        ).strip() == "queued"
-
-
-def test_rerun_skips_completed_games_and_schedules_missing_or_incomplete(batch):
-    root, env = batch
-    assert run_batch(root, {**env, "DRY_RUN": "1"}).returncode == 0
-    run_root = Path(env["RUN_ROOT"])
-    games = (run_root / "games.tsv").read_text().splitlines()
-    for line in games:
-        game = line.split("|")[0]
-        if game == "alien":
-            continue  # Missing evaluation.
-        update = 119999 if game == "bank-heist" else 120000
-        path = run_root / game / "default/evaluations/agent_evaluations.json"
-        path.write_text(json.dumps({"evaluations": [
-            {"update": update, "mean": 100, "median": 90, "std": 10},
-        ]}))
-    result = run_batch(root, env)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.count("Skipping completed game:") == 24
-    jobs = (run_root / "tsp_jobs.tsv").read_text().splitlines()
-    assert [line.split("\t")[1] for line in jobs] == ["bank-heist", "alien"]
-    for line in jobs:
-        subprocess.run(["tsp", "-w", line.split("\t")[0]], env=env, check=True, timeout=10)
-    assert not (run_root / "results.csv").exists()
-    # Mark remaining games complete; rerun must enqueue nothing.
-    for game in ("bank-heist", "alien"):
-        path = run_root / game / "default/evaluations/agent_evaluations.json"
-        path.write_text(json.dumps({"evaluations": [
-            {"update": 120000, "mean": 200, "median": 190, "std": 10},
-        ]}))
-    result = run_batch(root, env)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.count("Skipping completed game:") == 26
-    updated_jobs = (run_root / "tsp_jobs.tsv").read_text().splitlines()
-    assert updated_jobs == jobs
-    assert "Scheduled 0 game jobs" in result.stdout
-    assert not (run_root / "results.csv").exists()
-    assert not (run_root / "summary-job.sh").exists()
-    assert not list(run_root.glob("summary-job.*.sh"))
-    assert not list(run_root.glob(".*.lock"))
-
-
-def test_no_summary_is_queued_after_games(batch):
-    root, env = batch
-    env["BLOCK_GAME"] = "ALE/Asterix-v5"
-    result = run_batch(root, env)
-    assert result.returncode == 0, result.stderr
-    run_root = Path(env["RUN_ROOT"])
-    jobs = (run_root / "tsp_jobs.tsv").read_text().splitlines()
-    assert len(jobs) == 26
-    assert jobs[-1].endswith("\tup-n-down")
-    assert "Summary command:" not in result.stdout
-    last_job_id = jobs[-1].split("\t")[0]
-    Path(env["RELEASE_TRAINING"]).touch()
-    subprocess.run(["tsp", "-w", last_job_id], env=env, check=True, timeout=10)
-    assert not (run_root / "results.csv").exists()
-
-
-def test_seed_defaults_and_explicit_override_are_isolated(batch):
-    root, env = batch
-    env = {**env, "DRY_RUN": "1"}
-    env.pop("RUN_ID")
-    env.pop("RUN_ROOT")
-    for seed in (2, 3):
-        result = run_batch(root, {**env, "SEED": str(seed)})
-        assert result.returncode == 0, result.stderr
-        run_root = root / f"runs/game_experiments/seed_{seed}"
-        assert (run_root / "seed.txt").read_text().strip() == str(seed)
-        for worker in run_root.glob("*/default/job.sh"):
-            assert f"seed={seed}" in worker.read_text()
-    # Reusing an explicit root with a different seed must not skip/overwrite it.
-    result = run_batch(root, {
-        **env, "SEED": "3",
-        "RUN_ROOT": str(root / "runs/game_experiments/seed_2"),
-    })
-    assert result.returncode != 0
-    assert "belongs to seed 2" in result.stderr
+    assert not Path(batch["CALLS"]).exists()
 
 
 @pytest.mark.parametrize("seed", ["-1", "abc", "4294967296", "99999999999999999999"])
 def test_invalid_seed(batch, seed):
-    root, env = batch
-    result = run_batch(root, {**env, "SEED": seed})
+    result = run_batch({**batch, "SEED": seed})
     assert result.returncode != 0
     assert "SEED must be" in result.stderr
+    assert not Path(batch["CALLS"]).exists()
+
+
+@pytest.mark.parametrize("failure", [0, 7])
+def test_worker_logging_exit_status_and_overwrite_protection(batch, failure):
+    env = {**batch, "START_GAME": "26", "END_GAME": "26", "SEED": "3"}
+    assert run_batch(env).returncode == 0
+    job, listing = calls(env)
+    assert listing == ["-l"]
+    assert "seed=3" in job
+    assert "wandb.name=UpNDown-v5_default_seed3_test-run" in job
+    result = subprocess.run(job, env={**env, "TRAIN_FAILURE": str(failure)}, timeout=15)
+    assert result.returncode == failure
+    output = Path(env["WORKER_REPO_ROOT"]) / env["RUN_ROOT"] / "up-n-down/default"
+    assert (output / "training.log").read_text() == "training output\n"
+    result = subprocess.run(job, env=env, capture_output=True, timeout=15)
+    assert result.returncode != 0
+    assert (output / "training.log").read_text() == "training output\n"
+
+
+def test_submission_failure_is_not_retried(batch):
+    result = run_batch({**batch, "SUBMIT_FAILURE": "9"})
+    assert result.returncode == 9
+    assert len(calls(batch)) == 1
