@@ -1,9 +1,13 @@
-1. generate key in the instances, add it into deploy keys for current repos, read only.
-2. git clone AtariAgent repos into multiple instances.
-3. use jobd to create one worker_key, ask me for the duration. not assume it. nerver copy JOBD_MASTER_KEY into instances.
-4. add this one JOBD_WORKER_TOKEN into the instances env.
-5. if multiple instance, use pssh to handle it. or use ansible
-6. install latest version jobd via curl -fsSL https://github.com/Gzsiceberg/jobd/releases/latest/download/install.sh | sh
-7. verify the JOBD_WORKER_TOKEN works
-8. schedu uv sync and uv sync --extrac wandb into local queue via jobd in every instance.
-9. schedule some remote jobs to verify every instances work, especitally verfiy if wandb work
+# Vast.ai worker setup
+
+1. Generate an SSH key on each instance and add it as a read-only deploy key for this repository.
+2. Clone AtariAgent on each instance and install `uv` if needed.
+3. On the current host, use `jobd` to create one worker key. Ask the user for its duration; never assume it. Never copy `JOBD_MASTER_KEY` to instances.
+4. Pass this `JOBD_WORKER_TOKEN` through the Ansible task's `environment`, using a protected variable and `no_log: true` to avoid exposing credentials. Supply `WANDB_API_KEY` through jobd-worker, not the SSH environment.
+5. Use **Ansible async** to launch `bootstrap.sh` on every instance from its repository directory. Set `async` to a sufficient setup timeout (for example, `7200` seconds) and `poll: 0`. No worker should already be running during setup.
+6. Save each instance's `ansible_job_id`, then monitor with `async_status`. Launch all instances before polling; each starts its worker independently when ready. Do not use a `nohup` wrapper or `bootstrap.exit` file.
+7. Check `finished`, `rc`, `stdout`, and `stderr` for each instance. A successful launch is not successful completion: require exit code `0`. Investigate failures or timeouts before retrying, without exposing credentials.
+
+Bootstrap syncs dependencies, installs the latest jobd, checks `JOBD_WORKER_TOKEN`, restarts the worker, then verifies the token. Verification failure does not stop an already-started worker.
+
+Finally, submit remote smoke-test jobs to verify every instance, especially W&B credentials supplied by jobd-worker.
