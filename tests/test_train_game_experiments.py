@@ -46,9 +46,9 @@ def batch(tmp_path):
     }
 
 
-def run_batch(env):
+def run_batch(env, *options):
     return subprocess.run(
-        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=15,
+        ["bash", str(SCRIPT), *options], env=env, capture_output=True, text=True, timeout=15,
     )
 
 
@@ -73,6 +73,8 @@ def test_all_games_are_queued_without_local_writes(batch):
         assert "checkpoint.pre_final_snapshot_path=null" in job
         assert "wandb.entity=test-entity" in job
         assert "wandb.project=test-project" in job
+        assert not any(arg.startswith("search=") for arg in job)
+        assert job[5].endswith("/default")
 
 
 def test_dry_run_has_no_side_effects(batch):
@@ -131,6 +133,33 @@ def test_worker_logging_exit_status_and_overwrite_protection(batch, failure):
     result = subprocess.run(job, env=env, capture_output=True, timeout=15)
     assert result.returncode != 0
     assert (output / "training.log").read_text() == "training output\n"
+
+
+def test_gumbel_search(batch):
+    result = run_batch(batch, "--gumbel")
+    assert result.returncode == 0, result.stderr
+    jobs = calls(batch)[:-1]
+    assert len(jobs) == 26
+    for job in jobs:
+        assert "search=gumbel" in job
+        assert job[5].endswith("/gumbel")
+        assert f"checkpoint.path={job[5]}/checkpoints/agent_latest.pt" in job
+        assert any(arg.startswith("wandb.name=") and "_gumbel_seed2_" in arg for arg in job)
+        assert any(arg.startswith("wandb.tags=") and ",gumbel," in arg for arg in job)
+
+
+@pytest.mark.parametrize("option,code", [("--help", 0), ("--unknown", 1)])
+def test_options_do_not_submit_jobs(batch, option, code):
+    result = run_batch(batch, option)
+    assert result.returncode == code
+    assert not Path(batch["CALLS"]).exists()
+
+
+def test_gumbel_dry_run(batch):
+    result = run_batch({**batch, "DRY_RUN": "1"}, "--gumbel")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("search=gumbel") == 26
+    assert not Path(batch["CALLS"]).exists()
 
 
 def test_submission_failure_is_not_retried(batch):

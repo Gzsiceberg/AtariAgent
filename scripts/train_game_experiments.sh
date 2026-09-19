@@ -6,7 +6,8 @@
 # Supply W&B authentication through jobd queue secrets.
 # This script neither restarts workers nor manages power or queue concurrency.
 #
-# Usage: ./scripts/train_game_experiments.sh
+# Usage: ./scripts/train_game_experiments.sh [--gumbel]
+#   --gumbel: use search=gumbel instead of the default PUCT search
 # Optional environment:
 #   SEED: training seed (default 2)
 #   RUN_ID: run label (default timestamp); use distinct IDs on shared storage
@@ -20,6 +21,16 @@
 # No completion-based skipping or automatic retries. Monitor with jobd -l.
 
 set -Eeuo pipefail
+
+experiment=default
+search_overrides=()
+for option in "$@"; do
+    case "$option" in
+        --gumbel) experiment=gumbel; search_overrides=("search=gumbel") ;;
+        -h|--help) echo "Usage: ${0##*/} [--gumbel]"; exit 0 ;;
+        *) printf 'Error: unknown option: %s\n' "$option" >&2; exit 1 ;;
+    esac
+done
 
 SEED="${SEED:-2}"
 if [[ ! "$SEED" =~ ^(0|[1-9][0-9]{0,9})$ ]] || (( SEED > 4294967295 )); then
@@ -53,7 +64,7 @@ printf 'Selected game numbers %s–%s\n' "$START_GAME" "$END_GAME"
 # Stable game IDs: do not renumber when changing scheduling order.
 while IFS='|' read -r number game environment_id; do
     (( number >= START_GAME && number <= END_GAME )) || continue
-    output_dir="$RUN_ROOT/$game/default"
+    output_dir="$RUN_ROOT/$game/$experiment"
     args=(
         "seed=$SEED"
         "environment.id=$environment_id"
@@ -65,8 +76,9 @@ while IFS='|' read -r number game environment_id; do
         "training.progress_interval_seconds=10"
         "wandb.enabled=true"
         "wandb.project=$WANDB_PROJECT"
-        "wandb.name=${environment_id##*/}_default_seed${SEED}_${RUN_ID}"
-        "wandb.tags=[jobd,atari-100k,default,all-games,$game]"
+        "wandb.name=${environment_id##*/}_${experiment}_seed${SEED}_${RUN_ID}"
+        "wandb.tags=[jobd,atari-100k,$experiment,all-games,$game]"
+        "${search_overrides[@]}"
     )
     [[ -z "$WANDB_ENTITY" ]] || args+=("wandb.entity=$WANDB_ENTITY")
     # Positional arguments keep paths and Hydra overrides safe from shell expansion.
