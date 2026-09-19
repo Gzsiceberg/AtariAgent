@@ -10,4 +10,4 @@
 
 Bootstrap syncs dependencies, installs the latest jobd, checks `JOBD_WORKER_TOKEN`, restarts the worker, then verifies the token. Verification failure does not stop an already-started worker.
 
-Finally, submit remote smoke-test jobs to verify every instance, especially W&B credentials supplied by jobd-worker.
+Finally, submit remote smoke-test jobs on every instance **only to verify W&B authentication** using credentials supplied by jobd-worker. Use `wandb.login(key=os.environ["WANDB_API_KEY"], verify=True)` and require a successful result. Do not call `wandb.init()`, start training, or create any W&B runs. Never print the API key.
