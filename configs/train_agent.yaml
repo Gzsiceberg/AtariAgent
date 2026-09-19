@@ -103,7 +103,7 @@ training:
   # SGD uses this as its step multiplier. Adam holds LR through `steps`, then
   # linearly decays to this fraction over `final_steps`.
   lr_decay_rate: 0.1
-  max_gradient_norm: 1.0
+  max_gradient_norm: 5.0
   # Shared by learner, reanalysis, self-play, and checkpoint evaluation.
   # Scalar decoding stays FP32 even when network inference uses BF16.
   precision: bf16  # fp32 or bf16

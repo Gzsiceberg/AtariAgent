@@ -12,6 +12,8 @@ Find instances that meet all of these requirements:
 | Price | Less than US$0.30 per hour per instance |
 | Reliability | Check the host's reported reliability score; prefer higher reliability |
 
+Prefer instances marked **verified** by Vast.ai.
+
 Check the actual CPU model and single-core performance; a high vCPU count alone is not sufficient. Confirm CUDA support rather than assuming it from the GPU model.
 
-Present matching offers with GPU, CPU, RAM, storage, CUDA compatibility, hourly price, and reported reliability score. Flag any unverified requirements. The user will select and rent instances independently.
+Present matching offers with GPU, CPU, RAM, storage, CUDA compatibility, hourly price, reported reliability score, and Vast.ai verification status. Flag any unverified requirements. The user will select and rent instances independently.
