@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Submit the same nine experiments as schedule_tsp_experiments.sh to jobd's
+# Submit baseline, value_loss_coeff, per_v2, and mixed_value_threshold experiments to jobd's
 # shared controller queue. No local files or credentials are sent to workers.
 #
-# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0..8 | experiment names]
+# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | 6 | 9 | experiment names]
 # Example: DRY_RUN=1 ./scripts/schedule_jobd_experiments.sh baseline per_v2
 #
 # Submission environment:
-#   JOBD_API_KEY: required (prevents accidental local-mode submission)
-#   JOBD_QUEUE / JOBD_CONTROLLER: jobd's normal queue/endpoint settings
 #   DRY_RUN=1: print commands without jobd, credentials, or filesystem changes
 # Worker paths (not paths on the submitting machine):
 #   WORKER_REPO_ROOT: checkout on every worker (default /workspace/AtariAgent)
@@ -27,7 +25,7 @@
 set -Eeuo pipefail
 
 usage() {
-    echo "Usage: ${0##*/} [all | 0/baseline | 1/value_loss_coeff | 2/consistency_weight | 3/priority_alpha | 4/value_and_consistency | 5/fp32 | 6/per_v2 | 7/final_per_v2 | 8/priority_beta ...]"
+    echo "Usage: ${0##*/} [all | 0/baseline | 1/value_loss_coeff | 6/per_v2 | 9/mixed_value_threshold ...]"
 }
 
 declare -a experiments=()
@@ -40,27 +38,18 @@ for selection in "$@"; do
                 echo "Error: 'all' must be used alone." >&2
                 exit 1
             fi
-            experiments=(baseline value_loss_coeff consistency_weight priority_alpha value_and_consistency fp32 per_v2 final_per_v2 priority_beta)
+            experiments=(baseline value_loss_coeff per_v2 mixed_value_threshold)
             ;;
         0|baseline) experiments+=(baseline) ;;
         1|value_loss_coeff) experiments+=(value_loss_coeff) ;;
-        2|consistency_weight) experiments+=(consistency_weight) ;;
-        3|priority_alpha) experiments+=(priority_alpha) ;;
-        4|value_and_consistency) experiments+=(value_and_consistency) ;;
-        5|fp32) experiments+=(fp32) ;;
         6|per_v2) experiments+=(per_v2) ;;
-        7|final_per_v2) experiments+=(final_per_v2) ;;
-        8|priority_beta) experiments+=(priority_beta) ;;
+        9|mixed_value_threshold) experiments+=(mixed_value_threshold) ;;
         *) printf 'Error: unknown experiment: %s\n' "$selection" >&2; usage >&2; exit 1 ;;
     esac
 done
 
 DRY_RUN="${DRY_RUN:-0}"
 if [[ "$DRY_RUN" != 1 ]]; then
-    if [[ -z "${JOBD_API_KEY:-}" ]]; then
-        echo 'Error: JOBD_API_KEY is required for the shared controller queue.' >&2
-        exit 1
-    fi
     if ! command -v jobd >/dev/null 2>&1; then
         echo "Error: 'jobd' not found." >&2
         exit 1
@@ -99,13 +88,8 @@ for experiment in "${experiments[@]}"; do
     case "$experiment" in
         baseline) ;;
         value_loss_coeff) overrides=("loss.value_weight=0.5") ;;
-        consistency_weight) overrides=("loss.consistency_weight=5") ;;
-        priority_alpha) overrides=("replay.priority_alpha=0.6") ;;
-        value_and_consistency) overrides=("loss.value_weight=0.5" "loss.consistency_weight=5") ;;
-        fp32) overrides=("training.precision=fp32") ;;
         per_v2) overrides=("replay.per_mode=v2") ;;
-        final_per_v2) overrides=("replay.final_per_mode=v2") ;;
-        priority_beta) overrides=("replay.priority_alpha=1" "replay.priority_beta_initial=0.26" "replay.priority_beta_final=0.65") ;;
+        mixed_value_threshold) overrides=("training.mixed_value_threshold=10000") ;;
     esac
     output_dir="$RUN_ROOT/$experiment"
     args=(
