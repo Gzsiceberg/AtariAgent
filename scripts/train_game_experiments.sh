@@ -6,8 +6,11 @@
 # Supply W&B authentication through jobd queue secrets.
 # This script neither restarts workers nor manages power or queue concurrency.
 #
-# Usage: ./scripts/train_game_experiments.sh [--gumbel]
-#   --gumbel: use search=gumbel instead of the default PUCT search
+# Usage: ./scripts/train_game_experiments.sh [--gumbel | --puct-target-400 | --gumbel-target-400]
+#   No option: default PUCT experiment using train_agent.yaml defaults
+#   --gumbel: Gumbel experiment using the default target update interval
+#   --puct-target-400: PUCT experiment with target updates every 400 learner steps
+#   --gumbel-target-400: Gumbel experiment with target updates every 400 learner steps
 # Optional environment:
 #   SEED: training seed (default 2)
 #   RUN_ID: run label (default timestamp); use distinct IDs on shared storage
@@ -23,12 +26,31 @@
 set -Eeuo pipefail
 
 experiment=default
-search_overrides=()
+experiment_overrides=()
+experiment_selected=0
 for option in "$@"; do
     case "$option" in
-        --gumbel) experiment=gumbel; search_overrides=("search=gumbel") ;;
-        -h|--help) echo "Usage: ${0##*/} [--gumbel]"; exit 0 ;;
+        -h|--help)
+            echo "Usage: ${0##*/} [--gumbel | --puct-target-400 | --gumbel-target-400]"
+            exit 0 ;;
+        --gumbel|--puct-target-400|--gumbel-target-400)
+            if (( experiment_selected )); then
+                printf 'Error: choose only one experiment option.\n' >&2
+                exit 1
+            fi
+            experiment_selected=1 ;;
         *) printf 'Error: unknown option: %s\n' "$option" >&2; exit 1 ;;
+    esac
+    case "$option" in
+        --gumbel)
+            experiment=gumbel
+            experiment_overrides=("search=gumbel") ;;
+        --puct-target-400)
+            experiment=puct_target400
+            experiment_overrides=("search=puct" "reanalysis.target_update_interval=400") ;;
+        --gumbel-target-400)
+            experiment=gumbel_target400
+            experiment_overrides=("search=gumbel" "reanalysis.target_update_interval=400") ;;
     esac
 done
 
@@ -78,7 +100,7 @@ while IFS='|' read -r number game environment_id; do
         "wandb.project=$WANDB_PROJECT"
         "wandb.name=${environment_id##*/}_${experiment}_seed${SEED}_${RUN_ID}"
         "wandb.tags=[jobd,atari-100k,$experiment,all-games,$game]"
-        "${search_overrides[@]}"
+        "${experiment_overrides[@]}"
     )
     [[ -z "$WANDB_ENTITY" ]] || args+=("wandb.entity=$WANDB_ENTITY")
     # Positional arguments keep paths and Hydra overrides safe from shell expansion.

@@ -74,6 +74,7 @@ def test_all_games_are_queued_without_local_writes(batch):
         assert "wandb.entity=test-entity" in job
         assert "wandb.project=test-project" in job
         assert not any(arg.startswith("search=") for arg in job)
+        assert not any(arg.startswith("reanalysis.target_update_interval=") for arg in job)
         assert job[5].endswith("/default")
 
 
@@ -159,6 +160,45 @@ def test_gumbel_dry_run(batch):
     result = run_batch({**batch, "DRY_RUN": "1"}, "--gumbel")
     assert result.returncode == 0, result.stderr
     assert result.stdout.count("search=gumbel") == 26
+    assert not Path(batch["CALLS"]).exists()
+
+
+@pytest.mark.parametrize("search", ["puct", "gumbel"])
+def test_target400_experiment(batch, search):
+    result = run_batch(batch, f"--{search}-target-400")
+    assert result.returncode == 0, result.stderr
+    jobs = calls(batch)[:-1]
+    assert len(jobs) == 26
+    experiment = f"{search}_target400"
+    for job in jobs:
+        assert f"search={search}" in job
+        assert "reanalysis.target_update_interval=400" in job
+        assert job[5].endswith(f"/{experiment}")
+        assert f"checkpoint.path={job[5]}/checkpoints/agent_latest.pt" in job
+        assert f"evaluation.data_path={job[5]}/evaluations/agent_evaluations.json" in job
+        assert any(arg.startswith("wandb.name=") and f"_{experiment}_seed2_" in arg for arg in job)
+        assert any(arg.startswith("wandb.tags=") and f",{experiment}," in arg for arg in job)
+
+
+@pytest.mark.parametrize("options", [
+    ("--gumbel", "--puct-target-400"),
+    ("--gumbel-target-400", "--gumbel"),
+    ("--puct-target-400", "--gumbel-target-400"),
+    ("--puct-target-400", "--puct-target-400"),
+])
+def test_conflicting_experiment_options(batch, options):
+    result = run_batch(batch, *options)
+    assert result.returncode != 0
+    assert "choose only one experiment" in result.stderr
+    assert not Path(batch["CALLS"]).exists()
+
+
+@pytest.mark.parametrize("search", ["puct", "gumbel"])
+def test_target400_dry_run(batch, search):
+    result = run_batch({**batch, "DRY_RUN": "1"}, f"--{search}-target-400")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("reanalysis.target_update_interval=400") == 26
+    assert result.stdout.count(f"search={search}") == 26
     assert not Path(batch["CALLS"]).exists()
 
 
