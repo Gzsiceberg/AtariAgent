@@ -356,8 +356,6 @@ def main(config: TrainAgentConfig) -> None:
         )
     if config.replay.per_mode not in {"v1", "v2"}:
         raise ValueError("replay.per_mode must be v1 or v2")
-    if config.replay.final_per_mode not in {None, "v1", "v2"}:
-        raise ValueError("replay.final_per_mode must be null, v1 or v2")
     if not 0.0 <= config.replay.priority_alpha <= 1.0:
         raise ValueError("replay.priority_alpha must be in [0, 1]")
     if not (
@@ -1109,34 +1107,16 @@ def main(config: TrainAgentConfig) -> None:
                 f"path={pre_final_path}[/dim]"
             )
 
-        switch_final_settings = config.training.final_steps > 0 and (
-            config.replay.final_per_mode is not None
-        )
-        if (
-            not resuming_final_phase and pre_final_path is not None
-        ) or switch_final_settings:
-            # Drain/close the old worker before changing shared replay rules.
-            # No prefetched collection-phase batch may enter final training.
+        if not resuming_final_phase and pre_final_path is not None:
+            # Restart workers after the snapshot so no prefetched
+            # collection-phase batch enters final training.
             boundary_rng_state = capture_rng_state()
             batch_worker.close()
             batch_worker = None
             reanalysis_pipeline.close()
-            if switch_final_settings and config.replay.final_per_mode is not None:
-                replay.set_per_mode(
-                    config.replay.final_per_mode,
-                    priority_alpha=config.replay.priority_alpha,
-                    priority_beta=config.replay.priority_beta_initial,
-                )
             reanalysis_pipeline = create_reanalysis_pipeline()
             batch_worker = create_batch_worker()
             restore_rng_state(boundary_rng_state)
-            if switch_final_settings:
-                log(
-                    "[bold yellow]Final sampling settings[/bold yellow] "
-                    f"update={update:,} "
-                    f"per={config.replay.final_per_mode or config.replay.per_mode} "
-                    f"mixed_value_threshold={config.training.mixed_value_threshold}"
-                )
 
         log(
             "[bold yellow]Final learner-only phase[/bold yellow] "

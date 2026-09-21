@@ -141,24 +141,6 @@ class FIFOReplayBuffer:
         self._frame_shape: tuple[int, ...] | None = None
         self._rng = np.random.default_rng(seed)
 
-    def set_per_mode(
-        self, per_mode: str, *, priority_alpha: float, priority_beta: float
-    ) -> None:
-        """Change sampling rules without replacing data, priorities, or RNG.
-
-        The caller must stop all replay sampling/updating workers first.
-        """
-        if per_mode not in {"v1", "v2"}:
-            raise ValueError("per_mode must be v1 or v2")
-        for value, name in (
-            (priority_alpha, "priority_alpha"), (priority_beta, "priority_beta")
-        ):
-            if not np.isfinite(value) or not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be finite and in [0, 1]")
-        self._per_mode = per_mode
-        self._priority_alpha = 1.0 if per_mode == "v2" else float(priority_alpha)
-        self._priority_beta = 1.0 if per_mode == "v2" else float(priority_beta)
-
     def __len__(self) -> int:
         """Return the number of stored sampleable transitions."""
         return self._transition_count

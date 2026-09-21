@@ -71,7 +71,6 @@ def test_training_commands_and_valid_hydra_recipe(launcher):
     assert config.self_play.search_algorithm == "puct"
     assert config.self_play.num_simulations == 50
     assert config.replay.per_mode == "v2"
-    assert config.replay.final_per_mode is None
     assert config.training.mixed_value_threshold == 5000
     assert config.training.final_steps == 20000
     assert config.checkpoint.pre_final_snapshot_path == str(

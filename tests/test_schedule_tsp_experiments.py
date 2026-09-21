@@ -15,7 +15,6 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_tsp_experiments
     [
         ("5", "fp32", "training.precision=fp32"),
         ("6", "per_v2", "replay.per_mode=v2"),
-        ("7", "final_per_v2", "replay.final_per_mode=v2"),
         ("8", "priority_beta", "replay.priority_beta_initial=0.26"),
     ],
 )
@@ -50,7 +49,7 @@ def test_experiment(tmp_path, number, name, override, selector):
         assert "replay.priority_alpha=1" in job_text
         assert "replay.priority_beta_final=0.65" in job_text
     jobs = list(run_root.glob("*/job.sh"))
-    assert len(jobs) == (9 if selection == "all" else 1)
+    assert len(jobs) == (8 if selection == "all" else 1)
     for job in jobs:
         if job.parent.name != name:
             assert override.split("=")[0] + "=" not in job.read_text()
