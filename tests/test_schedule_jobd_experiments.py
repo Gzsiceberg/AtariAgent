@@ -56,12 +56,13 @@ def scheduler(tmp_path):
 def test_all_experiments(scheduler):
     result, calls = scheduler()
     assert result.returncode == 0, result.stderr
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert calls[-1] == ["-l"]
     expected = [
         ["search=gumbel", "reanalysis.target_update_interval=400", "reanalysis.cache_targets=false"],
         ["search=gumbel", "reanalysis.target_update_interval=200", "reanalysis.cache_targets=true"],
         ["search=gumbel", "reanalysis.target_update_interval=200", "reanalysis.cache_targets=true", "model.action_embedding=false"],
+        ["search=gumbel", "reanalysis.target_update_interval=400", "reanalysis.cache_targets=true", "model.action_embedding=false"],
     ]
     for call, overrides in zip(calls[:-1], expected, strict=True):
         assert call[:2] == ["bash", "-c"]
@@ -100,18 +101,20 @@ def test_dedup_and_options(scheduler):
     assert "checkpoint.resume_pre_final_path=/worker/snapshot.pt" in calls[0]
 
 
-def test_v1_action_option_and_alias_are_deduplicated(scheduler):
-    result, calls = scheduler("2", "gumbel_target200_cache_v1action")
+@pytest.mark.parametrize("selector,interval", [("2", 200), ("3", 400)])
+def test_v1_action_option_and_alias_are_deduplicated(scheduler, selector, interval):
+    name = f"gumbel_target{interval}_cache_v1action"
+    result, calls = scheduler(selector, name)
     assert result.returncode == 0, result.stderr
     assert len(calls) == 2
     assert calls[-1] == ["-l"]
     for override in (
-        "search=gumbel", "reanalysis.target_update_interval=200",
+        "search=gumbel", f"reanalysis.target_update_interval={interval}",
         "reanalysis.cache_targets=true", "model.action_embedding=false",
     ):
         assert override in calls[0]
-    assert calls[0][5] == "runs/test/gumbel_target200_cache_v1action"
-    assert any(arg.startswith("wandb.name=") and "gumbel_target200_cache_v1action" in arg
+    assert calls[0][5] == f"runs/test/{name}"
+    assert any(arg.startswith("wandb.name=") and name in arg
                for arg in calls[0])
 
 
