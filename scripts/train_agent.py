@@ -552,6 +552,7 @@ def main(config: TrainAgentConfig) -> None:
             ),
             search_rng=random.Random(config.seed),
             precision=config.training.precision,
+            action_embedding=config.model.action_embedding,
         ).to(device)
         trainer = Trainer(
             agent.representation_network,
@@ -636,6 +637,7 @@ def main(config: TrainAgentConfig) -> None:
                 action_space_size=action_space_size,
                 search_config=agent.search.config,
                 policy_chunk_size=config.reanalysis.policy_chunk_size,
+                action_embedding=config.model.action_embedding,
                 cache_targets=config.reanalysis.cache_targets,
                 cache_target_ttl=config.reanalysis.cache_target_ttl,
                 rng_seed=config.seed,

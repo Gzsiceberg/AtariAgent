@@ -54,6 +54,7 @@ def _pipeline(
     search_algorithm: str = "puct",
     cache_targets: bool = True,
     cache_target_ttl: int = 200,
+    action_embedding: bool = True,
 ) -> ReanalysisPipeline:
     pipeline = ReanalysisPipeline(
         in_channels=4,
@@ -75,10 +76,11 @@ def _pipeline(
         timeout_seconds=timeout_seconds,
         target_update_interval=target_update_interval,
         device="cpu",
+        action_embedding=action_embedding,
     )
     representation = RepresentationNetwork(4)
     prediction = PredictionNetwork(2)
-    dynamics = DynamicsNetwork(2)
+    dynamics = DynamicsNetwork(2, action_embedding=action_embedding)
     pipeline.publish_weights(
         0,
         make_target_state(representation, prediction, dynamics),
@@ -87,8 +89,16 @@ def _pipeline(
     return pipeline
 
 
-def test_native_pipeline_enforces_prefetch_bound_and_matches_requests() -> None:
-    pipeline = _pipeline(prefetch_batches=2)
+@pytest.mark.parametrize("action_embedding", [True, False])
+@pytest.mark.parametrize("search_algorithm", ["puct", "gumbel"])
+def test_native_pipeline_enforces_prefetch_bound_and_matches_requests(
+    action_embedding, search_algorithm
+) -> None:
+    pipeline = _pipeline(
+        prefetch_batches=2,
+        action_embedding=action_embedding,
+        search_algorithm=search_algorithm,
+    )
     try:
         first = pipeline.submit(_batch())
         second = pipeline.submit(replace(_batch(), indices=torch.tensor([2, 3])))

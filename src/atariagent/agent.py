@@ -251,10 +251,13 @@ class AtariAgent(nn.Module):
         value_prefix_decoder: ScalarDecoder = categorical_to_scalar,
         mcts_rng: random.Random | None = None,
         precision: str = "fp32",
+        action_embedding: bool = True,
     ) -> None:
         super().__init__()
         if precision not in {"fp32", "bf16"}:
             raise ValueError("precision must be fp32 or bf16")
+        if not isinstance(action_embedding, bool):
+            raise TypeError("action_embedding must be a boolean")
         self.precision = precision
         if action_space_size <= 0:
             raise ValueError("action_space_size must be positive")
@@ -270,7 +273,7 @@ class AtariAgent(nn.Module):
         self.dynamics_network = (
             dynamics_network
             if dynamics_network is not None
-            else DynamicsNetwork(action_space_size)
+            else DynamicsNetwork(action_space_size, action_embedding=action_embedding)
         )
         self.prediction_network = (
             prediction_network

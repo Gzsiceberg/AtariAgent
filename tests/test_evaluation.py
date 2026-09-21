@@ -117,7 +117,8 @@ def test_evaluate_agent_rejects_invalid_parallelism() -> None:
 
 
 @pytest.mark.parametrize("precision", [None, "fp32", "bf16"])
-def test_load_agent_checkpoint_applies_search_overrides(monkeypatch, precision) -> None:
+@pytest.mark.parametrize("action_embedding", [None, True, False])
+def test_load_agent_checkpoint_applies_search_overrides(monkeypatch, precision, action_embedding) -> None:
     checkpoint = {
         "config": {
             "environment": {
@@ -138,14 +139,17 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch, precision) 
 
     if precision is not None:
         checkpoint["config"]["training"]["precision"] = precision
+    if action_embedding is not None:
+        checkpoint["config"]["model"] = {"action_embedding": action_embedding}
 
     class FakeNetwork:
         def load_state_dict(self, state_dict) -> None:
             assert state_dict == {}
 
     class FakeAgent:
-        def __init__(self, in_channels, action_space_size, *, search_config, precision) -> None:
+        def __init__(self, in_channels, action_space_size, *, search_config, precision, action_embedding) -> None:
             assert in_channels == 4
+            self.action_embedding = action_embedding
             self.precision = precision
             self.action_space_size = action_space_size
             self.search_config = search_config
@@ -174,6 +178,7 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch, precision) 
     )
 
     assert agent.action_space_size == 6
+    assert agent.action_embedding is (True if action_embedding is None else action_embedding)
     assert agent.precision == (precision or "fp32")
     assert agent.search_config.search_algorithm == "puct"
     assert agent.search_config.num_simulations == 50

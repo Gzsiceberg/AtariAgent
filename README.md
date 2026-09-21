@@ -161,6 +161,24 @@ preserve outputs from an earlier final-phase run. Set
 load snapshots you trust; replay snapshots use Python pickle through
 `torch.load`.
 
+### Dynamics action encoding
+
+The default `model.action_embedding=true` projects the normalized action plane
+into 16 channels with LayerNorm. To use EfficientZero V1's raw scalar action
+plane instead (no action projection or LayerNorm):
+
+```bash
+uv run python scripts/train_agent.py \
+    environment.id=ALE/Qbert-v5 search=gumbel model.action_embedding=false
+```
+
+Only action encoding changes; the rest of the network is unchanged. The option
+applies to training, self-play, and native reanalysis. Checkpoint evaluation
+reads the saved setting; checkpoints without it retain the previous `true`
+default. The two modes have incompatible dynamics weights, so start a new run
+when switching modes. To resume a pre-final snapshot, select the same mode used
+to create it.
+
 ### Evaluate a checkpoint
 
 Training performs periodic and final evaluation automatically. A checkpoint can also be evaluated independently:

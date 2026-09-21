@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Submit two Gumbel cache/target-interval experiments to jobd's shared queue.
+# Submit Gumbel cache/target-interval and action-encoding experiments to jobd's shared queue.
 # 0 / gumbel_target400_nocache: target interval 400, cache off
 # 1 / gumbel_target200_cache:   target interval 200, cache on
+# 2 / gumbel_target200_cache_v1action: same as 1, raw V1 action plane
 # No local files or credentials are sent to workers.
 #
-# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | experiment names]
+# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | 2 | experiment names]
 # Example: DRY_RUN=1 ENVIRONMENT_ID=Qbert-v5 ./scripts/schedule_jobd_experiments.sh all
 #
 # Submission environment:
@@ -27,7 +28,7 @@
 set -Eeuo pipefail
 
 usage() {
-    echo "Usage: ${0##*/} [all | 0/gumbel_target400_nocache | 1/gumbel_target200_cache ...]"
+    echo "Usage: ${0##*/} [all | 0/gumbel_target400_nocache | 1/gumbel_target200_cache | 2/gumbel_target200_cache_v1action ...]"
 }
 
 declare -a experiments=()
@@ -40,10 +41,11 @@ for selection in "$@"; do
                 echo "Error: 'all' must be used alone." >&2
                 exit 1
             fi
-            experiments=(gumbel_target400_nocache gumbel_target200_cache)
+            experiments=(gumbel_target400_nocache gumbel_target200_cache gumbel_target200_cache_v1action)
             ;;
         0|gumbel_target400_nocache) experiments+=(gumbel_target400_nocache) ;;
         1|gumbel_target200_cache) experiments+=(gumbel_target200_cache) ;;
+        2|gumbel_target200_cache_v1action) experiments+=(gumbel_target200_cache_v1action) ;;
         *) printf 'Error: unknown experiment: %s\n' "$selection" >&2; usage >&2; exit 1 ;;
     esac
 done
@@ -90,6 +92,8 @@ for experiment in "${experiments[@]}"; do
             overrides=("search=gumbel" "reanalysis.target_update_interval=400" "reanalysis.cache_targets=false") ;;
         gumbel_target200_cache)
             overrides=("search=gumbel" "reanalysis.target_update_interval=200" "reanalysis.cache_targets=true") ;;
+        gumbel_target200_cache_v1action)
+            overrides=("search=gumbel" "reanalysis.target_update_interval=200" "reanalysis.cache_targets=true" "model.action_embedding=false") ;;
     esac
     output_dir="$RUN_ROOT/$experiment"
     args=(

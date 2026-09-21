@@ -23,6 +23,13 @@ class EnvironmentConfig:
 
 
 @dataclass
+class ModelConfig:
+    """Dynamics action encoding; false selects the V1 raw scalar plane."""
+
+    action_embedding: bool = True
+
+
+@dataclass
 class SelfPlayConfig:
     """Parallel self-play and tree-search settings."""
 
@@ -170,6 +177,7 @@ class TrainAgentConfig:
 
     seed: int = 0
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
     self_play: SelfPlayConfig = field(default_factory=SelfPlayConfig)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -338,6 +346,7 @@ __all__ = [
     "EnvironmentConfig",
     "EvaluationConfig",
     "LossConfig",
+    "ModelConfig",
     "ReanalysisConfig",
     "ReplayConfig",
     "SelfPlayConfig",

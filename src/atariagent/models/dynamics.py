@@ -90,7 +90,9 @@ class DynamicsNetwork(nn.Module):
 
     A normalized action index is broadcast over one plane, projected to 16
     channels, layer-normalized, and concatenated with the 64-plane latent
-    state. The dynamics convolution uses stride one; this keeps its output
+    state. Set ``action_embedding=False`` to concatenate the raw normalized
+    plane directly, as in EfficientZero V1 (no projection or LayerNorm).
+    The dynamics convolution uses stride one; this keeps its output
     compatible with the historical-state residual link.
 
     ``forward`` returns ``(next_state, next_hidden, value_prefix)`` to match the
@@ -104,26 +106,31 @@ class DynamicsNetwork(nn.Module):
         batch_norm_momentum: float = 0.1,
         scale_state_gradient: bool = True,
         action_embedding_dim: int = 16,
+        action_embedding: bool = True,
     ) -> None:
         super().__init__()
         if action_space_size <= 0:
             raise ValueError("action_space_size must be positive")
         if not isinstance(scale_state_gradient, bool):
             raise TypeError("scale_state_gradient must be a boolean")
+        if not isinstance(action_embedding, bool):
+            raise TypeError("action_embedding must be a boolean")
         if action_embedding_dim <= 0:
             raise ValueError("action_embedding_dim must be positive")
 
         self.action_space_size = action_space_size
         self.scale_state_gradient = scale_state_gradient
         self.action_embedding_dim = action_embedding_dim
-        self.action_projection = nn.Conv2d(
-            1, action_embedding_dim, kernel_size=1
-        )
-        self.action_normalization = nn.LayerNorm(
-            [action_embedding_dim, 6, 6]
-        )
+        self.action_embedding = action_embedding
+        if action_embedding:
+            self.action_projection = nn.Conv2d(
+                1, action_embedding_dim, kernel_size=1
+            )
+            self.action_normalization = nn.LayerNorm(
+                [action_embedding_dim, 6, 6]
+            )
         self.transition = nn.Sequential(
-            conv3x3(64 + action_embedding_dim, 64),
+            conv3x3(64 + (action_embedding_dim if action_embedding else 1), 64),
             nn.BatchNorm2d(64, momentum=batch_norm_momentum),
         )
         self.relu = nn.ReLU(inplace=True)
@@ -147,9 +154,10 @@ class DynamicsNetwork(nn.Module):
             action, "batch 1 -> batch 1 height width", height=6, width=6
         ).to(dtype=state.dtype)
         action_plane = action_plane / self.action_space_size
-        action_plane = self.relu(
-            self.action_normalization(self.action_projection(action_plane))
-        )
+        if self.action_embedding:
+            action_plane = self.relu(
+                self.action_normalization(self.action_projection(action_plane))
+            )
 
         transition = self.transition(torch.cat((state, action_plane), dim=1))
         next_state = self.residual(self.relu(transition + state))

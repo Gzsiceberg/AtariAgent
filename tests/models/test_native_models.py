@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import torch
 
 import atariagent.models as python_models
@@ -43,13 +44,16 @@ def test_cpp_models_load_real_training_checkpoint() -> None:
     assert set(models.prediction.state_dict()) == set(checkpoint["prediction"])
 
 
-def test_cpp_default_dynamics_matches_python_action_embedding() -> None:
+@pytest.mark.parametrize("action_embedding", [True, False])
+def test_cpp_dynamics_matches_python_action_encoding(action_embedding) -> None:
     torch.manual_seed(7)
-    python_dynamics = python_models.DynamicsNetwork(18).eval()
+    python_dynamics = python_models.DynamicsNetwork(
+        18, action_embedding=action_embedding
+    ).eval()
     with torch.no_grad():
         python_dynamics.reward_prediction.projection[-1].weight.normal_()
         python_dynamics.reward_prediction.projection[-1].bias.normal_()
-    native_dynamics = native.DynamicsNetwork(18)
+    native_dynamics = native.DynamicsNetwork(18, action_embedding=action_embedding)
     native_dynamics.load_state_dict(python_dynamics.state_dict())
     native_dynamics.eval()
     state = torch.randn(2, 64, 6, 6)

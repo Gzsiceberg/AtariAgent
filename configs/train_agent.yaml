@@ -19,6 +19,10 @@ environment:
   grayscale: false
   episodic_life: true
 
+model:
+  # false: V1 raw action/action_count plane; true: learned projection + LayerNorm.
+  action_embedding: true
+
 self_play:
   num_envs: 4
   total_transitions: 100000

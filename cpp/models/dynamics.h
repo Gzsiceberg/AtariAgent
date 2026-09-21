@@ -37,7 +37,8 @@ public:
         std::int64_t action_space_size,
         double batch_norm_momentum = 0.1,
         bool scale_state_gradient = true,
-        std::int64_t action_embedding_dim = 16
+        std::int64_t action_embedding_dim = 16,
+        bool action_embedding = true
     );
 
     std::tuple<torch::Tensor, LSTMHidden, torch::Tensor> forward(
@@ -50,6 +51,7 @@ private:
     std::int64_t action_space_size_;
     bool scale_state_gradient_;
     std::int64_t action_embedding_dim_;
+    bool action_embedding_;
     torch::nn::Conv2d action_projection{nullptr};
     torch::nn::LayerNorm action_normalization{nullptr};
     torch::nn::Sequential transition{nullptr};

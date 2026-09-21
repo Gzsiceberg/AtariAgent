@@ -230,6 +230,13 @@ def load_agent_checkpoint(
             environment_config["frame_skip"]
         )
         lstm_horizon = int(training_config["lstm_horizon"])
+        # Checkpoints predating ModelConfig used the learned action embedding.
+        model_config = config.get("model", {})
+        if not isinstance(model_config, Mapping):
+            raise TypeError("model config must be a mapping")
+        action_embedding = model_config.get("action_embedding", True)
+        if not isinstance(action_embedding, bool):
+            raise TypeError("model.action_embedding must be a boolean")
         precision = str(training_config.get("precision", "fp32"))
         if precision not in {"fp32", "bf16"}:
             raise ValueError("precision must be fp32 or bf16")
@@ -254,6 +261,7 @@ def load_agent_checkpoint(
         frame_stack * image_channels,
         action_space_size,
         precision=precision,
+        action_embedding=action_embedding,
         search_config=SearchConfig(
             num_simulations=num_simulations,
             discount=discount,

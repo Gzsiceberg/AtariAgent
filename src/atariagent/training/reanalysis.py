@@ -105,7 +105,10 @@ class ReanalysisPipeline:
         timeout_seconds: float,
         target_update_interval: int,
         device: torch.device | str | None = None,
+        action_embedding: bool = True,
     ) -> None:
+        if not isinstance(action_embedding, bool):
+            raise TypeError("action_embedding must be a boolean")
         if not isinstance(cache_targets, bool):
             raise TypeError("cache_targets must be a boolean")
         if isinstance(cache_target_ttl, bool) or not isinstance(
@@ -143,7 +146,7 @@ class ReanalysisPipeline:
             InferenceModels(
                 representation=RepresentationNetwork(in_channels),
                 prediction=PredictionNetwork(action_space_size),
-                dynamics=DynamicsNetwork(action_space_size),
+                dynamics=DynamicsNetwork(action_space_size, action_embedding=action_embedding),
             )
             .eval()
             .to(self.device)
