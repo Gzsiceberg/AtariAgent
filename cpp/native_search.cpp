@@ -464,7 +464,8 @@ int RootTree::select_gumbel_child(int node_index) {
     }
 
     write_improved_policy(node_index, gumbel_score_scratch_.data());
-    const float denominator = 1.0F + static_cast<float>(nodes_[node_index].visit_count);
+    // The node's initial expansion visit already accounts for the +1.
+    const float denominator = static_cast<float>(nodes_[node_index].visit_count);
     int best_action = 0;
     float best_score = -std::numeric_limits<float>::infinity();
     for (int action = 0; action < action_count_; ++action) {
