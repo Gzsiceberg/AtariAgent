@@ -56,9 +56,9 @@ from atariagent.training.config import (
     next_collection_vector_steps,
     proportional_training_update,
     register_train_agent_config,
+    target_network_update_due,
     visit_softmax_temperature,
 )
-from atariagent.training.target_delay import TargetDelay
 from atariagent.typecheck import set_runtime_typechecking
 
 register_train_agent_config()
@@ -168,13 +168,11 @@ def save_checkpoint(
     target_version: int,
     update: int,
     config: TrainAgentConfig,
-    target_delay: TargetDelay | None = None,
 ) -> None:
     """Persist online networks, asynchronous target state, and optimizer."""
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint: dict[str, object] = {
         "update": update,
-        "target_delay": None if target_delay is None else target_delay.state_dict(),
         "representation": agent.representation_network.state_dict(),
         "dynamics": agent.dynamics_network.state_dict(),
         "prediction": agent.prediction_network.state_dict(),
@@ -220,7 +218,6 @@ def save_pre_final_snapshot(
     update: int,
     config: TrainAgentConfig,
     rng_state: Mapping[str, object],
-    target_delay: TargetDelay | None = None,
 ) -> None:
     """Atomically persist everything required by the learner-only phase."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,7 +225,6 @@ def save_pre_final_snapshot(
     snapshot: dict[str, object] = {
         "snapshot_type": "atariagent_pre_final",
         "snapshot_version": 1,
-        "target_delay": None if target_delay is None else target_delay.state_dict(),
         "update": update,
         "representation": agent.representation_network.state_dict(),
         "dynamics": agent.dynamics_network.state_dict(),
@@ -256,7 +252,6 @@ def load_pre_final_snapshot(
     trainer: Trainer,
     replay: FIFOReplayBuffer,
     expected_update: int,
-    target_delay: TargetDelay | None = None,
 ) -> tuple[int, dict[str, torch.Tensor], int, Mapping[str, object]]:
     """Load a trusted pre-final snapshot into initialized training objects."""
     if not path.is_file():
@@ -324,15 +319,6 @@ def load_pre_final_snapshot(
         agent.search.rng.setstate(search_rng_state)  # type: ignore[arg-type]
     except (TypeError, ValueError) as error:
         raise ValueError("snapshot search RNG state is invalid") from error
-    if target_delay is not None:
-        delay_state = snapshot.get("target_delay")
-        if isinstance(delay_state, Mapping):
-            target_delay.load_state_dict(delay_state)
-        elif target_delay.delay != 0:
-            raise ValueError(
-                "snapshot has no delayed-target history; resume with "
-                "reanalysis.target_update_delay=0"
-            )
     return update, dict(target_state), target_version, rng_state
 
 
@@ -402,11 +388,6 @@ def main(config: TrainAgentConfig) -> None:
             raise TypeError(f"reanalysis.{name} must be an integer")
         if value <= 0:
             raise ValueError(f"reanalysis.{name} must be positive")
-    delay = config.reanalysis.target_update_delay
-    if isinstance(delay, bool) or not isinstance(delay, int):
-        raise TypeError("reanalysis.target_update_delay must be an integer")
-    if delay < 0:
-        raise ValueError("reanalysis.target_update_delay must be non-negative")
     if config.reanalysis.policy_chunk_size <= 0:
         raise ValueError("reanalysis.policy_chunk_size must be positive")
     if not isinstance(config.reanalysis.cache_targets, bool):
@@ -626,11 +607,6 @@ def main(config: TrainAgentConfig) -> None:
             agent.prediction_network,
             agent.dynamics_network,
         )
-        target_delay = TargetDelay(
-            config.reanalysis.target_update_interval,
-            config.reanalysis.target_update_delay,
-            target_state,
-        )
         target_version = 0
         update = 0
         resume_rng_state: Mapping[str, object] | None = None
@@ -646,7 +622,6 @@ def main(config: TrainAgentConfig) -> None:
                 trainer=trainer,
                 replay=replay,
                 expected_update=config.training.steps,
-                target_delay=target_delay,
             )
             log(
                 "[bold green]Pre-final snapshot loaded[/bold green] "
@@ -781,7 +756,6 @@ def main(config: TrainAgentConfig) -> None:
                 target_version=target_version,
                 update=update,
                 config=config,
-                target_delay=target_delay,
             )
             saved_path = latest_checkpoint_path
             if is_representative:
@@ -836,17 +810,16 @@ def main(config: TrainAgentConfig) -> None:
             batch_worker.complete(ready, metrics.priorities)
 
             update += 1
-            delayed_state = target_delay.advance(
+            if target_network_update_due(
                 update,
-                lambda: make_target_state(
+                last_update=target_version,
+                interval=config.reanalysis.target_update_interval,
+            ):
+                target_state = make_target_state(
                     agent.representation_network,
                     agent.prediction_network,
                     agent.dynamics_network,
-                ),
-            )
-            if delayed_state is not None:
-                target_state = delayed_state
-                # Versions identify publications, not the older source snapshot.
+                )
                 target_version = update
                 batch_worker.publish_weights(update, target_state)
 
@@ -1099,7 +1072,6 @@ def main(config: TrainAgentConfig) -> None:
                 update=update,
                 config=config,
                 rng_state=pre_final_rng_state,
-                target_delay=target_delay,
             )
             log(
                 "[bold green]Pre-final snapshot saved[/bold green] "

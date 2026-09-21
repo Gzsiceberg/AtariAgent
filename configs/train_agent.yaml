@@ -65,8 +65,6 @@ reanalysis:
   worker_num_threads: 4
   # Keep delayed-target hard copies on a fixed learner-update interval.
   target_update_interval: 1000
-  # Publish weights from this many learner updates earlier; 0 uses current weights.
-  target_update_delay: 0
 
 training:
   device: auto

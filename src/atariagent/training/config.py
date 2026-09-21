@@ -108,7 +108,6 @@ class ReanalysisConfig:
     timeout_seconds: float = 600.0
     worker_num_threads: int = 4
     target_update_interval: int = 1_000
-    target_update_delay: int = 0
 
 
 @dataclass
