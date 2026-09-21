@@ -190,11 +190,17 @@ class _RecordingTransforms(torch.nn.Module):
         return images + len(self.inputs)
 
 
-def test_trainer_augments_root_and_packed_target_sequence_separately() -> None:
+@pytest.mark.parametrize("precision", ["fp32", "bf16"])
+def test_trainer_augments_root_and_packed_target_sequence_separately(precision) -> None:
+    if precision == "bf16" and (
+        not torch.cuda.is_available() or not torch.cuda.is_bf16_supported()
+    ):
+        pytest.skip("BF16 learner requires a supported CUDA device")
+    device = torch.device("cuda" if precision == "bf16" else "cpu")
     trainer = Trainer(
-        RepresentationNetwork(2),
-        DynamicsNetwork(action_space_size=3),
-        PredictionNetwork(action_space_size=3),
+        RepresentationNetwork(2).to(device),
+        DynamicsNetwork(action_space_size=3).to(device),
+        PredictionNetwork(action_space_size=3).to(device),
         consistency_network=ConsistencyNetwork(
             projection_dim=32,
             projection_hidden_dim=64,
@@ -203,16 +209,26 @@ def test_trainer_augments_root_and_packed_target_sequence_separately() -> None:
         augmentation=["none"],
         image_shape=(2, 2),
         unroll_steps=2,
+        precision=precision,
     )
     recorder = _RecordingTransforms()
     trainer._uncompiled_unroll.augmentation = recorder
     frame_values = torch.arange(4, dtype=torch.uint8).reshape(
         1, 4, 1, 1, 1
     )
-    frames = frame_values.expand(2, 4, 1, 2, 2).clone()
+    frames = frame_values.expand(2, 4, 1, 2, 2).clone().to(device)
 
-    observations, targets = trainer._prepare_observations(frames)
+    with torch.autocast(
+        device_type=device.type, dtype=torch.bfloat16, enabled=precision == "bf16"
+    ):
+        observations, targets = trainer._prepare_observations(frames)
+        # Network operations still use BF16 under the enclosing autocast.
+        probe = torch.nn.functional.linear(observations.flatten(1), torch.ones(1, 8, device=device))
+        assert probe.dtype == (torch.bfloat16 if precision == "bf16" else torch.float32)
 
+    assert all(value.dtype == torch.float32 for value in recorder.inputs)
+    assert observations.dtype == torch.float32
+    assert targets.dtype == torch.float32
     assert targets is not None
     assert [value.shape for value in recorder.inputs] == [
         (2, 2, 2, 2),

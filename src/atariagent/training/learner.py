@@ -581,9 +581,9 @@ class Trainer:
             prediction,
             consistency_network,
             self.transforms,
-            observation_dtype=(
-                torch.bfloat16 if precision == "bf16" else torch.float32
-            ),
+            # Normalize and augment in FP32, independently of network autocast.
+            # In particular, intensity noise must also be sampled in FP32.
+            observation_dtype=torch.float32,
             unroll_steps=unroll_steps,
             lstm_horizon=lstm_horizon,
             policy_weight=policy_weight,
