@@ -56,18 +56,20 @@ def scheduler(tmp_path):
 def test_all_experiments(scheduler):
     result, calls = scheduler()
     assert result.returncode == 0, result.stderr
-    assert len(calls) == 5
+    assert len(calls) == 6
     assert calls[-1] == ["-l"]
     expected = [
         ["search=gumbel", "reanalysis.target_update_interval=400", "reanalysis.cache_targets=false"],
         ["search=gumbel", "reanalysis.target_update_interval=200", "reanalysis.cache_targets=true"],
         ["search=gumbel", "reanalysis.target_update_interval=200", "reanalysis.cache_targets=true", "model.action_embedding=false"],
         ["search=gumbel", "reanalysis.target_update_interval=400", "reanalysis.cache_targets=true", "model.action_embedding=false"],
+        ["search=gumbel", "checkpoint.collection_interval=10000", "training.mixed_value_threshold=30000", "reanalysis.target_update_interval=400"],
     ]
     for call, overrides in zip(calls[:-1], expected, strict=True):
         assert call[:2] == ["bash", "-c"]
         assert call[4] == "/worker/repo with spaces"
-        assert "environment.id=ALE/UpNDown-v5" in call
+        environment = "Qbert" if "training.mixed_value_threshold=30000" in overrides else "UpNDown"
+        assert f"environment.id=ALE/{environment}-v5" in call
         assert "checkpoint.pre_final_snapshot_path=null" in call
         for override in overrides:
             assert override in call
@@ -116,6 +118,24 @@ def test_v1_action_option_and_alias_are_deduplicated(scheduler, selector, interv
     assert calls[0][5] == f"runs/test/{name}"
     assert any(arg.startswith("wandb.name=") and name in arg
                for arg in calls[0])
+
+
+def test_qbert_mixed_value_option_and_alias(scheduler):
+    name = "qbert_gumbel_t400_mv30000"
+    result, calls = scheduler("4", name, SEED="2")
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 2
+    call = calls[0]
+    for override in (
+        "environment.id=ALE/Qbert-v5", "seed=2", "search=gumbel",
+        "checkpoint.collection_interval=10000",
+        "training.mixed_value_threshold=30000",
+        "reanalysis.target_update_interval=400", "wandb.enabled=true",
+    ):
+        assert override in call
+    assert sum(arg.startswith("environment.id=") for arg in call) == 1
+    assert call[5] == f"runs/test/{name}"
+    assert f"wandb.name=Qbert-v5_{name}_seed2_test" in call
 
 
 def test_delegates_authentication_to_jobd(scheduler):
