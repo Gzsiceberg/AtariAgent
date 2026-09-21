@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Submit baseline, value_loss_coeff, per_v2, mixed_value_threshold,
-# target_update_interval, and gumbel experiments to jobd's shared controller queue.
+# Submit two Gumbel cache/target-interval experiments to jobd's shared queue.
+# 0 / gumbel_target400_nocache: target interval 400, cache off
+# 1 / gumbel_target200_cache:   target interval 200, cache on
 # No local files or credentials are sent to workers.
 #
-# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | 6 | 9 | 10 | 11 | experiment names]
-# Example: DRY_RUN=1 ./scripts/schedule_jobd_experiments.sh baseline per_v2
+# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | experiment names]
+# Example: DRY_RUN=1 ENVIRONMENT_ID=Qbert-v5 ./scripts/schedule_jobd_experiments.sh all
 #
 # Submission environment:
 #   DRY_RUN=1: print commands without jobd, credentials, or filesystem changes
@@ -26,7 +27,7 @@
 set -Eeuo pipefail
 
 usage() {
-    echo "Usage: ${0##*/} [all | 0/baseline | 1/value_loss_coeff | 6/per_v2 | 9/mixed_value_threshold | 10/target_update_interval | 11/gumbel ...]"
+    echo "Usage: ${0##*/} [all | 0/gumbel_target400_nocache | 1/gumbel_target200_cache ...]"
 }
 
 declare -a experiments=()
@@ -39,14 +40,10 @@ for selection in "$@"; do
                 echo "Error: 'all' must be used alone." >&2
                 exit 1
             fi
-            experiments=(baseline value_loss_coeff per_v2 mixed_value_threshold target_update_interval gumbel)
+            experiments=(gumbel_target400_nocache gumbel_target200_cache)
             ;;
-        0|baseline) experiments+=(baseline) ;;
-        1|value_loss_coeff) experiments+=(value_loss_coeff) ;;
-        6|per_v2) experiments+=(per_v2) ;;
-        9|mixed_value_threshold) experiments+=(mixed_value_threshold) ;;
-        10|target_update_interval) experiments+=(target_update_interval) ;;
-        11|gumbel) experiments+=(gumbel) ;;
+        0|gumbel_target400_nocache) experiments+=(gumbel_target400_nocache) ;;
+        1|gumbel_target200_cache) experiments+=(gumbel_target200_cache) ;;
         *) printf 'Error: unknown experiment: %s\n' "$selection" >&2; usage >&2; exit 1 ;;
     esac
 done
@@ -89,12 +86,10 @@ for experiment in "${experiments[@]}"; do
     [[ -z "${scheduled[$experiment]:-}" ]] || continue
     overrides=()
     case "$experiment" in
-        baseline) ;;
-        value_loss_coeff) overrides=("loss.value_weight=0.5") ;;
-        per_v2) overrides=("replay.per_mode=v2") ;;
-        mixed_value_threshold) overrides=("training.mixed_value_threshold=10000") ;;
-        target_update_interval) overrides=("reanalysis.target_update_interval=500") ;;
-        gumbel) overrides=("search=gumbel") ;;
+        gumbel_target400_nocache)
+            overrides=("search=gumbel" "reanalysis.target_update_interval=400" "reanalysis.cache_targets=false") ;;
+        gumbel_target200_cache)
+            overrides=("search=gumbel" "reanalysis.target_update_interval=200" "reanalysis.cache_targets=true") ;;
     esac
     output_dir="$RUN_ROOT/$experiment"
     args=(

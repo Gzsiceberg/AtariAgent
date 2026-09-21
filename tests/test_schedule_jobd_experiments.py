@@ -56,15 +56,11 @@ def scheduler(tmp_path):
 def test_all_experiments(scheduler):
     result, calls = scheduler()
     assert result.returncode == 0, result.stderr
-    assert len(calls) == 10
+    assert len(calls) == 3
     assert calls[-1] == ["-l"]
     expected = [
-        [], ["loss.value_weight=0.5"], ["loss.consistency_weight=5"],
-        ["replay.priority_alpha=0.6"],
-        ["loss.value_weight=0.5", "loss.consistency_weight=5"],
-        ["training.precision=fp32"], ["replay.per_mode=v2"],
-        ["replay.final_per_mode=v2"],
-        ["replay.priority_alpha=1", "replay.priority_beta_initial=0.26", "replay.priority_beta_final=0.65"],
+        ["search=gumbel", "reanalysis.target_update_interval=400", "reanalysis.cache_targets=false"],
+        ["search=gumbel", "reanalysis.target_update_interval=200", "reanalysis.cache_targets=true"],
     ]
     for call, overrides in zip(calls[:-1], expected, strict=True):
         assert call[:2] == ["bash", "-c"]
@@ -78,7 +74,13 @@ def test_all_experiments(scheduler):
     assert "wandb-secret" not in text
 
 
-@pytest.mark.parametrize("selectors", [("bad",), ("baseline", "bad"), ("all", "0")])
+@pytest.mark.parametrize("selectors", [
+    ("bad",), ("0", "bad"), ("all", "0"),
+    *[(name,) for name in (
+        "baseline", "value_loss_coeff", "per_v2", "mixed_value_threshold",
+        "target_update_interval", "gumbel", "6", "9", "10", "11",
+    )],
+])
 def test_invalid_selection_no_submission(scheduler, selectors):
     result, calls = scheduler(*selectors)
     assert result.returncode != 0
@@ -87,7 +89,7 @@ def test_invalid_selection_no_submission(scheduler, selectors):
 
 def test_dedup_and_options(scheduler):
     result, calls = scheduler(
-        "0", "baseline", "8", ENVIRONMENT_ID="Pong-v5",
+        "0", "gumbel_target400_nocache", "1", "gumbel_target200_cache", ENVIRONMENT_ID="Pong-v5",
         WANDB_ENTITY="team", SNAPSHOT_PATH="/worker/snapshot.pt",
     )
     assert result.returncode == 0
@@ -97,11 +99,10 @@ def test_dedup_and_options(scheduler):
     assert "checkpoint.resume_pre_final_path=/worker/snapshot.pt" in calls[0]
 
 
-def test_requires_controller_key(scheduler):
+def test_delegates_authentication_to_jobd(scheduler):
     result, calls = scheduler("0", JOBD_API_KEY="")
-    assert result.returncode != 0
-    assert "JOBD_API_KEY" in result.stderr
-    assert not calls
+    assert result.returncode == 0
+    assert len(calls) == 2
 
 
 def test_dry_run_no_side_effects(scheduler, tmp_path):
@@ -128,6 +129,6 @@ def test_worker_command(scheduler, tmp_path, exit_code):
         capture_output=True, text=True, timeout=10,
     )
     assert executed.returncode == exit_code
-    log = (repo / "runs/test/baseline/training.log").read_text()
+    log = (repo / "runs/test/gumbel_target400_nocache/training.log").read_text()
     assert "training-output" in log
     assert "training-error" in log
