@@ -1,7 +1,7 @@
 defaults:
   - train_agent_schema
   - _self_
-  - search: puct
+  - search: gumbel
   - override hydra/job_logging: disabled
 
 seed: 2
