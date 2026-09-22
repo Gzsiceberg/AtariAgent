@@ -65,7 +65,7 @@ reanalysis:
   # Cap native OpenMP tree traversal to avoid CPU oversubscription.
   worker_num_threads: 4
   # Keep delayed-target hard copies on a fixed learner-update interval.
-  target_update_interval: 1000
+  target_update_interval: 400
 
 training:
   device: auto
