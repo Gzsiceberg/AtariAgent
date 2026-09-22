@@ -956,11 +956,17 @@ def main(config: TrainAgentConfig) -> None:
                 completed_rewards = reward_tracker.add(trajectories)
                 self_play_episode_rewards.extend(completed_rewards)
                 insertion = replay.extend(trajectories)
+                current_rewards = worker.current_episode_rewards
+                wandb_logger.log_current_self_play(current_rewards, update=update)
                 progress_stats: dict[str, object] = {
                     "iteration": collection_iteration,
                     "added": insertion.added_transitions,
                     "replay": f"{len(replay)}/{replay.max_transitions}",
                     "mode": search_mode,
+                    **{
+                        f"reward_env_{index}": f"{reward:.2f}"
+                        for index, reward in enumerate(current_rewards)
+                    },
                 }
                 if temperature is not None:
                     progress_stats["temperature"] = f"{temperature:.2f}"

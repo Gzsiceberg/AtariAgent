@@ -95,6 +95,33 @@ class FakeEnvironment:
         self.closed = True
 
 
+def test_current_rewards_include_unfinished_blocks_and_reset_per_game() -> None:
+    with SelfPlayWorker(
+        FakeAgent(),
+        environments=[FakeEnvironment(5), FakeEnvironment(10, reward=-2.0)],
+        trajectory_length=2,
+        lookahead_steps=2,
+    ) as worker:
+        assert worker.current_episode_rewards == (0.0, 0.0)
+        worker.run(3)
+        assert worker.current_episode_rewards == (7.5, -6.0)
+        worker.run(2)
+        assert worker.current_episode_rewards == (0.0, -10.0)
+        worker.run(1)
+        assert worker.current_episode_rewards == (2.5, -12.0)
+
+
+def test_current_rewards_survive_life_loss() -> None:
+    environment = gym.wrappers.FrameStackObservation(
+        EpisodicLifeEnvironment(LifeLossEnvironment()), stack_size=4
+    )
+    with SelfPlayWorker(FakeAgent(), environments=[environment]) as worker:
+        worker.run(1)
+        assert worker.current_episode_rewards == (10.0,)
+        worker.run(1)
+        assert worker.current_episode_rewards == (0.0,)
+
+
 class FakeAgent:
     def __init__(self) -> None:
         self.observation_batches: list[tuple[np.ndarray, ...]] = []

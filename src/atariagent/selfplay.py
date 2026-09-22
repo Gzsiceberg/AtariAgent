@@ -441,10 +441,16 @@ class SelfPlayWorker:
         self.total_transitions = 0
         self._observations: list[AtariObservation] = []
         self._builders: list[list[_TrajectoryBuilder]] = []
+        self._current_episode_rewards = [0.0] * self.num_envs
         self._episode_ids = [0] * self.num_envs
         self._next_block_ids = [0] * self.num_envs
         self._initialized = False
         self._closed = False
+
+    @property
+    def current_episode_rewards(self) -> tuple[float, ...]:
+        """Raw returns so far per environment, reset only at full-game boundaries."""
+        return tuple(self._current_episode_rewards)
 
     def run(
         self,
@@ -490,6 +496,7 @@ class SelfPlayWorker:
                     environment.step(action)
                 )
                 raw_reward = float(raw_reward)
+                self._current_episode_rewards[index] += raw_reward
                 reward = float(np.sign(raw_reward)) if self.clip_rewards else raw_reward
                 # Frozen builders receive the transition as lookahead context,
                 # while the active builder owns it as a future replay start.
@@ -530,6 +537,7 @@ class SelfPlayWorker:
                     )
                     self._next_block_ids[index] += 1
                     if full_episode_done:
+                        self._current_episode_rewards[index] = 0.0
                         self._episode_ids[index] += 1
                     self._observations[index] = self._reset_environment(
                         index, seed=None

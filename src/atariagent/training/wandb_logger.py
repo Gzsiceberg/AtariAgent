@@ -163,6 +163,22 @@ class WandbLogger:
             }
         )
 
+    def log_current_self_play(
+        self, rewards: Sequence[float], *, update: int
+    ) -> None:
+        """Log cumulative raw returns separately for each active game."""
+        if self._run is None:
+            return
+        self._run.log(
+            {
+                "self_play/update": update,
+                **{
+                    f"self_play/current_reward_env_{index}": reward
+                    for index, reward in enumerate(rewards)
+                },
+            }
+        )
+
     def log_evaluation(self, stats: EvaluationStats, *, update: int) -> None:
         """Log checkpoint evaluation reward statistics."""
         if self._run is None:

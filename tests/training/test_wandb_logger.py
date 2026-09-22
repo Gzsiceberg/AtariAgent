@@ -113,6 +113,22 @@ def test_wandb_logger_emits_reanalysis_metrics() -> None:
     assert run.logged[0]["reanalysis/cache_hit_rate"] == pytest.approx(0.75)
 
 
+def test_wandb_logger_emits_current_self_play_rewards() -> None:
+    run = FakeRun()
+    logger = WandbLogger(run)
+    stats = EvaluationStats.from_rewards((1.0, 2.0, 6.0))
+
+    logger.log_current_self_play(stats.rewards, update=0)
+
+    assert run.logged == [{
+        "self_play/update": 0,
+        "self_play/current_reward_env_0": 1.0,
+        "self_play/current_reward_env_1": 2.0,
+        "self_play/current_reward_env_2": 6.0,
+    }]
+    WandbLogger(None).log_current_self_play(stats.rewards, update=0)
+
+
 def test_wandb_logger_emits_self_play_and_evaluation_rewards() -> None:
     run = FakeRun()
     logger = WandbLogger(run)
