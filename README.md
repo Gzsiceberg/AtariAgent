@@ -107,6 +107,8 @@ uv run python scripts/train_agent.py
 
 cuDNN convolution autotuning is disabled by default (`training.cudnn_benchmark=false`) to avoid repeated algorithm searches and GPU synchronization as reanalysis cache-miss batch sizes change. This is a process-wide setting for training and native inference; BF16, TF32, and learner compilation remain unchanged. Set `training.cudnn_benchmark=true` to compare the previous behavior. Autotuning is controlled independently of `training.deterministic`.
 
+Optional [ROSMO-style behavior regularization](https://arxiv.org/abs/2210.05980) can be enabled with `loss.behavior_regularization_weight=0.1` (default: `0.0`, disabled). This adds `-log π(a|s)` for replay actions whose detached model-based advantage `r̂ + γ V̂(next) - V̂(current)` is strictly positive. Predicted immediate rewards are recovered from value-prefix differences, respecting LSTM resets; γ uses the existing frame-skip-adjusted training discount. The loss covers valid replay transitions (not the final unroll state), uses replay importance weights and the existing unroll scaling, and applies during both online and final offline updates. This uses the current learner's recurrent model predictions; it does not enable ROSMO policy improvement or a separate offline-data pipeline.
+
 Choose another Atari environment through a Hydra override:
 
 ```bash

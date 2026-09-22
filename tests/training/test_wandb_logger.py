@@ -33,6 +33,7 @@ def make_train_metrics() -> TrainMetrics:
         value_loss=torch.tensor(12.0),
         reward_loss=torch.tensor(13.0),
         consistency_loss=torch.tensor(-0.5),
+        behavior_regularization_loss=torch.tensor(0.0),
         gradient_norm=torch.tensor(5.0),
         search_target_entropy=torch.tensor(0.1),
         search_target_max_probability=torch.tensor(0.4),

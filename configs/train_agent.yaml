@@ -142,6 +142,8 @@ loss:
   value_weight: 0.25
   reward_weight: 1.0
   consistency_weight: 2.0
+  # ROSMO positive-model-advantage behavior cloning; 0 disables it.
+  behavior_regularization_weight: 0.0
 
 checkpoint:
   path: checkpoints/${environment_slug:${environment.id}}/agent_latest.pt

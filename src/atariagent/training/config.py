@@ -128,6 +128,7 @@ class LossConfig:
     value_weight: float = 0.25
     reward_weight: float = 1.0
     consistency_weight: float = 5.0
+    behavior_regularization_weight: float = 0.0
 
 
 @dataclass

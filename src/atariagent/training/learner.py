@@ -6,6 +6,7 @@ accumulated between LSTM resets instead of predicting each immediate reward.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ class TrainMetrics:
     value_loss: Tensor  # Mean absolute error of decoded scalar values.
     reward_loss: Tensor  # Same metric for cumulative reward prefixes.
     consistency_loss: Tensor
+    behavior_regularization_loss: Tensor
     gradient_norm: Tensor
     search_target_entropy: Tensor
     search_target_max_probability: Tensor
@@ -73,6 +75,8 @@ class _LearnerUnroll(nn.Module):
         value_weight: float,
         reward_weight: float,
         consistency_weight: float,
+        behavior_regularization_weight: float,
+        discount: float,
         support_min: int,
         support_max: int,
         priority_epsilon: float,
@@ -93,6 +97,29 @@ class _LearnerUnroll(nn.Module):
         self.support_min = support_min
         self.support_max = support_max
         self.priority_epsilon = priority_epsilon
+        self.behavior_regularization_weight = behavior_regularization_weight
+        self.discount = discount
+
+    @staticmethod
+    def _behavior_loss(
+        policy_logits: Tensor,
+        actions: Tensor,
+        rewards: Tensor,
+        values: Tensor,
+        next_values: Tensor,
+        valid: Tensor,
+        discount: float,
+    ) -> Tensor:
+        """ROSMO's positive-model-advantage filtered behavior cloning."""
+        advantage = (rewards + discount * next_values - values).detach()
+        selected = valid.bool() & (advantage > 0)
+        # Replay actions have shape [batch, 1]; padded actions never contribute.
+        actions = rearrange(actions, "batch 1 -> batch").long()
+        actions = torch.where(valid.bool(), actions, 0)
+        nll = torch.nn.functional.cross_entropy(
+            policy_logits.float(), actions, reduction="none"
+        )
+        return torch.where(selected, nll, 0.0)
 
     def _prediction_losses(
         self,
@@ -292,8 +319,13 @@ class _LearnerUnroll(nn.Module):
             predicted_root_values - value_targets[:, 0]
         ).abs() + self.priority_epsilon
 
+        behavior_loss = observations.new_zeros(batch_size)
+        previous_prefix = torch.zeros_like(predicted_root_values)
         hidden = None
         for step in range(self.unroll_steps):
+            if self.behavior_regularization_weight > 0.0:
+                behavior_logits = policy_logits
+                behavior_values = self._decode_values(value_logits)
             state, hidden, value_prefix_logits = self.dynamics(
                 state,
                 actions[:, step],
@@ -314,6 +346,24 @@ class _LearnerUnroll(nn.Module):
             ) * action_mask[:, step].to(value_prefix_logits.dtype)
 
             policy_logits, value_logits = self.prediction(state)
+            if self.behavior_regularization_weight > 0.0:
+                predicted_prefix = self._decode_values(value_prefix_logits)
+                # The reward head predicts a prefix, reset with the LSTM horizon.
+                predicted_reward = predicted_prefix - previous_prefix
+                behavior_loss += self._behavior_loss(
+                    behavior_logits,
+                    actions[:, step],
+                    predicted_reward,
+                    behavior_values,
+                    self._decode_values(value_logits),
+                    action_mask[:, step],
+                    self.discount,
+                )
+                previous_prefix = (
+                    torch.zeros_like(predicted_prefix)
+                    if (step + 1) % self.lstm_horizon == 0
+                    else predicted_prefix
+                )
             step_policy_loss, step_value_loss = self._prediction_losses(
                 policy_logits,
                 value_logits,
@@ -378,6 +428,10 @@ class _LearnerUnroll(nn.Module):
             + self.reward_weight * reward_loss
             + self.consistency_weight * consistency_loss
         )
+        if self.behavior_regularization_weight > 0.0:
+            loss = loss + self.behavior_regularization_weight * (
+                sample_weights * behavior_loss * loss_scale
+            ).mean()
         valid_policy_roots = policy_statistics[3].clamp_min(1.0)
         policy_diagnostics = policy_statistics[:3] / valid_policy_roots
         # Logging only: do not let replay weights or padding dilute these means.
@@ -389,6 +443,7 @@ class _LearnerUnroll(nn.Module):
                 value_error / value_mask.sum().clamp_min(1),
                 reward_error / valid_actions,
                 recurrent_consistency_loss.detach().float().sum() / valid_actions,
+                behavior_loss.detach().float().sum() / valid_actions,
             )
         )
         return (
@@ -442,6 +497,8 @@ class Trainer:
         value_weight: float = 0.25,
         reward_weight: float = 1.0,
         consistency_weight: float = 5.0,
+        behavior_regularization_weight: float = 0.0,
+        discount: float = 0.997 ** 4,
         max_gradient_norm: float = 5.0,
         support_min: int = -300,
         support_max: int = 300,
@@ -450,6 +507,15 @@ class Trainer:
         compile_model: bool = False,
         compile_mode: str = "max-autotune",
     ) -> None:
+        if (
+            not math.isfinite(behavior_regularization_weight)
+            or behavior_regularization_weight < 0
+        ):
+            raise ValueError(
+                "behavior_regularization_weight must be finite and non-negative"
+            )
+        if not 0.0 <= discount <= 1.0:
+            raise ValueError("discount must be in [0, 1]")
         if unroll_steps <= 0:
             raise ValueError("unroll_steps must be positive")
         if lstm_horizon <= 0:
@@ -590,6 +656,8 @@ class Trainer:
             value_weight=value_weight,
             reward_weight=reward_weight,
             consistency_weight=consistency_weight,
+            behavior_regularization_weight=behavior_regularization_weight,
+            discount=discount,
             support_min=support_min,
             support_max=support_max,
             priority_epsilon=priority_epsilon,
@@ -690,6 +758,7 @@ class Trainer:
             value_loss=normalized_losses[1].detach(),
             reward_loss=normalized_losses[2].detach(),
             consistency_loss=normalized_losses[3].detach(),
+            behavior_regularization_loss=normalized_losses[4].detach(),
             gradient_norm=gradient_norm.detach(),
             search_target_entropy=search_target_entropy.detach(),
             search_target_max_probability=(

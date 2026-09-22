@@ -425,6 +425,8 @@ def main(config: TrainAgentConfig) -> None:
         raise ValueError("augmentation.intensity_scale must be non-negative")
     if config.augmentation.enabled and not config.augmentation.transforms:
         raise ValueError("augmentation.transforms must not be empty when enabled")
+    if not 0.0 <= config.loss.behavior_regularization_weight < float("inf"):
+        raise ValueError("loss.behavior_regularization_weight must be finite and non-negative")
     if config.loss.consistency_weight < 0.0:
         raise ValueError("loss.consistency_weight must be non-negative")
     if config.checkpoint.collection_interval <= 0:
@@ -585,6 +587,8 @@ def main(config: TrainAgentConfig) -> None:
             value_weight=config.loss.value_weight,
             reward_weight=config.loss.reward_weight,
             consistency_weight=config.loss.consistency_weight,
+            behavior_regularization_weight=config.loss.behavior_regularization_weight,
+            discount=discount,
             max_gradient_norm=config.training.max_gradient_norm,
             priority_epsilon=config.replay.priority_epsilon,
             precision=config.training.precision,
