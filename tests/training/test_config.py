@@ -38,7 +38,7 @@ def test_output_paths_are_derived_from_environment_id() -> None:
 def test_replay_uses_efficientzero_v1_per_defaults() -> None:
     config = ReplayConfig()
 
-    assert config.per_mode == "v1"
+    assert config.priority_weight_clip == 0.0
     assert config.use_max_priority is False
     assert config.priority_alpha == pytest.approx(0.6)
     assert config.priority_beta_initial == pytest.approx(0.4)
@@ -63,17 +63,17 @@ def test_replay_max_priority_can_be_enabled() -> None:
     assert enabled.replay.use_max_priority is True
 
 
-def test_replay_per_mode_can_select_v2() -> None:
+def test_replay_priority_weight_clip_can_be_overridden() -> None:
     register_train_agent_config()
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")
 
     with initialize_config_dir(version_base=None, config_dir=config_dir):
         config = compose(
             config_name="train_agent",
-            overrides=["replay.per_mode=v2"],
+            overrides=["replay.priority_weight_clip=0.1"],
         )
 
-    assert config.replay.per_mode == "v2"
+    assert config.replay.priority_weight_clip == pytest.approx(0.1)
 
 
 def test_environment_time_limit_mode_can_be_overridden() -> None:

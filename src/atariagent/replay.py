@@ -78,7 +78,7 @@ class FIFOReplayBuffer:
         unroll_steps: int = 5,
         td_steps: int = 5,
         discount: float = 0.997,
-        per_mode: str = "v1",
+        priority_weight_clip: float = 0.0,
         use_max_priority: bool = False,
         priority_alpha: float = 0.6,
         priority_beta: float = 0.4,
@@ -99,15 +99,12 @@ class FIFOReplayBuffer:
                 raise ValueError(f"{name} must be positive")
         if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be finite and in [0, 1]")
-        if not isinstance(per_mode, str):
-            raise TypeError("per_mode must be a string")
-        if per_mode not in {"v1", "v2"}:
-            raise ValueError("per_mode must be v1 or v2")
         if not isinstance(use_max_priority, bool):
             raise TypeError("use_max_priority must be a boolean")
         for value, name in (
             (priority_alpha, "priority_alpha"),
             (priority_beta, "priority_beta"),
+            (priority_weight_clip, "priority_weight_clip"),
         ):
             if not np.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and in [0, 1]")
@@ -118,14 +115,10 @@ class FIFOReplayBuffer:
         self._unroll_steps = unroll_steps
         self._td_steps = td_steps
         self._discount = float(discount)
-        self._per_mode = per_mode
+        self._priority_weight_clip = float(priority_weight_clip)
         self._use_max_priority = use_max_priority
-        self._priority_alpha = (
-            1.0 if per_mode == "v2" else float(priority_alpha)
-        )
-        self._priority_beta = (
-            1.0 if per_mode == "v2" else float(priority_beta)
-        )
+        self._priority_alpha = float(priority_alpha)
+        self._priority_beta = float(priority_beta)
         self._priority_epsilon = float(priority_epsilon)
         self._reward_discounts = self.discount ** np.arange(
             self.td_steps, dtype=np.float64
@@ -464,11 +457,7 @@ class FIFOReplayBuffer:
         requested_beta = self._priority_beta if priority_beta is None else priority_beta
         if not np.isfinite(requested_beta) or not 0.0 <= requested_beta <= 1.0:
             raise ValueError("priority_beta must be finite and in [0, 1]")
-        resolved_beta = (
-            self._priority_beta
-            if self._per_mode == "v2"
-            else float(requested_beta)
-        )
+        resolved_beta = float(requested_beta)
         assert self._action_space_size is not None
 
         locations, transition_ids, importance_weights = self._sample_context(
@@ -701,10 +690,11 @@ class FIFOReplayBuffer:
             self._transition_count * sampled_probabilities
         ) ** -resolved_beta
         importance_weights /= importance_weights.max()
-        if self._per_mode == "v2":
-            # Old AtariAgent/EfficientZero V2 Atari behavior prevented highly
-            # probable samples from receiving less than 10% of full weight.
-            np.clip(importance_weights, 0.1, 1.0, out=importance_weights)
+        if self._priority_weight_clip > 0.0:
+            np.clip(
+                importance_weights, self._priority_weight_clip, 1.0,
+                out=importance_weights,
+            )
         return (
             self._locations_for_indices(flat_indices),
             self._transition_ids[flat_indices],

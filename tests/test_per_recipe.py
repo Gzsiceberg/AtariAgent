@@ -70,7 +70,10 @@ def test_training_commands_and_valid_hydra_recipe(launcher):
         config = compose(config_name="train_agent", overrides=args[3:])
     assert config.self_play.search_algorithm == "puct"
     assert config.self_play.num_simulations == 50
-    assert config.replay.per_mode == "v2"
+    assert config.replay.priority_weight_clip == pytest.approx(0.1)
+    assert config.replay.priority_alpha == 1.0
+    assert config.replay.priority_beta_initial == 1.0
+    assert config.replay.priority_beta_final == 1.0
     assert config.training.mixed_value_threshold == 5000
     assert config.training.final_steps == 20000
     assert config.checkpoint.pre_final_snapshot_path == str(

@@ -594,29 +594,43 @@ def test_prioritized_replay_matches_efficientzero_v1_atari() -> None:
     assert counts[2] > counts[1] > counts[0]
 
 
-def test_prioritized_replay_matches_v2_sampling_weights() -> None:
+@pytest.mark.parametrize("clip", [0.0, 0.1, 0.5, 1.0])
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.6, 0.4)])
+def test_prioritized_replay_clips_weights(clip, alpha, beta) -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
         td_steps=1,
-        per_mode="v2",
+        priority_weight_clip=clip,
+        priority_alpha=alpha,
+        priority_beta=0.2,
         seed=4,
     )
     replay.add(make_trajectory(3, terminated=True))
     replay.update_priorities(np.array([0, 1, 2]), np.array([1.0, 4.0, 16.0]))
 
-    # V2 mode forces alpha=beta=1 and floors normalized IS weights at 0.1,
-    # even when the V1 beta schedule is supplied by BatchWorker.
-    batch = replay.sample(batch_size=3, priority_beta=0.4)
-    probabilities = np.array([1.0, 4.0, 16.0])
+    # Clipping preserves configured alpha and the per-sample beta override.
+    batch = replay.sample(batch_size=3, priority_beta=beta)
+    probabilities = np.array([1.0, 4.0, 16.0]) ** alpha
     probabilities /= probabilities.sum()
-    expected_weights = (3 * probabilities[batch.indices.numpy()]) ** -1.0
+    expected_weights = (3 * probabilities[batch.indices.numpy()]) ** -beta
     expected_weights /= expected_weights.max()
-    expected_weights = expected_weights.clip(0.1, 1.0)
+    expected_weights = expected_weights.clip(clip, 1.0)
     np.testing.assert_allclose(
         batch.importance_weights.numpy(), expected_weights, rtol=1e-6
     )
-    assert batch.importance_weights.min() == pytest.approx(0.1)
+    assert batch.importance_weights.min() >= clip
+
+
+def test_default_weight_clip_does_not_floor_weights() -> None:
+    replay = FIFOReplayBuffer(10, priority_alpha=1.0, priority_beta=1.0)
+    replay.add(make_trajectory(3, terminated=True))
+    replay.update_priorities([0, 1, 2], [1.0, 4.0, 100.0])
+
+    batch = replay.sample(3)
+
+    assert batch.importance_weights.min() == pytest.approx(0.01)
+    assert batch.importance_weights.max() == pytest.approx(1.0)
 
 
 def test_new_trajectory_error_can_exceed_current_maximum_priority() -> None:
@@ -637,14 +651,14 @@ def test_new_trajectory_error_can_exceed_current_maximum_priority() -> None:
     np.testing.assert_allclose(replay.priorities, [2.0, 5.0, 9.000001])
 
 
-@pytest.mark.parametrize("per_mode", ["v1", "v2"])
-def test_insertion_uses_v2_maximum_but_preserves_individual_errors(per_mode: str) -> None:
+@pytest.mark.parametrize("priority_weight_clip", [0.0, 0.1])
+def test_insertion_uses_v2_maximum_but_preserves_individual_errors(priority_weight_clip: float) -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
         td_steps=1,
         discount=0.5,
-        per_mode=per_mode,
+        priority_weight_clip=priority_weight_clip,
         priority_epsilon=1e-6,
     )
     replay.add(
@@ -676,14 +690,14 @@ def test_insertion_uses_v2_maximum_but_preserves_individual_errors(per_mode: str
     )
 
 
-@pytest.mark.parametrize("per_mode", ["v1", "v2"])
-def test_initial_priorities_handle_terminal_tail_and_zero_error(per_mode: str) -> None:
+@pytest.mark.parametrize("priority_weight_clip", [0.0, 0.1])
+def test_initial_priorities_handle_terminal_tail_and_zero_error(priority_weight_clip: float) -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
         td_steps=2,
         discount=0.5,
-        per_mode=per_mode,
+        priority_weight_clip=priority_weight_clip,
         priority_epsilon=1e-6,
     )
     replay.add(
@@ -700,7 +714,7 @@ def test_initial_priorities_handle_terminal_tail_and_zero_error(per_mode: str) -
 
     restored = FIFOReplayBuffer(
         max_transitions=10, unroll_steps=1, td_steps=2,
-        discount=0.5, per_mode=per_mode, priority_epsilon=1e-6,
+        discount=0.5, priority_weight_clip=priority_weight_clip, priority_epsilon=1e-6,
     )
     restored.load_state_dict(replay.state_dict())
     np.testing.assert_array_equal(restored.priorities, replay.priorities)
@@ -725,7 +739,7 @@ def test_first_replay_transitions_use_maximum_error_above_one() -> None:
     np.testing.assert_allclose(replay.priorities, [3.000001, 3.000001])
 
 
-@pytest.mark.parametrize("per_mode", ["v1", "v2"])
+@pytest.mark.parametrize("priority_weight_clip", [0.0, 0.1])
 @pytest.mark.parametrize("capacity", [3, 6])
 @pytest.mark.parametrize(
     "existing,errors,expected",
@@ -740,10 +754,10 @@ def test_first_replay_transitions_use_maximum_error_above_one() -> None:
     ],
 )
 @pytest.mark.parametrize("use_max_priority", [False, True])
-def test_maximum_insertion_branches(per_mode, capacity, existing, errors, expected, use_max_priority):
+def test_maximum_insertion_branches(priority_weight_clip, capacity, existing, errors, expected, use_max_priority):
     replay = FIFOReplayBuffer(
         max_transitions=capacity, unroll_steps=1, td_steps=1,
-        discount=0.0, per_mode=per_mode, priority_epsilon=1e-6,
+        discount=0.0, priority_weight_clip=priority_weight_clip, priority_epsilon=1e-6,
         use_max_priority=use_max_priority,
     )
     if use_max_priority:
@@ -767,12 +781,12 @@ def test_maximum_insertion_branches(per_mode, capacity, existing, errors, expect
     np.testing.assert_allclose(replay.priorities[-2:], [expected, expected])
 
 
-@pytest.mark.parametrize("per_mode", ["v1", "v2"])
+@pytest.mark.parametrize("priority_weight_clip", [0.0, 0.1])
 @pytest.mark.parametrize("use_max_priority", [False, True])
-def test_maximum_insertion_extends_sequentially_and_survives_restore(per_mode, use_max_priority):
+def test_maximum_insertion_extends_sequentially_and_survives_restore(priority_weight_clip, use_max_priority):
     replay = FIFOReplayBuffer(
         max_transitions=10, unroll_steps=1, td_steps=1, discount=0.0,
-        per_mode=per_mode, use_max_priority=use_max_priority,
+        priority_weight_clip=priority_weight_clip, use_max_priority=use_max_priority,
     )
     replay.extend([
         make_trajectory(2, episode_id=0, terminated=True, predicted_values=(1., 22.)),
@@ -785,7 +799,7 @@ def test_maximum_insertion_extends_sequentially_and_survives_restore(per_mode, u
     replay.update_priorities(range(4), [0.1, 0.2, 0.3, 0.4])
     restored = FIFOReplayBuffer(
         max_transitions=10, unroll_steps=1, td_steps=1, discount=0.0,
-        per_mode=per_mode, use_max_priority=use_max_priority,
+        priority_weight_clip=priority_weight_clip, use_max_priority=use_max_priority,
     )
     restored.load_state_dict(replay.state_dict())
     np.testing.assert_array_equal(restored.priorities, replay.priorities)
@@ -818,8 +832,10 @@ def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
         ("discount", float("nan"), ValueError),
         ("use_max_priority", 1, TypeError),
         ("use_max_priority", "false", TypeError),
-        ("per_mode", None, TypeError),
-        ("per_mode", "invalid", ValueError),
+        ("priority_weight_clip", -0.1, ValueError),
+        ("priority_weight_clip", 1.1, ValueError),
+        ("priority_weight_clip", float("nan"), ValueError),
+        ("priority_weight_clip", float("inf"), ValueError),
         ("priority_alpha", -0.1, ValueError),
         ("priority_alpha", 1.1, ValueError),
         ("priority_beta", -0.1, ValueError),

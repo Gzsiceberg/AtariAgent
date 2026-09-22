@@ -51,7 +51,7 @@ class ReplayConfig:
 
     max_transitions: int = 10_000
     warmup_transitions: int = 2_000
-    per_mode: str = "v1"
+    priority_weight_clip: float = 0.0
     use_max_priority: bool = False
     priority_alpha: float = 0.6
     priority_beta_initial: float = 0.4

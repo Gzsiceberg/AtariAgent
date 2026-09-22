@@ -340,8 +340,8 @@ def main(config: TrainAgentConfig) -> None:
             "training.visit_softmax_temperature_horizon must be "
             "collect_steps or total_steps"
         )
-    if config.replay.per_mode not in {"v1", "v2"}:
-        raise ValueError("replay.per_mode must be v1 or v2")
+    if not 0.0 <= config.replay.priority_weight_clip <= 1.0:
+        raise ValueError("replay.priority_weight_clip must be finite and in [0, 1]")
     if not 0.0 <= config.replay.priority_alpha <= 1.0:
         raise ValueError("replay.priority_alpha must be in [0, 1]")
     if not (
@@ -600,7 +600,7 @@ def main(config: TrainAgentConfig) -> None:
             unroll_steps=config.training.unroll_steps,
             td_steps=config.training.td_steps,
             discount=discount,
-            per_mode=config.replay.per_mode,
+            priority_weight_clip=config.replay.priority_weight_clip,
             use_max_priority=config.replay.use_max_priority,
             priority_alpha=config.replay.priority_alpha,
             priority_beta=config.replay.priority_beta_initial,
@@ -713,7 +713,7 @@ def main(config: TrainAgentConfig) -> None:
             "[bold cyan]AtariAgent training started[/bold cyan] "
             f"[dim]env={config.environment.id} device={device} "
             f"precision={config.training.precision} "
-            f"per={config.replay.per_mode} "
+            f"priority_weight_clip={config.replay.priority_weight_clip} "
             f"deterministic={config.training.deterministic} "
             f"cudnn_benchmark={torch.backends.cudnn.benchmark} "
             f"compile={config.training.compile_model} "

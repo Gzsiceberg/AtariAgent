@@ -9,6 +9,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_jobd_experiments.sh"
 EXPERIMENT = "gumbel_t400_mv10000_ttl_50_v1max"
+CLIP_EXPERIMENT = "gumbel_t400_mv10000_ttl_50_clip"
 OVERRIDES = (
     "search=gumbel",
     "replay.use_max_priority=true",
@@ -64,7 +65,7 @@ def scheduler(tmp_path):
     return run
 
 
-@pytest.mark.parametrize("selectors", [(), ("all",), ("0",), (EXPERIMENT,)])
+@pytest.mark.parametrize("selectors", [("0",), (EXPERIMENT,)])
 def test_only_experiment(scheduler, selectors):
     result, calls = scheduler(*selectors)
     assert result.returncode == 0, result.stderr
@@ -85,7 +86,7 @@ def test_only_experiment(scheduler, selectors):
 
 @pytest.mark.parametrize("selectors", [
     ("bad",), ("0", "bad"), ("all", "0"),
-    *[(str(index),) for index in range(1, 12)],
+    *[(str(index),) for index in range(2, 12)],
     *[(name,) for name in (
         "baseline", "value_loss_coeff", "per_v2", "mixed_value_threshold",
         "target_update_interval", "gumbel", "gumbel_target400_nocache",
@@ -100,6 +101,36 @@ def test_invalid_selection_no_submission(scheduler, selectors):
     result, calls = scheduler(*selectors)
     assert result.returncode != 0
     assert not calls
+
+
+@pytest.mark.parametrize("selectors", [("1",), (CLIP_EXPERIMENT,), ("1", CLIP_EXPERIMENT)])
+def test_clip_experiment(scheduler, selectors):
+    result, calls = scheduler(*selectors)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 2
+    assert calls[-1] == ["-l"]
+    call = calls[0]
+    assert call[5] == f"runs/test/{CLIP_EXPERIMENT}"
+    for override in OVERRIDES:
+        if override != "replay.use_max_priority=true":
+            assert override in call
+    assert "replay.use_max_priority=false" in call
+    assert "replay.use_max_priority=true" not in call
+    assert "replay.priority_weight_clip=0.1" in call
+
+
+@pytest.mark.parametrize("selectors", [(), ("all",)])
+def test_all_experiments(scheduler, selectors):
+    result, calls = scheduler(*selectors)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 3
+    assert calls[-1] == ["-l"]
+    assert calls[0][5] == f"runs/test/{EXPERIMENT}"
+    assert calls[1][5] == f"runs/test/{CLIP_EXPERIMENT}"
+    assert "replay.use_max_priority=true" in calls[0]
+    assert "replay.priority_weight_clip=0.1" not in calls[0]
+    assert "replay.use_max_priority=false" in calls[1]
+    assert "replay.priority_weight_clip=0.1" in calls[1]
 
 
 def test_dedup_and_options(scheduler):

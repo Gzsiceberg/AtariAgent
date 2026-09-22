@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Submit the Gumbel target-400, mixed-value-10000, cache-TTL-50, V1-max-priority experiment.
-# 0 / gumbel_t400_mv10000_ttl_50_v1max: uses the game selected by ENVIRONMENT_ID
+# Submit Gumbel target-400, mixed-value-10000, cache-TTL-50 experiments.
+# Both use the game selected by ENVIRONMENT_ID:
+# 0 / gumbel_t400_mv10000_ttl_50_v1max: V1 maximum-priority insertion
+# 1 / gumbel_t400_mv10000_ttl_50_clip: default insertion, importance-weight floor 0.1
 # No local files or credentials are sent to workers.
 #
-# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | gumbel_t400_mv10000_ttl_50_v1max]
+# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | experiment_name]
 # Example: DRY_RUN=1 ENVIRONMENT_ID=Qbert-v5 ./scripts/schedule_jobd_experiments.sh all
 #
 # Submission environment:
@@ -26,7 +28,7 @@
 set -Eeuo pipefail
 
 usage() {
-    echo "Usage: ${0##*/} [all | 0/gumbel_t400_mv10000_ttl_50_v1max]"
+    echo "Usage: ${0##*/} [all | 0/gumbel_t400_mv10000_ttl_50_v1max | 1/gumbel_t400_mv10000_ttl_50_clip]"
 }
 
 declare -a experiments=()
@@ -39,9 +41,10 @@ for selection in "$@"; do
                 echo "Error: 'all' must be used alone." >&2
                 exit 1
             fi
-            experiments=(gumbel_t400_mv10000_ttl_50_v1max)
+            experiments=(gumbel_t400_mv10000_ttl_50_v1max gumbel_t400_mv10000_ttl_50_clip)
             ;;
         0|gumbel_t400_mv10000_ttl_50_v1max) experiments+=(gumbel_t400_mv10000_ttl_50_v1max) ;;
+        1|gumbel_t400_mv10000_ttl_50_clip) experiments+=(gumbel_t400_mv10000_ttl_50_clip) ;;
         *) printf 'Error: unknown experiment: %s\n' "$selection" >&2; usage >&2; exit 1 ;;
     esac
 done
@@ -85,13 +88,20 @@ for experiment in "${experiments[@]}"; do
     experiment_environment="$ENVIRONMENT_ID"
     overrides=(
         "search=gumbel"
-        "replay.use_max_priority=true"
         "checkpoint.collection_interval=10000"
         "training.mixed_value_threshold=10000"
         "reanalysis.target_update_interval=400"
         "reanalysis.cache_targets=true"
         "reanalysis.cache_target_ttl=50"
     )
+    case "$experiment" in
+        gumbel_t400_mv10000_ttl_50_v1max)
+            overrides+=("replay.use_max_priority=true")
+            ;;
+        gumbel_t400_mv10000_ttl_50_clip)
+            overrides+=("replay.use_max_priority=false" "replay.priority_weight_clip=0.1")
+            ;;
+    esac
     output_dir="$RUN_ROOT/$experiment"
     args=(
         "seed=$SEED"

@@ -14,7 +14,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_tsp_experiments
     "number,name,override",
     [
         ("5", "fp32", "training.precision=fp32"),
-        ("6", "per_v2", "replay.per_mode=v2"),
+        ("6", "per_v2", "replay.priority_weight_clip=0.1"),
         ("8", "priority_beta", "replay.priority_beta_initial=0.26"),
     ],
 )
