@@ -59,10 +59,12 @@ class FIFOReplayBuffer:
     """Store prepared trajectories with FIFO prioritized sampling.
 
     Target horizons and discount are fixed for the buffer lifetime.
-    Both modes use EfficientZero V2 maximum-priority insertion: every new
+    By default both modes use V2 maximum-priority insertion: every new
     trajectory start receives max(current buffer maximum, trajectory error
     maximum), with a buffer maximum of 1 only when empty. Stored
     initial_priorities retain the individual prediction/bootstrap errors.
+    use_max_priority=True instead uses only the live buffer maximum (V1),
+    independently of the sampling mode.
     V1 uses configurable alpha/beta and unfloored importance weights;
     V2 forces alpha=beta=1 and a 0.1 normalized importance-weight floor.
     Trailing lookahead transitions remain local target context and are not
@@ -77,6 +79,7 @@ class FIFOReplayBuffer:
         td_steps: int = 5,
         discount: float = 0.997,
         per_mode: str = "v1",
+        use_max_priority: bool = False,
         priority_alpha: float = 0.6,
         priority_beta: float = 0.4,
         priority_epsilon: float = 1e-6,
@@ -100,6 +103,8 @@ class FIFOReplayBuffer:
             raise TypeError("per_mode must be a string")
         if per_mode not in {"v1", "v2"}:
             raise ValueError("per_mode must be v1 or v2")
+        if not isinstance(use_max_priority, bool):
+            raise TypeError("use_max_priority must be a boolean")
         for value, name in (
             (priority_alpha, "priority_alpha"),
             (priority_beta, "priority_beta"),
@@ -114,6 +119,7 @@ class FIFOReplayBuffer:
         self._td_steps = td_steps
         self._discount = float(discount)
         self._per_mode = per_mode
+        self._use_max_priority = use_max_priority
         self._priority_alpha = (
             1.0 if per_mode == "v2" else float(priority_alpha)
         )
@@ -362,8 +368,10 @@ class FIFOReplayBuffer:
         buffer_maximum = (
             float(self._priorities.max()) if self._transition_count else 1.0
         )
-        insertion_priority = max(
-            buffer_maximum, float(stored.initial_priorities.max())
+        insertion_priority = (
+            buffer_maximum
+            if self._use_max_priority
+            else max(buffer_maximum, float(stored.initial_priorities.max()))
         )
         insertion_priorities = np.full(
             trajectory_length, insertion_priority, dtype=np.float64

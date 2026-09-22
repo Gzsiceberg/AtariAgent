@@ -739,11 +739,15 @@ def test_first_replay_transitions_use_maximum_error_above_one() -> None:
         ([0.1, 0.2, 0.3], [0.0, 0.5, 0.0], 0.500001),
     ],
 )
-def test_maximum_insertion_matches_v2_branches(per_mode, capacity, existing, errors, expected):
+@pytest.mark.parametrize("use_max_priority", [False, True])
+def test_maximum_insertion_branches(per_mode, capacity, existing, errors, expected, use_max_priority):
     replay = FIFOReplayBuffer(
         max_transitions=capacity, unroll_steps=1, td_steps=1,
         discount=0.0, per_mode=per_mode, priority_epsilon=1e-6,
+        use_max_priority=use_max_priority,
     )
+    if use_max_priority:
+        expected = max(existing) if existing is not None else 1.0
     if existing is not None:
         # Start with high errors, then lower them through learner updates.
         replay.add(make_trajectory(3, terminated=True, predicted_values=(101., 102., 103.)))
@@ -764,21 +768,24 @@ def test_maximum_insertion_matches_v2_branches(per_mode, capacity, existing, err
 
 
 @pytest.mark.parametrize("per_mode", ["v1", "v2"])
-def test_maximum_insertion_extends_sequentially_and_survives_restore(per_mode):
+@pytest.mark.parametrize("use_max_priority", [False, True])
+def test_maximum_insertion_extends_sequentially_and_survives_restore(per_mode, use_max_priority):
     replay = FIFOReplayBuffer(
         max_transitions=10, unroll_steps=1, td_steps=1, discount=0.0,
-        per_mode=per_mode,
+        per_mode=per_mode, use_max_priority=use_max_priority,
     )
     replay.extend([
         make_trajectory(2, episode_id=0, terminated=True, predicted_values=(1., 22.)),
         make_trajectory(2, episode_id=1, terminated=True, predicted_values=(1., 2.)),
     ])
-    np.testing.assert_allclose(replay.priorities, [20.000001] * 4)
+    np.testing.assert_allclose(
+        replay.priorities, [1.0 if use_max_priority else 20.000001] * 4
+    )
     # Restore current priorities verbatim, not original insertion errors.
     replay.update_priorities(range(4), [0.1, 0.2, 0.3, 0.4])
     restored = FIFOReplayBuffer(
         max_transitions=10, unroll_steps=1, td_steps=1, discount=0.0,
-        per_mode=per_mode,
+        per_mode=per_mode, use_max_priority=use_max_priority,
     )
     restored.load_state_dict(replay.state_dict())
     np.testing.assert_array_equal(restored.priorities, replay.priorities)
@@ -809,6 +816,8 @@ def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
         ("discount", -0.1, ValueError),
         ("discount", 1.1, ValueError),
         ("discount", float("nan"), ValueError),
+        ("use_max_priority", 1, TypeError),
+        ("use_max_priority", "false", TypeError),
         ("per_mode", None, TypeError),
         ("per_mode", "invalid", ValueError),
         ("priority_alpha", -0.1, ValueError),

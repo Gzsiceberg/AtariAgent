@@ -39,12 +39,28 @@ def test_replay_uses_efficientzero_v1_per_defaults() -> None:
     config = ReplayConfig()
 
     assert config.per_mode == "v1"
+    assert config.use_max_priority is False
     assert config.priority_alpha == pytest.approx(0.6)
     assert config.priority_beta_initial == pytest.approx(0.4)
     assert config.priority_beta_final == pytest.approx(1.0)
     assert linear_priority_beta(0, 120_000) == pytest.approx(0.4)
     assert linear_priority_beta(100_000, 120_000) == pytest.approx(0.9)
     assert linear_priority_beta(120_000, 120_000) == pytest.approx(1.0)
+
+
+def test_replay_max_priority_can_be_enabled() -> None:
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        default = compose(config_name="train_agent")
+        enabled = compose(
+            config_name="train_agent",
+            overrides=["replay.use_max_priority=true"],
+        )
+
+    assert default.replay.use_max_priority is False
+    assert enabled.replay.use_max_priority is True
 
 
 def test_replay_per_mode_can_select_v2() -> None:

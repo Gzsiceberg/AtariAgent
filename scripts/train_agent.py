@@ -601,6 +601,7 @@ def main(config: TrainAgentConfig) -> None:
             td_steps=config.training.td_steps,
             discount=discount,
             per_mode=config.replay.per_mode,
+            use_max_priority=config.replay.use_max_priority,
             priority_alpha=config.replay.priority_alpha,
             priority_beta=config.replay.priority_beta_initial,
             priority_epsilon=config.replay.priority_epsilon,
