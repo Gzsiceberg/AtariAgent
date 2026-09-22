@@ -10,6 +10,7 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_jobd_experiments.sh"
 EXPERIMENT = "gumbel_t400_mv10000_ttl_50_v1max"
 CLIP_EXPERIMENT = "gumbel_t400_mv10000_ttl_50_clip"
+BASELINE_EXPERIMENT = "gumbel_t400_mv10000_ttl_50"
 OVERRIDES = (
     "search=gumbel",
     "replay.use_max_priority=true",
@@ -85,7 +86,7 @@ def test_only_experiment(scheduler, selectors):
 
 @pytest.mark.parametrize("selectors", [
     ("bad",), ("0", "bad"), ("all", "0"),
-    *[(str(index),) for index in range(2, 12)],
+    *[(str(index),) for index in range(3, 12)],
     *[(name,) for name in (
         "baseline", "value_loss_coeff", "per_v2", "mixed_value_threshold",
         "target_update_interval", "gumbel", "gumbel_target400_nocache",
@@ -93,7 +94,6 @@ def test_only_experiment(scheduler, selectors):
         "gumbel_target400_cache_v1action", "qbert_gumbel_t400_mv30000",
         "qbert_gumbel_t400_mv60000", "qbert_gumbel_t400_mv5000",
         "pong_gumbel_t400_mv10000", "qbert_gumbel_t400_mv10000_ttl_50",
-        "gumbel_t400_mv10000_ttl_50",
     )],
 ])
 def test_invalid_selection_no_submission(scheduler, selectors):
@@ -118,20 +118,40 @@ def test_clip_experiment(scheduler, selectors):
     assert "replay.priority_weight_clip=0.1" in call
 
 
+@pytest.mark.parametrize("selectors", [("2",), (BASELINE_EXPERIMENT,), ("2", BASELINE_EXPERIMENT)])
+def test_baseline_experiment(scheduler, selectors):
+    result, calls = scheduler(*selectors)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 2
+    assert calls[-1] == ["-l"]
+    call = calls[0]
+    assert call[5] == f"runs/test/{BASELINE_EXPERIMENT}"
+    for override in OVERRIDES:
+        if override != "replay.use_max_priority=true":
+            assert override in call
+    assert "replay.use_max_priority=false" in call
+    assert "replay.use_max_priority=true" not in call
+    assert "replay.priority_weight_clip=0.0" in call
+    assert "replay.priority_weight_clip=0.1" not in call
+
+
 @pytest.mark.parametrize("selectors", [(), ("all",)])
 def test_all_experiments(scheduler, selectors):
     result, calls = scheduler(*selectors)
     assert result.returncode == 0, result.stderr
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert calls[-1] == ["-l"]
     assert calls[0][5] == f"runs/test/{EXPERIMENT}"
     assert calls[1][5] == f"runs/test/{CLIP_EXPERIMENT}"
+    assert calls[2][5] == f"runs/test/{BASELINE_EXPERIMENT}"
     for call in calls[:-1]:
         assert not any(arg.startswith("checkpoint.collection_interval=") for arg in call)
     assert "replay.use_max_priority=true" in calls[0]
     assert "replay.priority_weight_clip=0.1" not in calls[0]
     assert "replay.use_max_priority=false" in calls[1]
     assert "replay.priority_weight_clip=0.1" in calls[1]
+    assert "replay.use_max_priority=false" in calls[2]
+    assert "replay.priority_weight_clip=0.0" in calls[2]
 
 
 def test_dedup_and_options(scheduler):
@@ -168,6 +188,7 @@ def test_help_no_submission(scheduler, selector):
     result, calls = scheduler(selector)
     assert result.returncode == 0
     assert EXPERIMENT in result.stdout
+    assert f"2/{BASELINE_EXPERIMENT}" in result.stdout
     assert not calls
 
 
