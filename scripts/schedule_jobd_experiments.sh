@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# Submit Gumbel cache/target-interval and action-encoding experiments to jobd's shared queue.
-# 0 / gumbel_target400_nocache: target interval 400, cache off
-# 1 / gumbel_target200_cache:   target interval 200, cache on
-# 2 / gumbel_target200_cache_v1action: same as 1, raw V1 action plane
-# 3 / gumbel_target400_cache_v1action: same as 2, target interval 400
-# 4 / qbert_gumbel_t400_mv30000: Qbert, target interval 400, mixed threshold 30000
+# Submit the Gumbel target-400, mixed-value-10000, cache-TTL-50 experiment.
+# 0 / gumbel_t400_mv10000_ttl_50: uses the game selected by ENVIRONMENT_ID
 # No local files or credentials are sent to workers.
 #
-# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | 2 | 3 | 4 | experiment names]
+# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | gumbel_t400_mv10000_ttl_50]
 # Example: DRY_RUN=1 ENVIRONMENT_ID=Qbert-v5 ./scripts/schedule_jobd_experiments.sh all
 #
 # Submission environment:
@@ -30,7 +26,7 @@
 set -Eeuo pipefail
 
 usage() {
-    echo "Usage: ${0##*/} [all | 0/gumbel_target400_nocache | 1/gumbel_target200_cache | 2/gumbel_target200_cache_v1action | 3/gumbel_target400_cache_v1action | 4/qbert_gumbel_t400_mv30000 ...]"
+    echo "Usage: ${0##*/} [all | 0/gumbel_t400_mv10000_ttl_50]"
 }
 
 declare -a experiments=()
@@ -43,13 +39,9 @@ for selection in "$@"; do
                 echo "Error: 'all' must be used alone." >&2
                 exit 1
             fi
-            experiments=(gumbel_target400_nocache gumbel_target200_cache gumbel_target200_cache_v1action gumbel_target400_cache_v1action qbert_gumbel_t400_mv30000)
+            experiments=(gumbel_t400_mv10000_ttl_50)
             ;;
-        0|gumbel_target400_nocache) experiments+=(gumbel_target400_nocache) ;;
-        1|gumbel_target200_cache) experiments+=(gumbel_target200_cache) ;;
-        2|gumbel_target200_cache_v1action) experiments+=(gumbel_target200_cache_v1action) ;;
-        3|gumbel_target400_cache_v1action) experiments+=(gumbel_target400_cache_v1action) ;;
-        4|qbert_gumbel_t400_mv30000) experiments+=(qbert_gumbel_t400_mv30000) ;;
+        0|gumbel_t400_mv10000_ttl_50) experiments+=(gumbel_t400_mv10000_ttl_50) ;;
         *) printf 'Error: unknown experiment: %s\n' "$selection" >&2; usage >&2; exit 1 ;;
     esac
 done
@@ -90,21 +82,15 @@ declare -A scheduled=()
 job_count=0
 for experiment in "${experiments[@]}"; do
     [[ -z "${scheduled[$experiment]:-}" ]] || continue
-    overrides=()
     experiment_environment="$ENVIRONMENT_ID"
-    case "$experiment" in
-        gumbel_target400_nocache)
-            overrides=("search=gumbel" "reanalysis.target_update_interval=400" "reanalysis.cache_targets=false") ;;
-        gumbel_target200_cache)
-            overrides=("search=gumbel" "reanalysis.target_update_interval=200" "reanalysis.cache_targets=true") ;;
-        gumbel_target200_cache_v1action)
-            overrides=("search=gumbel" "reanalysis.target_update_interval=200" "reanalysis.cache_targets=true" "model.action_embedding=false") ;;
-        gumbel_target400_cache_v1action)
-            overrides=("search=gumbel" "reanalysis.target_update_interval=400" "reanalysis.cache_targets=true" "model.action_embedding=false") ;;
-        qbert_gumbel_t400_mv30000)
-            experiment_environment="ALE/Qbert-v5"
-            overrides=("search=gumbel" "checkpoint.collection_interval=10000" "training.mixed_value_threshold=30000" "reanalysis.target_update_interval=400") ;;
-    esac
+    overrides=(
+        "search=gumbel"
+        "checkpoint.collection_interval=10000"
+        "training.mixed_value_threshold=10000"
+        "reanalysis.target_update_interval=400"
+        "reanalysis.cache_targets=true"
+        "reanalysis.cache_target_ttl=50"
+    )
     output_dir="$RUN_ROOT/$experiment"
     args=(
         "seed=$SEED"

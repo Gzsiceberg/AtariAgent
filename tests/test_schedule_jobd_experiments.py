@@ -8,6 +8,15 @@ import subprocess
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_jobd_experiments.sh"
+EXPERIMENT = "gumbel_t400_mv10000_ttl_50"
+OVERRIDES = (
+    "search=gumbel",
+    "checkpoint.collection_interval=10000",
+    "training.mixed_value_threshold=10000",
+    "reanalysis.target_update_interval=400",
+    "reanalysis.cache_targets=true",
+    "reanalysis.cache_target_ttl=50",
+)
 
 
 @pytest.fixture
@@ -35,6 +44,7 @@ def scheduler(tmp_path):
         "ENVIRONMENT_ID": "",
         "SNAPSHOT_PATH": "",
         "WANDB_ENTITY": "",
+        "SEED": "2",
         "DRY_RUN": "0",
     }
 
@@ -53,26 +63,20 @@ def scheduler(tmp_path):
     return run
 
 
-def test_all_experiments(scheduler):
-    result, calls = scheduler()
+@pytest.mark.parametrize("selectors", [(), ("all",), ("0",), (EXPERIMENT,)])
+def test_only_experiment(scheduler, selectors):
+    result, calls = scheduler(*selectors)
     assert result.returncode == 0, result.stderr
-    assert len(calls) == 6
+    assert len(calls) == 2
     assert calls[-1] == ["-l"]
-    expected = [
-        ["search=gumbel", "reanalysis.target_update_interval=400", "reanalysis.cache_targets=false"],
-        ["search=gumbel", "reanalysis.target_update_interval=200", "reanalysis.cache_targets=true"],
-        ["search=gumbel", "reanalysis.target_update_interval=200", "reanalysis.cache_targets=true", "model.action_embedding=false"],
-        ["search=gumbel", "reanalysis.target_update_interval=400", "reanalysis.cache_targets=true", "model.action_embedding=false"],
-        ["search=gumbel", "checkpoint.collection_interval=10000", "training.mixed_value_threshold=30000", "reanalysis.target_update_interval=400"],
-    ]
-    for call, overrides in zip(calls[:-1], expected, strict=True):
-        assert call[:2] == ["bash", "-c"]
-        assert call[4] == "/worker/repo with spaces"
-        environment = "Qbert" if "training.mixed_value_threshold=30000" in overrides else "UpNDown"
-        assert f"environment.id=ALE/{environment}-v5" in call
-        assert "checkpoint.pre_final_snapshot_path=null" in call
-        for override in overrides:
-            assert override in call
+    call = calls[0]
+    assert call[:2] == ["bash", "-c"]
+    assert call[4] == "/worker/repo with spaces"
+    assert call[5] == f"runs/test/{EXPERIMENT}"
+    assert "environment.id=ALE/UpNDown-v5" in call
+    assert "checkpoint.pre_final_snapshot_path=null" in call
+    for override in OVERRIDES:
+        assert override in call
     text = result.stdout + result.stderr + json.dumps(calls)
     assert "controller-secret" not in text
     assert "wandb-secret" not in text
@@ -80,9 +84,14 @@ def test_all_experiments(scheduler):
 
 @pytest.mark.parametrize("selectors", [
     ("bad",), ("0", "bad"), ("all", "0"),
+    *[(str(index),) for index in range(1, 12)],
     *[(name,) for name in (
         "baseline", "value_loss_coeff", "per_v2", "mixed_value_threshold",
-        "target_update_interval", "gumbel", "6", "9", "10", "11",
+        "target_update_interval", "gumbel", "gumbel_target400_nocache",
+        "gumbel_target200_cache", "gumbel_target200_cache_v1action",
+        "gumbel_target400_cache_v1action", "qbert_gumbel_t400_mv30000",
+        "qbert_gumbel_t400_mv60000", "qbert_gumbel_t400_mv5000",
+        "pong_gumbel_t400_mv10000", "qbert_gumbel_t400_mv10000_ttl_50",
     )],
 ])
 def test_invalid_selection_no_submission(scheduler, selectors):
@@ -93,49 +102,39 @@ def test_invalid_selection_no_submission(scheduler, selectors):
 
 def test_dedup_and_options(scheduler):
     result, calls = scheduler(
-        "0", "gumbel_target400_nocache", "1", "gumbel_target200_cache", ENVIRONMENT_ID="Pong-v5",
+        "0", EXPERIMENT, "0", ENVIRONMENT_ID="Pong-v5",
         WANDB_ENTITY="team", SNAPSHOT_PATH="/worker/snapshot.pt",
     )
-    assert result.returncode == 0
-    assert len(calls) == 3
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 2
     assert "environment.id=ALE/Pong-v5" in calls[0]
     assert "wandb.entity=team" in calls[0]
     assert "checkpoint.resume_pre_final_path=/worker/snapshot.pt" in calls[0]
 
 
-@pytest.mark.parametrize("selector,interval", [("2", 200), ("3", 400)])
-def test_v1_action_option_and_alias_are_deduplicated(scheduler, selector, interval):
-    name = f"gumbel_target{interval}_cache_v1action"
-    result, calls = scheduler(selector, name)
+@pytest.mark.parametrize("game", ["Pong", "Gopher", "Kangaroo", "BankHeist", "ChopperCommand", "Qbert"])
+@pytest.mark.parametrize("prefix", ["", "ALE/"])
+def test_schedule_game_via_environment_id(scheduler, game, prefix):
+    result, calls = scheduler(EXPERIMENT, ENVIRONMENT_ID=f"{prefix}{game}-v5")
     assert result.returncode == 0, result.stderr
     assert len(calls) == 2
     assert calls[-1] == ["-l"]
-    for override in (
-        "search=gumbel", f"reanalysis.target_update_interval={interval}",
-        "reanalysis.cache_targets=true", "model.action_embedding=false",
-    ):
-        assert override in calls[0]
-    assert calls[0][5] == f"runs/test/{name}"
-    assert any(arg.startswith("wandb.name=") and name in arg
-               for arg in calls[0])
-
-
-def test_qbert_mixed_value_option_and_alias(scheduler):
-    name = "qbert_gumbel_t400_mv30000"
-    result, calls = scheduler("4", name, SEED="2")
-    assert result.returncode == 0, result.stderr
-    assert len(calls) == 2
     call = calls[0]
-    for override in (
-        "environment.id=ALE/Qbert-v5", "seed=2", "search=gumbel",
-        "checkpoint.collection_interval=10000",
-        "training.mixed_value_threshold=30000",
-        "reanalysis.target_update_interval=400", "wandb.enabled=true",
-    ):
+    assert [arg for arg in call if arg.startswith("environment.id=")] == [
+        f"environment.id=ALE/{game}-v5",
+    ]
+    for override in (*OVERRIDES, "seed=2", "wandb.enabled=true"):
         assert override in call
-    assert sum(arg.startswith("environment.id=") for arg in call) == 1
-    assert call[5] == f"runs/test/{name}"
-    assert f"wandb.name=Qbert-v5_{name}_seed2_test" in call
+    assert call[5] == f"runs/test/{EXPERIMENT}"
+    assert f"wandb.name={game}-v5_{EXPERIMENT}_seed2_test" in call
+
+
+@pytest.mark.parametrize("selector", ["-h", "--help"])
+def test_help_no_submission(scheduler, selector):
+    result, calls = scheduler(selector)
+    assert result.returncode == 0
+    assert EXPERIMENT in result.stdout
+    assert not calls
 
 
 def test_delegates_authentication_to_jobd(scheduler):
@@ -148,6 +147,7 @@ def test_dry_run_no_side_effects(scheduler, tmp_path):
     output = tmp_path / "not-created"
     result, calls = scheduler("0", DRY_RUN="1", JOBD_API_KEY="", RUN_ROOT=str(output))
     assert result.returncode == 0
+    assert "Dry run complete: 1 jobs" in result.stdout
     assert not calls
     assert not output.exists()
 
@@ -168,6 +168,6 @@ def test_worker_command(scheduler, tmp_path, exit_code):
         capture_output=True, text=True, timeout=10,
     )
     assert executed.returncode == exit_code
-    log = (repo / "runs/test/gumbel_target400_nocache/training.log").read_text()
+    log = (repo / f"runs/test/{EXPERIMENT}/training.log").read_text()
     assert "training-output" in log
     assert "training-error" in log
