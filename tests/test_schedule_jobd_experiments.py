@@ -8,9 +8,10 @@ import subprocess
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/schedule_jobd_experiments.sh"
-EXPERIMENT = "gumbel_t400_mv10000_ttl_50"
+EXPERIMENT = "gumbel_t400_mv10000_ttl_50_v1max"
 OVERRIDES = (
     "search=gumbel",
+    "replay.use_max_priority=true",
     "checkpoint.collection_interval=10000",
     "training.mixed_value_threshold=10000",
     "reanalysis.target_update_interval=400",
@@ -92,6 +93,7 @@ def test_only_experiment(scheduler, selectors):
         "gumbel_target400_cache_v1action", "qbert_gumbel_t400_mv30000",
         "qbert_gumbel_t400_mv60000", "qbert_gumbel_t400_mv5000",
         "pong_gumbel_t400_mv10000", "qbert_gumbel_t400_mv10000_ttl_50",
+        "gumbel_t400_mv10000_ttl_50",
     )],
 ])
 def test_invalid_selection_no_submission(scheduler, selectors):
