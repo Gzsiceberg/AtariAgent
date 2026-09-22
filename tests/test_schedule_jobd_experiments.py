@@ -13,7 +13,6 @@ CLIP_EXPERIMENT = "gumbel_t400_mv10000_ttl_50_clip"
 OVERRIDES = (
     "search=gumbel",
     "replay.use_max_priority=true",
-    "checkpoint.collection_interval=10000",
     "training.mixed_value_threshold=10000",
     "reanalysis.target_update_interval=400",
     "reanalysis.cache_targets=true",
@@ -127,6 +126,8 @@ def test_all_experiments(scheduler, selectors):
     assert calls[-1] == ["-l"]
     assert calls[0][5] == f"runs/test/{EXPERIMENT}"
     assert calls[1][5] == f"runs/test/{CLIP_EXPERIMENT}"
+    for call in calls[:-1]:
+        assert not any(arg.startswith("checkpoint.collection_interval=") for arg in call)
     assert "replay.use_max_priority=true" in calls[0]
     assert "replay.priority_weight_clip=0.1" not in calls[0]
     assert "replay.use_max_priority=false" in calls[1]

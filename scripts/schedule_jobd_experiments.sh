@@ -88,7 +88,6 @@ for experiment in "${experiments[@]}"; do
     experiment_environment="$ENVIRONMENT_ID"
     overrides=(
         "search=gumbel"
-        "checkpoint.collection_interval=10000"
         "training.mixed_value_threshold=10000"
         "reanalysis.target_update_interval=400"
         "reanalysis.cache_targets=true"
