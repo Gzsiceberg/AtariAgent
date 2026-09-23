@@ -10,9 +10,10 @@
 # 7 / gumbel_t400_clip_ttl25_clip005: target-cache TTL 25, importance-weight floor 0.05
 # 8 / gumbel_t400_clip_nocache: gumbel_t400_clip with target caching disabled
 # 9 / gumbel_t400_mv10000_clip_nocache: mixed-value-10000, target caching disabled, importance-weight floor 0.1
+# 10 / gumbel_t400_mv5000_ttl_200_clip: mixed-value-5000, TTL-200, importance-weight floor 0.1
 # No local files or credentials are sent to workers.
 #
-# Usage: ./scripts/schedule_jobd_experiments.sh [all | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | experiment_name]
+# Usage: ./scripts/schedule_jobd_experiments.sh [all | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | experiment_name]
 # Example: DRY_RUN=1 ENVIRONMENT_ID=Qbert-v5 ./scripts/schedule_jobd_experiments.sh all
 #
 # Submission environment:
@@ -35,7 +36,7 @@
 set -Eeuo pipefail
 
 usage() {
-    echo "Usage: ${0##*/} [all | 1/gumbel_t400_mv10000_ttl_50_clip | 2/gumbel_t400_mv10000_ttl_50 | 3/gumbel_t400_clip | 4/gumbel_t400_mv10000_ttl_200_clip | 5/gumbel_t400_clip_v1timeout | 6/gumbel_t400_clip_ttl25 | 7/gumbel_t400_clip_ttl25_clip005 | 8/gumbel_t400_clip_nocache | 9/gumbel_t400_mv10000_clip_nocache]"
+    echo "Usage: ${0##*/} [all | 1/gumbel_t400_mv10000_ttl_50_clip | 2/gumbel_t400_mv10000_ttl_50 | 3/gumbel_t400_clip | 4/gumbel_t400_mv10000_ttl_200_clip | 5/gumbel_t400_clip_v1timeout | 6/gumbel_t400_clip_ttl25 | 7/gumbel_t400_clip_ttl25_clip005 | 8/gumbel_t400_clip_nocache | 9/gumbel_t400_mv10000_clip_nocache | 10/gumbel_t400_mv5000_ttl_200_clip]"
 }
 
 declare -a experiments=()
@@ -48,7 +49,7 @@ for selection in "$@"; do
                 echo "Error: 'all' must be used alone." >&2
                 exit 1
             fi
-            experiments=(gumbel_t400_mv10000_ttl_50_clip gumbel_t400_mv10000_ttl_50 gumbel_t400_clip gumbel_t400_mv10000_ttl_200_clip gumbel_t400_clip_v1timeout gumbel_t400_clip_ttl25 gumbel_t400_clip_ttl25_clip005 gumbel_t400_clip_nocache gumbel_t400_mv10000_clip_nocache)
+            experiments=(gumbel_t400_mv10000_ttl_50_clip gumbel_t400_mv10000_ttl_50 gumbel_t400_clip gumbel_t400_mv10000_ttl_200_clip gumbel_t400_clip_v1timeout gumbel_t400_clip_ttl25 gumbel_t400_clip_ttl25_clip005 gumbel_t400_clip_nocache gumbel_t400_mv10000_clip_nocache gumbel_t400_mv5000_ttl_200_clip)
             ;;
         1|gumbel_t400_mv10000_ttl_50_clip) experiments+=(gumbel_t400_mv10000_ttl_50_clip) ;;
         2|gumbel_t400_mv10000_ttl_50) experiments+=(gumbel_t400_mv10000_ttl_50) ;;
@@ -59,6 +60,7 @@ for selection in "$@"; do
         7|gumbel_t400_clip_ttl25_clip005) experiments+=(gumbel_t400_clip_ttl25_clip005) ;;
         8|gumbel_t400_clip_nocache) experiments+=(gumbel_t400_clip_nocache) ;;
         9|gumbel_t400_mv10000_clip_nocache) experiments+=(gumbel_t400_mv10000_clip_nocache) ;;
+        10|gumbel_t400_mv5000_ttl_200_clip) experiments+=(gumbel_t400_mv5000_ttl_200_clip) ;;
         *) printf 'Error: unknown experiment: %s\n' "$selection" >&2; usage >&2; exit 1 ;;
     esac
 done
@@ -122,6 +124,9 @@ for experiment in "${experiments[@]}"; do
         gumbel_t400_mv10000_ttl_50*)
             overrides+=("training.mixed_value_threshold=10000" "reanalysis.cache_target_ttl=50")
             ;;
+        gumbel_t400_mv5000_ttl_200_clip)
+            overrides+=("training.mixed_value_threshold=5000" "reanalysis.cache_target_ttl=200")
+            ;;
         gumbel_t400_mv10000_ttl_200_clip)
             overrides+=("training.mixed_value_threshold=10000" "reanalysis.cache_target_ttl=200")
             ;;
@@ -133,7 +138,7 @@ for experiment in "${experiments[@]}"; do
         gumbel_t400_mv10000_ttl_50)
             overrides+=("replay.use_max_priority=false" "replay.priority_weight_clip=0.0")
             ;;
-        gumbel_t400_mv10000_ttl_50_clip|gumbel_t400_clip|gumbel_t400_mv10000_ttl_200_clip|gumbel_t400_clip_v1timeout|gumbel_t400_clip_ttl25|gumbel_t400_clip_nocache|gumbel_t400_mv10000_clip_nocache)
+        gumbel_t400_mv10000_ttl_50_clip|gumbel_t400_clip|gumbel_t400_mv10000_ttl_200_clip|gumbel_t400_clip_v1timeout|gumbel_t400_clip_ttl25|gumbel_t400_clip_nocache|gumbel_t400_mv10000_clip_nocache|gumbel_t400_mv5000_ttl_200_clip)
             overrides+=("replay.use_max_priority=false" "replay.priority_weight_clip=0.1")
             ;;
     esac
