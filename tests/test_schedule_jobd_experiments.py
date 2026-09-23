@@ -86,7 +86,7 @@ def test_only_experiment(scheduler, selectors):
 
 @pytest.mark.parametrize("selectors", [
     ("bad",), ("0", "bad"), ("all", "0"),
-    *[(str(index),) for index in range(3, 12)],
+    *[(str(index),) for index in range(5, 12)],
     *[(name,) for name in (
         "baseline", "value_loss_coeff", "per_v2", "mixed_value_threshold",
         "target_update_interval", "gumbel", "gumbel_target400_nocache",
@@ -135,15 +135,42 @@ def test_baseline_experiment(scheduler, selectors):
     assert "replay.priority_weight_clip=0.1" not in call
 
 
+@pytest.mark.parametrize("index,experiment", [
+    ("3", "gumbel_t400_clip"),
+    ("4", "gumbel_t400_mv10000_ttl_200_clip"),
+])
+@pytest.mark.parametrize("selection", ["index", "name", "both"])
+def test_new_clip_experiments(scheduler, index, experiment, selection):
+    selectors = {"index": (index,), "name": (experiment,), "both": (index, experiment)}
+    result, calls = scheduler(*selectors[selection])
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 2
+    assert calls[-1] == ["-l"]
+    call = calls[0]
+    assert call[5] == f"runs/test/{experiment}"
+    for override in (
+        "search=gumbel", "reanalysis.target_update_interval=400",
+        "reanalysis.cache_targets=true", "replay.use_max_priority=false",
+        "replay.priority_weight_clip=0.1",
+    ):
+        assert override in call
+    mixed_value = [arg for arg in call if arg.startswith("training.mixed_value_threshold=")]
+    ttl = [arg for arg in call if arg.startswith("reanalysis.cache_target_ttl=")]
+    assert mixed_value == (["training.mixed_value_threshold=10000"] if index == "4" else [])
+    assert ttl == (["reanalysis.cache_target_ttl=200"] if index == "4" else [])
+
+
 @pytest.mark.parametrize("selectors", [(), ("all",)])
 def test_all_experiments(scheduler, selectors):
     result, calls = scheduler(*selectors)
     assert result.returncode == 0, result.stderr
-    assert len(calls) == 4
+    assert len(calls) == 6
     assert calls[-1] == ["-l"]
     assert calls[0][5] == f"runs/test/{EXPERIMENT}"
     assert calls[1][5] == f"runs/test/{CLIP_EXPERIMENT}"
     assert calls[2][5] == f"runs/test/{BASELINE_EXPERIMENT}"
+    assert calls[3][5] == "runs/test/gumbel_t400_clip"
+    assert calls[4][5] == "runs/test/gumbel_t400_mv10000_ttl_200_clip"
     for call in calls[:-1]:
         assert not any(arg.startswith("checkpoint.collection_interval=") for arg in call)
     assert "replay.use_max_priority=true" in calls[0]
@@ -189,6 +216,8 @@ def test_help_no_submission(scheduler, selector):
     assert result.returncode == 0
     assert EXPERIMENT in result.stdout
     assert f"2/{BASELINE_EXPERIMENT}" in result.stdout
+    assert "3/gumbel_t400_clip" in result.stdout
+    assert "4/gumbel_t400_mv10000_ttl_200_clip" in result.stdout
     assert not calls
 
 

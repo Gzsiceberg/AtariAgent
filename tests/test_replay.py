@@ -957,6 +957,56 @@ def test_timeout_masks_incomplete_value_targets() -> None:
         np.testing.assert_array_equal(batch.value_bootstrap_mask[i], bootstrap)
 
 
+@pytest.mark.parametrize("length", [1, 4, 8])
+def test_v1_timeout_targets_match_terminal_targets(length: int) -> None:
+    options = dict(max_transitions=20, unroll_steps=2, td_steps=3, discount=0.5)
+    replay = FIFOReplayBuffer(**options, treat_truncations_as_terminal=True)
+    terminal_replay = FIFOReplayBuffer(**options)
+    replay.add(make_trajectory(length, truncated=True))
+    terminal_replay.add(make_trajectory(length, terminated=True))
+    stored = replay.state_dict()["trajectories"][0]
+    expected = terminal_replay.state_dict()["trajectories"][0]
+    assert stored["truncated"] and not stored["terminated"]
+    for name in ("value_targets", "value_valid_mask", "initial_priorities", "rewards"):
+        np.testing.assert_array_equal(stored[name], expected[name])
+    assert stored["value_targets"][-1] == 0
+    assert stored["value_targets"][-2] == length
+    assert stored["value_valid_mask"].all()
+    actual_batch = replay.sample(length)
+    expected_batch = terminal_replay.sample(length)
+    for name in (
+        "value_targets", "value_mask", "value_bootstrap_mask",
+        "value_bootstrap_values", "rewards", "policy_mask", "action_mask",
+    ):
+        torch.testing.assert_close(getattr(actual_batch, name), getattr(expected_batch, name))
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_timeout_target_mode_checkpoint_compatibility(enabled: bool) -> None:
+    replay = FIFOReplayBuffer(10, treat_truncations_as_terminal=enabled)
+    replay.add(make_trajectory(4, truncated=True))
+    state = replay.state_dict()
+    restored = FIFOReplayBuffer(10, treat_truncations_as_terminal=enabled)
+    restored.load_state_dict(state)
+    np.testing.assert_array_equal(
+        restored.state_dict()["trajectories"][0]["value_valid_mask"],
+        state["trajectories"][0]["value_valid_mask"],
+    )
+    with pytest.raises(ValueError, match="treat_truncations_as_terminal"):
+        FIFOReplayBuffer(10, treat_truncations_as_terminal=not enabled).load_state_dict(state)
+    if not enabled:
+        del state["treat_truncations_as_terminal"]
+        restored.load_state_dict(state)
+        with pytest.raises(ValueError, match="treat_truncations_as_terminal"):
+            FIFOReplayBuffer(10, treat_truncations_as_terminal=True).load_state_dict(state)
+
+
+@pytest.mark.parametrize("invalid", [1, "true", None])
+def test_timeout_target_mode_requires_boolean(invalid) -> None:
+    with pytest.raises(TypeError, match="treat_truncations_as_terminal"):
+        FIFOReplayBuffer(10, treat_truncations_as_terminal=invalid)
+
+
 def test_truncated_targets_survive_checkpoint_round_trip() -> None:
     replay = FIFOReplayBuffer(10)
     replay.add(make_trajectory(4, truncated=True))

@@ -63,6 +63,23 @@ def test_replay_max_priority_can_be_enabled() -> None:
     assert enabled.replay.use_max_priority is True
 
 
+def test_v1_timeout_targets_can_be_enabled() -> None:
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        default = compose(config_name="train_agent")
+        enabled = compose(
+            config_name="train_agent",
+            overrides=[
+                "environment.time_limit_mode=full_game",
+                "replay.treat_truncations_as_terminal=true",
+            ],
+        )
+    assert default.replay.treat_truncations_as_terminal is False
+    assert enabled.replay.treat_truncations_as_terminal is True
+    assert enabled.environment.time_limit_mode == "full_game"
+
+
 def test_replay_priority_weight_clip_can_be_overridden() -> None:
     register_train_agent_config()
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")

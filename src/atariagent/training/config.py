@@ -53,6 +53,7 @@ class ReplayConfig:
     warmup_transitions: int = 2_000
     priority_weight_clip: float = 0.0
     use_max_priority: bool = False
+    treat_truncations_as_terminal: bool = False
     priority_alpha: float = 0.6
     priority_beta_initial: float = 0.4
     priority_beta_final: float = 1.0

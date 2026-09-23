@@ -80,6 +80,7 @@ class FIFOReplayBuffer:
         discount: float = 0.997,
         priority_weight_clip: float = 0.0,
         use_max_priority: bool = False,
+        treat_truncations_as_terminal: bool = False,
         priority_alpha: float = 0.6,
         priority_beta: float = 0.4,
         priority_epsilon: float = 1e-6,
@@ -99,6 +100,8 @@ class FIFOReplayBuffer:
                 raise ValueError(f"{name} must be positive")
         if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be finite and in [0, 1]")
+        if not isinstance(treat_truncations_as_terminal, bool):
+            raise TypeError("treat_truncations_as_terminal must be a boolean")
         if not isinstance(use_max_priority, bool):
             raise TypeError("use_max_priority must be a boolean")
         for value, name in (
@@ -117,6 +120,7 @@ class FIFOReplayBuffer:
         self._discount = float(discount)
         self._priority_weight_clip = float(priority_weight_clip)
         self._use_max_priority = use_max_priority
+        self._treat_truncations_as_terminal = treat_truncations_as_terminal
         self._priority_alpha = float(priority_alpha)
         self._priority_beta = float(priority_beta)
         self._priority_epsilon = float(priority_epsilon)
@@ -196,6 +200,7 @@ class FIFOReplayBuffer:
         trajectory_fields = tuple(_StoredTrajectory.__dataclass_fields__)
         return {
             "version": 1,
+            "treat_truncations_as_terminal": self._treat_truncations_as_terminal,
             "max_transitions": self.max_transitions,
             "unroll_steps": self.unroll_steps,
             "td_steps": self.td_steps,
@@ -233,6 +238,13 @@ class FIFOReplayBuffer:
                 raise ValueError(
                     f"replay state {name} does not match the configured buffer"
                 )
+
+        # Older snapshots used masked truncation tails. Reject mismatched modes
+        # because targets and initial priorities are precomputed in the snapshot.
+        if state.get("treat_truncations_as_terminal", False) != self._treat_truncations_as_terminal:
+            raise ValueError(
+                "replay state treat_truncations_as_terminal does not match the configured buffer"
+            )
 
         raw_trajectories = state.get("trajectories")
         if not isinstance(raw_trajectories, list):
@@ -562,16 +574,21 @@ class FIFOReplayBuffer:
         predicted_values = np.ascontiguousarray(
             predicted_values64, dtype=np.float32
         )
+        # Preserve the environment flags; only target construction treats a
+        # timeout as terminal when V1-style zero continuation is requested.
+        terminal_target = trajectory.terminated or (
+            self._treat_truncations_as_terminal and trajectory.truncated
+        )
         value_targets, value_valid_mask = self._build_value_target_table(
             rewards64,
             root_values64,
-            terminated=trajectory.terminated,
+            terminated=terminal_target,
         )
         # Initial errors bootstrap from network predictions, not MCTS values.
         priority_targets, priority_valid_mask = self._build_value_target_table(
             rewards64,
             predicted_values64,
-            terminated=trajectory.terminated,
+            terminated=terminal_target,
         )
         valid = priority_valid_mask[: len(trajectory)]
         initial_priorities = np.full(
