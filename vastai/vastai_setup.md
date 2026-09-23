@@ -24,7 +24,7 @@ private directory, never in Git.
 
 ## 2. Rent safely
 
-Check availability and price **including 50 GB storage** immediately before renting.
+Check availability and price **including 30 GB storage** immediately before renting.
 If a broad search misses an offer, recheck its known `machine_id`; do not assume it
 is unavailable. Review CPU performance and verification status as described in
 `vastai_instances.md`. Never substitute offers without approval.
@@ -42,7 +42,7 @@ umask 077
 label="atari-${OFFER}-$(date +%s)"
 printf '%s\n' "$label" > "$state/rental-${OFFER}.label"
 vastai create instance "$OFFER" \
-  --image nvidia/cuda:13.0.2-devel-ubuntu24.04 --disk 50 --ssh --direct \
+  --image nvidia/cuda:13.0.2-devel-ubuntu24.04 --disk 30 --ssh --direct \
   --cancel-unavail --label "$label" \
   --onstart-cmd 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3' \
   --raw > "$state/rental-${OFFER}.json" 2> "$state/rental-${OFFER}.err"
