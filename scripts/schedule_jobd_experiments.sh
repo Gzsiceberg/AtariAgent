@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Submit Gumbel target-400 experiments.
 # All use the game selected by ENVIRONMENT_ID:
-# 0 / gumbel_t400_mv10000_ttl_50_v1max: V1 maximum-priority insertion
 # 1 / gumbel_t400_mv10000_ttl_50_clip: default insertion, importance-weight floor 0.1
 # 2 / gumbel_t400_mv10000_ttl_50: default insertion, no importance-weight floor
 # 3 / gumbel_t400_clip: configured mixed-value/TTL defaults, importance-weight floor 0.1
 # 4 / gumbel_t400_mv10000_ttl_200_clip: mixed-value-10000, TTL-200, importance-weight floor 0.1
 # 5 / gumbel_t400_clip_v1timeout: gumbel_t400_clip with full-game limit and terminal timeout targets
+# 6 / gumbel_t400_clip_ttl25: gumbel_t400_clip with target-cache TTL 25
+# 7 / gumbel_t400_clip_ttl25_clip005: target-cache TTL 25, importance-weight floor 0.05
+# 8 / gumbel_t400_clip_nocache: gumbel_t400_clip with target caching disabled
 # No local files or credentials are sent to workers.
 #
-# Usage: ./scripts/schedule_jobd_experiments.sh [all | 0 | 1 | 2 | 3 | 4 | 5 | experiment_name]
+# Usage: ./scripts/schedule_jobd_experiments.sh [all | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | experiment_name]
 # Example: DRY_RUN=1 ENVIRONMENT_ID=Qbert-v5 ./scripts/schedule_jobd_experiments.sh all
 #
 # Submission environment:
@@ -32,7 +34,7 @@
 set -Eeuo pipefail
 
 usage() {
-    echo "Usage: ${0##*/} [all | 0/gumbel_t400_mv10000_ttl_50_v1max | 1/gumbel_t400_mv10000_ttl_50_clip | 2/gumbel_t400_mv10000_ttl_50 | 3/gumbel_t400_clip | 4/gumbel_t400_mv10000_ttl_200_clip | 5/gumbel_t400_clip_v1timeout]"
+    echo "Usage: ${0##*/} [all | 1/gumbel_t400_mv10000_ttl_50_clip | 2/gumbel_t400_mv10000_ttl_50 | 3/gumbel_t400_clip | 4/gumbel_t400_mv10000_ttl_200_clip | 5/gumbel_t400_clip_v1timeout | 6/gumbel_t400_clip_ttl25 | 7/gumbel_t400_clip_ttl25_clip005 | 8/gumbel_t400_clip_nocache]"
 }
 
 declare -a experiments=()
@@ -45,14 +47,16 @@ for selection in "$@"; do
                 echo "Error: 'all' must be used alone." >&2
                 exit 1
             fi
-            experiments=(gumbel_t400_mv10000_ttl_50_v1max gumbel_t400_mv10000_ttl_50_clip gumbel_t400_mv10000_ttl_50 gumbel_t400_clip gumbel_t400_mv10000_ttl_200_clip gumbel_t400_clip_v1timeout)
+            experiments=(gumbel_t400_mv10000_ttl_50_clip gumbel_t400_mv10000_ttl_50 gumbel_t400_clip gumbel_t400_mv10000_ttl_200_clip gumbel_t400_clip_v1timeout gumbel_t400_clip_ttl25 gumbel_t400_clip_ttl25_clip005 gumbel_t400_clip_nocache)
             ;;
-        0|gumbel_t400_mv10000_ttl_50_v1max) experiments+=(gumbel_t400_mv10000_ttl_50_v1max) ;;
         1|gumbel_t400_mv10000_ttl_50_clip) experiments+=(gumbel_t400_mv10000_ttl_50_clip) ;;
         2|gumbel_t400_mv10000_ttl_50) experiments+=(gumbel_t400_mv10000_ttl_50) ;;
         3|gumbel_t400_clip) experiments+=(gumbel_t400_clip) ;;
         4|gumbel_t400_mv10000_ttl_200_clip) experiments+=(gumbel_t400_mv10000_ttl_200_clip) ;;
         5|gumbel_t400_clip_v1timeout) experiments+=(gumbel_t400_clip_v1timeout) ;;
+        6|gumbel_t400_clip_ttl25) experiments+=(gumbel_t400_clip_ttl25) ;;
+        7|gumbel_t400_clip_ttl25_clip005) experiments+=(gumbel_t400_clip_ttl25_clip005) ;;
+        8|gumbel_t400_clip_nocache) experiments+=(gumbel_t400_clip_nocache) ;;
         *) printf 'Error: unknown experiment: %s\n' "$selection" >&2; usage >&2; exit 1 ;;
     esac
 done
@@ -97,9 +101,16 @@ for experiment in "${experiments[@]}"; do
     overrides=(
         "search=gumbel"
         "reanalysis.target_update_interval=400"
-        "reanalysis.cache_targets=true"
     )
+    if [[ "$experiment" == gumbel_t400_clip_nocache ]]; then
+        overrides+=("reanalysis.cache_targets=false")
+    else
+        overrides+=("reanalysis.cache_targets=true")
+    fi
     case "$experiment" in
+        gumbel_t400_clip_ttl25|gumbel_t400_clip_ttl25_clip005)
+            overrides+=("reanalysis.cache_target_ttl=25")
+            ;;
         gumbel_t400_clip_v1timeout)
             overrides+=("environment.time_limit_mode=full_game" "replay.treat_truncations_as_terminal=true")
             ;;
@@ -111,13 +122,13 @@ for experiment in "${experiments[@]}"; do
             ;;
     esac
     case "$experiment" in
+        gumbel_t400_clip_ttl25_clip005)
+            overrides+=("replay.use_max_priority=false" "replay.priority_weight_clip=0.05")
+            ;;
         gumbel_t400_mv10000_ttl_50)
             overrides+=("replay.use_max_priority=false" "replay.priority_weight_clip=0.0")
             ;;
-        gumbel_t400_mv10000_ttl_50_v1max)
-            overrides+=("replay.use_max_priority=true")
-            ;;
-        gumbel_t400_mv10000_ttl_50_clip|gumbel_t400_clip|gumbel_t400_mv10000_ttl_200_clip|gumbel_t400_clip_v1timeout)
+        gumbel_t400_mv10000_ttl_50_clip|gumbel_t400_clip|gumbel_t400_mv10000_ttl_200_clip|gumbel_t400_clip_v1timeout|gumbel_t400_clip_ttl25|gumbel_t400_clip_nocache)
             overrides+=("replay.use_max_priority=false" "replay.priority_weight_clip=0.1")
             ;;
     esac
