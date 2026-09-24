@@ -398,7 +398,7 @@ def test_logged_losses_ignore_importance_weights_and_padding(
                / (2 * 0.001)) ** 2 - 1
     for name, count, expected in (
         ("policy", valid_steps, log_two),
-        ("value", valid_steps + 1, abs(decoded)),
+        ("value", valid_steps, abs(decoded)),
         ("reward", valid_steps, abs(decoded)),
         ("consistency", valid_steps, -1.0),
     ):
@@ -410,14 +410,14 @@ def test_logged_losses_ignore_importance_weights_and_padding(
     # The optimization objective still uses weights and fixed unroll scaling.
     expected_loss = importance_weight / 2 * (
         valid_steps * log_two
-        + 0.25 * (valid_steps + 1) * log_two
+        + 0.25 * valid_steps * log_two
         + valid_steps * log_two
         - 5.0 * valid_steps
     )
     assert metrics.loss.item() == pytest.approx(expected_loss)
 
 
-def test_v2_mask_blocks_all_recurrent_target_gradients_after_last_action() -> None:
+def test_padding_mask_blocks_all_recurrent_target_gradients_after_last_action() -> None:
     def trainer():
         return Trainer(
             _ScalarRepresentation(), _RewardIdentityDynamics(), _ScalarPrediction(),
@@ -434,7 +434,7 @@ def test_v2_mask_blocks_all_recurrent_target_gradients_after_last_action() -> No
         action_mask=torch.tensor([[True, False]] * 2),
         indices=torch.arange(2), importance_weights=torch.ones(2),
     )
-    # State 1 is the supervised zero-value endpoint. State 2/action 1 are
+    # State 1 is an unsupervised prediction endpoint. State 2/action 1 are
     # padding: even nonzero policy targets there must not affect any gradient.
     policies = batch.policy_targets.clone()
     policies[:, 2] = torch.tensor([0.0, 1.0])
@@ -449,6 +449,81 @@ def test_v2_mask_blocks_all_recurrent_target_gradients_after_last_action() -> No
     for first, second in zip(clean._parameters, dirty._parameters, strict=True):
         torch.testing.assert_close(first.grad, second.grad)
         torch.testing.assert_close(first, second)
+
+
+@pytest.mark.parametrize("recorded_steps", [1, 3, 5])
+def test_lookahead_has_reward_and_consistency_gradients_but_no_prediction_loss(
+    recorded_steps: int,
+) -> None:
+    class RecordingPrediction(_ScalarPrediction):
+        def __init__(self):
+            super().__init__()
+            self.outputs = []
+
+        def forward(self, state):
+            policy, value = super().forward(state)
+            policy.retain_grad()
+            value.retain_grad()
+            self.outputs.append((policy, value))
+            return policy, value
+
+    class RecordingDynamics(_RewardIdentityDynamics):
+        def __init__(self):
+            super().__init__()
+            self.outputs = []
+            self.actions = []
+
+        def forward(self, state, action, hidden):
+            state, hidden, reward = super().forward(state, action, hidden)
+            reward.retain_grad()
+            self.outputs.append(reward)
+            self.actions.append(action.detach().clone())
+            return state, hidden, reward
+
+    class RecordingConsistency(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.outputs = []
+
+        def forward(self, state, target):
+            projection = torch.cat((state, torch.ones_like(state)), dim=1)
+            target_projection = torch.cat((torch.ones_like(target), torch.zeros_like(target)), dim=1)
+            projection.retain_grad()
+            self.outputs.append(projection)
+            return projection, target_projection.detach()
+
+    prediction, dynamics, consistency = (
+        RecordingPrediction(), RecordingDynamics(), RecordingConsistency()
+    )
+    trainer = Trainer(
+        _ScalarRepresentation(), dynamics, prediction,
+        consistency_network=consistency, unroll_steps=5,
+        support_min=0, support_max=1,
+    )
+    # The root is the last state in its block (100). Successors 101..105
+    # have no policy/value targets, even when real lookahead is available.
+    policies = torch.zeros(2, 6, 2)
+    policies[:, 0] = torch.tensor([1.0, 0.0])
+    batch = ReplayBatch(
+        frames=torch.zeros(2, 6, 1, 1, 1, dtype=torch.uint8),
+        actions=torch.tensor([[[0], [1], [0], [1], [1]]] * 2),
+        rewards=torch.full((2, 5), 0.25),
+        policy_targets=policies,
+        # Poison the unsupervised values to catch accidental endpoint loss.
+        value_targets=torch.tensor([[0.0, 100.0, 100.0, 100.0, 100.0, 100.0]] * 2),
+        action_mask=(torch.arange(5)[None, :] < recorded_steps).expand(2, -1),
+        indices=torch.arange(2), importance_weights=torch.ones(2),
+    )
+    trainer.train_step(batch)
+    for offset, (policy, value) in enumerate(prediction.outputs):
+        assert bool(policy.grad.abs().sum() > 0) == (offset == 0)
+        assert bool(value.grad.abs().sum() > 0) == (offset == 0)
+    for step, (reward, projection) in enumerate(zip(
+        dynamics.outputs, consistency.outputs, strict=True
+    )):
+        assert bool(reward.grad.abs().sum() > 0) == (step < recorded_steps)
+        assert bool(projection.grad.abs().sum() > 0) == (step < recorded_steps)
+        torch.testing.assert_close(dynamics.actions[step], batch.actions[:, step])
 
 
 def test_agent_requires_dynamics_gradient_scaling() -> None:

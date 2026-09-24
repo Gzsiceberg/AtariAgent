@@ -266,10 +266,15 @@ class _LearnerUnroll(nn.Module):
     ) -> tuple[Tensor, ...]:
         """Return losses, replay priorities, and policy diagnostics."""
         batch_size = actions.shape[0]
-        # V2 has no independent value-validity gate. Real actions supervise
-        # their successors (including the zero-target block endpoint).
-        value_mask = torch.cat((torch.ones_like(action_mask[:, :1]), action_mask), dim=1)
-        policy_mask = (policy_targets.sum(dim=-1) > 0) & value_mask
+        # Search targets exist only inside the original block. Recorded
+        # lookahead transitions still train reward/consistency, but neither
+        # their policy nor value predictions receive direct supervision.
+        reachable = torch.cat(
+            (torch.ones_like(action_mask[:, :1]), action_mask), dim=1
+        )
+        policy_mask = (policy_targets.sum(dim=-1) > 0) & reachable
+        value_mask = policy_mask
+        behavior_mask = action_mask & policy_mask[:, :-1]
         stack_size = frames.shape[1] - self.unroll_steps
         observations, target_frames = self._prepare_observations(frames)
 
@@ -347,7 +352,7 @@ class _LearnerUnroll(nn.Module):
                     predicted_reward,
                     behavior_values,
                     self._decode_values(value_logits),
-                    action_mask[:, step],
+                    behavior_mask[:, step],
                     self.discount,
                 )
                 previous_prefix = predicted_prefix
@@ -426,7 +431,7 @@ class _LearnerUnroll(nn.Module):
                 value_error / value_mask.sum().clamp_min(1),
                 reward_error / valid_actions,
                 recurrent_consistency_loss.detach().float().sum() / valid_actions,
-                behavior_loss.detach().float().sum() / valid_actions,
+                behavior_loss.detach().float().sum() / behavior_mask.sum().clamp_min(1),
             )
         )
         return (

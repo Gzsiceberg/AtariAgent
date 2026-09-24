@@ -17,13 +17,13 @@ class ReplayBatch:
     """A padded EfficientZero-style unroll batch.
 
     ``frames`` contains the initial stack context followed by one new frame
-    per unroll action. ``action_mask`` identifies actions inside the original
-    block, excluding lookahead. All recurrent losses use this mask, while root
-    losses are always enabled. ``value_mask`` is only a derived convenience
-    view: a true root followed by ``action_mask``, not TD-bootstrap validity.
-    Missing policy targets are zero, including at the block endpoint; its
-    value target is zero even when the underlying game continues. Lookahead
-    rewards provide TD context, not additional recurrent training steps. Value-bootstrap fields carry compact real observations,
+    per unroll action. ``action_mask`` identifies recorded transitions,
+    including lookahead, for reward and consistency supervision. Nonzero
+    policy targets identify states inside the original block; only those
+    states receive policy/value loss and search reanalysis. ``value_mask``
+    derives from policy availability and real-action reachability, not TD
+    bootstrap validity. Zero values outside the block are placeholders, not
+    supervision toward zero. Value-bootstrap fields carry compact real observations,
     stored bootstrap terms, and logical endpoint IDs so reanalysis can refresh
     and cache TD endpoint predictions without changing replay. Search values and zero-based
     transition ages (the number of newer replay transitions) are
@@ -57,8 +57,11 @@ class ReplayBatch:
 
     @property
     def value_mask(self) -> Bool[Tensor, "batch states"]:
-        """V2 loss positions: every root and each real-action successor."""
-        return torch.cat((torch.ones_like(self.action_mask[:, :1]), self.action_mask), dim=1)
+        """Original-block states only, excluding lookahead and padded states."""
+        reachable = torch.cat(
+            (torch.ones_like(self.action_mask[:, :1]), self.action_mask), dim=1
+        )
+        return self.policy_mask & reachable
 
     @property
     def policy_mask(self) -> Bool[Tensor, "batch states"]:

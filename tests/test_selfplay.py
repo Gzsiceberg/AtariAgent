@@ -416,7 +416,7 @@ def test_final_flush_preserves_all_collected_starts(
         # V2-style tails train on available rewards without a bootstrap.
         for stored in replay.state_dict()["trajectories"]:
             count = stored["sampleable_transition_count"]
-            expected = np.arange(len(stored["actions"]) + 1) <= count
+            expected = np.arange(len(stored["actions"]) + 1) < count
             np.testing.assert_array_equal(stored["value_valid_mask"], expected)
             expected_tail = sum(
                 replay.discount ** i * reward

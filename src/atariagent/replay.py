@@ -624,8 +624,8 @@ class FIFOReplayBuffer:
     ) -> tuple[np.ndarray, np.ndarray]:
         """V2 Atari TD targets: lookahead rewards, block-local bootstrap.
 
-        Boundary successors are supervised as zero by the action mask even
-        for nonterminal blocks. No target is computed for lookahead roots.
+        No target is computed for lookahead roots or the block endpoint;
+        those states are excluded from policy/value supervision.
         """
         stored_count = int(rewards.shape[0])
         bootstrap_count = max(0, sampleable_count - self.unroll_steps)
@@ -639,9 +639,7 @@ class FIFOReplayBuffer:
             padded_rewards, self.unroll_steps
         )[:sampleable_count]
         values64[:sampleable_count] = reward_windows @ self._reward_discounts
-        # Retained for snapshot compatibility; loss validity is now derived
-        # solely from real actions (plus the always-supervised root).
-        valid_mask[: sampleable_count + 1] = True
+        valid_mask[:sampleable_count] = True
 
         if bootstrap_count:
             values64[:bootstrap_count] += (
@@ -915,7 +913,9 @@ class FIFOReplayBuffer:
             locations
         ):
             block_count = len(trajectory)
-            action_count = min(unroll_steps, block_count - start)
+            # Lookahead contains real actions/rewards for dynamics training.
+            # Policy/value roots below remain limited to the original block.
+            action_count = min(unroll_steps, trajectory.stored_transition_count - start)
             # V2 retains observation context even where padded actions are
             # masked; this is also identical with/without bootstrap metadata.
             frame_count = min(full_frame_count, trajectory.frames.shape[0] - start)
@@ -968,8 +968,8 @@ class FIFOReplayBuffer:
                 trajectory_state_ids[start : start + policy_count]
             )
 
-            # V2's episodic path assigns zero at/after the original block
-            # endpoint, even when stored lookahead continues the real game.
+            # Out-of-block values are placeholders, not zero-value supervision.
+            # Their absent policy targets also exclude them from value loss.
             value_targets[batch_index].fill(0)
             value_targets[batch_index, :policy_count] = trajectory.value_targets[
                 start : start + policy_count

@@ -138,7 +138,7 @@ def test_search_values_use_zero_at_block_endpoint_not_td_fallback() -> None:
 
 
 @pytest.mark.parametrize("mode", ["td", "mixed", "search"])
-def test_value_loss_mask_is_derived_only_from_actions(mode) -> None:
+def test_value_loss_mask_requires_an_original_block_policy_target(mode) -> None:
     batch = replace(_batch(), action_mask=torch.tensor([[False], [True]]))
     selected = batch.with_selected_value_targets(
         mode=mode,
@@ -148,7 +148,7 @@ def test_value_loss_mask_is_derived_only_from_actions(mode) -> None:
         freshness_threshold=5_000,
     )
     assert "value_mask" not in {field.name for field in fields(batch)}
-    torch.testing.assert_close(selected.value_mask, torch.tensor([[True, False], [True, True]]))
+    torch.testing.assert_close(selected.value_mask, torch.tensor([[True, False], [True, False]]))
     torch.testing.assert_close(selected.value_mask, batch.value_mask)
 
 
