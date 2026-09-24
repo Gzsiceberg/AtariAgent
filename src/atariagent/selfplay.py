@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 import gymnasium as gym
@@ -142,8 +142,9 @@ class GameTrajectory:
             or self.truncated
             or self.lookahead_steps >= required_steps
         ):
-            # Terminal blocks need no bootstrap. A zero-lookahead block is an
-            # incomplete block whose unavailable targets are masked by replay.
+            # Terminal blocks need no bootstrap. A zero-lookahead block may be
+            # incomplete; replay uses available rewards with zero continuation
+            # wherever a future bootstrap value is unavailable.
             return
         raise ValueError(
             "trajectory lookahead_steps must be greater than or equal to "
@@ -575,6 +576,53 @@ class SelfPlayWorker:
             self.total_vector_steps += 1
 
         return tuple(tuple(blocks) for blocks in completed)
+
+    def flush(self) -> tuple[tuple[GameTrajectory, ...], ...]:
+        """Drain pending replay starts without stepping or ending the games.
+
+        Preserve block identities and emit each transition exactly once. Strip
+        incomplete lookahead (owned by subsequent builders) so flushed blocks
+        use replay's zero-lookahead partial-block path. Replay trains TD tails
+        on available rewards with zero bootstrap, following EZ V2. This keeps
+        block sizes and reanalysis state identities unchanged; environment
+        terminal flags and full-game reward accounting remain untouched.
+
+        Repeated calls without further collection return no blocks. Closing
+        the worker does not implicitly flush; callers must insert the result.
+        """
+        if self._closed:
+            raise RuntimeError("cannot flush a closed self-play worker")
+        if not self._initialized:
+            return tuple(() for _ in range(self.num_envs))
+        completed: list[tuple[GameTrajectory, ...]] = []
+        for index, builders in enumerate(self._builders):
+            blocks: list[GameTrajectory] = []
+            for builder in builders:
+                if not len(builder):
+                    continue
+                block = builder.finalize(
+                    terminated=False, truncated=False, full_episode_done=False
+                )
+                count = len(block)
+                blocks.append(
+                    replace(
+                        block,
+                        frames=block.frames[: count + block.stack_size],
+                        actions=block.actions[:count],
+                        rewards=block.rewards[:count],
+                        raw_rewards=block.raw_rewards[:count],
+                        search_results=block.search_results[:count],
+                        predicted_values=block.predicted_values[:count],
+                        lookahead_steps=0,
+                    )
+                )
+            completed.append(tuple(blocks))
+            if blocks:
+                # An empty active builder already has the next unused ID.
+                if len(builders[-1]):
+                    self._next_block_ids[index] += 1
+                self._builders[index] = [self._new_builder(index)]
+        return tuple(completed)
 
     def close(self) -> None:
         """Close every environment. Calling this method repeatedly is safe."""

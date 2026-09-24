@@ -646,24 +646,18 @@ class FIFOReplayBuffer:
         values64 = np.zeros(stored_count + 1, dtype=np.float64)
         valid_mask = np.zeros(stored_count + 1, dtype=np.bool_)
 
-        if terminated:
-            # Terminal tail states have valid partial returns. Zero padding
-            # represents the absent rewards after the episode boundary.
-            padded_rewards = np.pad(rewards, (0, self.td_steps - 1))
-            reward_windows = np.lib.stride_tricks.sliding_window_view(
-                padded_rewards, self.td_steps
-            )[:stored_count]
-            values64[:stored_count] = reward_windows @ self._reward_discounts
-            valid_mask[:] = True
-        elif bootstrap_count:
-            # Lookahead makes every valid nonterminal reward window complete.
-            # Do not calculate targets for trailing context positions that
-            # cannot bootstrap and will always be masked.
-            reward_windows = np.lib.stride_tricks.sliding_window_view(
-                rewards, self.td_steps
-            )[:bootstrap_count]
-            values64[:bootstrap_count] = reward_windows @ self._reward_discounts
-            valid_mask[:bootstrap_count] = True
+        # Match EZ V2: missing future values zero only the bootstrap term,
+        # not the whole value loss. Tail targets use all available rewards,
+        # including for unfinished blocks drained at the collection budget.
+        padded_rewards = np.pad(rewards, (0, self.td_steps - 1))
+        reward_windows = np.lib.stride_tricks.sliding_window_view(
+            padded_rewards, self.td_steps
+        )[:stored_count]
+        values64[:stored_count] = reward_windows @ self._reward_discounts
+        valid_mask[:stored_count] = True
+        # Only a known terminal has a supervised absorbing state after the
+        # final stored action. Do not turn an unfinished game into a terminal.
+        valid_mask[stored_count] = terminated
 
         if bootstrap_count:
             values64[:bootstrap_count] += (

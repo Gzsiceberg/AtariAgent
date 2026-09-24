@@ -370,6 +370,120 @@ def test_episode_reward_tracker_accumulates_across_life_losses() -> None:
     worker.close()
 
 
+@pytest.mark.parametrize("trajectory_length", [1, 4, 100])
+@pytest.mark.parametrize("lookahead_steps", [0, 2, 9])
+@pytest.mark.parametrize("tail_steps", [0, 1, 3])
+def test_final_flush_preserves_all_collected_starts(
+    trajectory_length: int, lookahead_steps: int, tail_steps: int,
+) -> None:
+    from atariagent.replay import FIFOReplayBuffer
+
+    steps = 2 * trajectory_length + tail_steps
+    with SelfPlayWorker(
+        FakeAgent(),
+        environments=[FakeEnvironment(1000), FakeEnvironment(1000)],
+        trajectory_length=trajectory_length,
+        lookahead_steps=lookahead_steps,
+    ) as worker:
+        assert worker.flush() == ((), ())
+        emitted = worker.run(steps)
+        rewards_before = worker.current_episode_rewards
+        pending = worker.flush()
+        assert worker.flush() == ((), ())
+        assert worker.total_transitions == 2 * steps
+        assert worker.total_vector_steps == steps
+        assert worker.current_episode_rewards == rewards_before
+        replay = FIFOReplayBuffer(2 * steps, unroll_steps=2, td_steps=2)
+        tracker = EpisodeRewardTracker()
+        for earlier, tail in zip(emitted, pending, strict=True):
+            blocks = earlier + tail
+            assert sum(map(len, blocks)) == steps
+            assert len({b.block_id for b in blocks}) == len(blocks)
+            assert all(len(b) <= trajectory_length for b in blocks)
+            assert not tracker.add(blocks)
+            # Each collected frame belongs to exactly one replay start.
+            frames = [
+                int(b.frames[b.stack_size + i][0, 0, 0])
+                for b in blocks for i in range(len(b))
+            ]
+            assert frames == [i % 256 for i in range(1, steps + 1)]
+            for block in tail:
+                assert not block.terminated and not block.truncated
+                assert not block.full_episode_done
+                assert block.lookahead_steps == 0
+            replay.extend(blocks)
+        assert len(replay) == 2 * steps
+        # V2-style tails train on available rewards without a bootstrap.
+        for stored in replay.state_dict()["trajectories"]:
+            count = len(stored["actions"])
+            expected = np.arange(count + 1) < count
+            np.testing.assert_array_equal(stored["value_valid_mask"], expected)
+            assert stored["value_targets"][count - 1] == stored["rewards"][-1]
+        batch = replay.sample(min(8, len(replay)))
+        assert torch.isfinite(batch.value_targets).all()
+        restored = FIFOReplayBuffer(2 * steps, unroll_steps=2, td_steps=2)
+        restored.load_state_dict(replay.state_dict())
+        assert len(restored) == 2 * steps
+        # Further collection neither re-emits starts nor resets game returns.
+        later = worker.run(1)
+        final = worker.flush()
+        for previous, tail, next_blocks, final_blocks in zip(
+            emitted, pending, later, final, strict=True
+        ):
+            blocks = previous + tail + next_blocks + final_blocks
+            assert sum(map(len, blocks)) == steps + 1
+            assert len({b.block_id for b in blocks}) == len(blocks)
+        assert worker.current_episode_rewards == (2.5 * (steps + 1),) * 2
+
+
+def test_flush_keeps_completed_and_unfinished_game_scores_separate() -> None:
+    with SelfPlayWorker(
+        FakeAgent(), environments=[FakeEnvironment(5), FakeEnvironment(10)],
+        trajectory_length=4, lookahead_steps=2,
+    ) as worker:
+        emitted = worker.run(5)
+        pending = worker.flush()
+        tracker = EpisodeRewardTracker()
+        assert tracker.add(emitted[0] + pending[0]) == (12.5,)
+        assert tracker.add(emitted[1] + pending[1]) == ()
+        assert pending[0] == ()
+        assert worker.current_episode_rewards == (0.0, 12.5)
+        later = worker.run(5)
+        assert tracker.add(later[1]) == (25.0,)
+
+
+def test_flush_preserves_reanalysis_ids_for_existing_lookahead() -> None:
+    from atariagent.replay import FIFOReplayBuffer
+
+    with SelfPlayWorker(
+        FakeAgent(), environments=[FakeEnvironment(100)],
+        trajectory_length=4, lookahead_steps=9,
+    ) as worker:
+        emitted = worker.run(13)[0]
+        pending = worker.flush()[0]
+        assert [len(b) for b in emitted + pending] == [4, 4, 4, 1]
+        replay = FIFOReplayBuffer(20, unroll_steps=2, td_steps=2)
+        replay.extend(emitted + pending)
+        # The first emitted block already references all nine pending states.
+        # Flushing must retain their canonical IDs for reanalysis deduplication.
+        ids = list(replay._reanalysis_state_ids)
+        np.testing.assert_array_equal(ids[0][4:], np.concatenate(ids[1:]))
+
+
+def test_flush_blocks_fit_original_block_capacity() -> None:
+    from atariagent.replay import FIFOReplayBuffer
+
+    with SelfPlayWorker(
+        FakeAgent(), environments=[FakeEnvironment(100)],
+        trajectory_length=4, lookahead_steps=9,
+    ) as worker:
+        assert worker.run(11) == ((),)
+        blocks = worker.flush()[0]
+        assert [len(block) for block in blocks] == [4, 4, 3]
+        replay = FIFOReplayBuffer(4, unroll_steps=2, td_steps=2)
+        assert replay.extend(blocks).added_transitions == 11
+
+
 def test_worker_closes_all_environments_and_rejects_further_runs() -> None:
     environments = [FakeEnvironment(10), FakeEnvironment(10)]
     worker = SelfPlayWorker(FakeAgent(), environments=environments)
@@ -380,6 +494,8 @@ def test_worker_closes_all_environments_and_rejects_further_runs() -> None:
     assert all(environment.closed for environment in environments)
     with pytest.raises(RuntimeError, match="closed"):
         worker.run(1)
+    with pytest.raises(RuntimeError, match="closed"):
+        worker.flush()
 
 
 def test_worker_validates_steps() -> None:

@@ -118,6 +118,31 @@ def test_search_values_fall_back_to_td_without_a_valid_search_root() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("mode", "learner_step", "expected_targets", "expected_mask"),
+    [
+        ("td", 30_000, [[1.0, 2.0], [3.0, 4.0]], [[False, False], [False, False]]),
+        ("mixed", 29_999, [[1.0, 2.0], [3.0, 4.0]], [[False, False], [False, False]]),
+        ("mixed", 30_000, [[10.0, 20.0], [3.0, 4.0]], [[True, True], [False, False]]),
+        ("search", 0, [[10.0, 20.0], [30.0, 4.0]], [[True, True], [True, False]]),
+    ],
+)
+def test_search_target_validity_does_not_require_td_validity(
+    mode, learner_step, expected_targets, expected_mask,
+) -> None:
+    batch = replace(_batch(), value_mask=torch.zeros(2, 2, dtype=torch.bool))
+    selected = batch.with_selected_value_targets(
+        mode=mode,
+        learner_step=learner_step,
+        collection_steps=100_000,
+        mixed_start_step=30_000,
+        freshness_threshold=5_000,
+    )
+    torch.testing.assert_close(selected.value_targets, torch.tensor(expected_targets))
+    torch.testing.assert_close(selected.value_mask, torch.tensor(expected_mask))
+    assert not batch.value_mask.any()  # Selection must not mutate the source batch.
+
+
 def test_mixed_value_selection_requires_reanalysis_metadata() -> None:
     batch = replace(_batch(), search_value_targets=None)
 

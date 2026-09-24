@@ -19,9 +19,10 @@ class ReplayBatch:
     ``frames`` contains the initial stack context followed by one new frame
     per unroll action. ``action_mask`` identifies real
     action/reward steps. ``policy_mask`` identifies states with stored search
-    policy targets. ``value_mask`` identifies states whose fixed-horizon return can
-    be computed; a true terminal state has a valid zero-value target without
-    an MCTS policy. Value-bootstrap fields carry compact real observations,
+    policy targets. ``value_mask`` identifies supervised value targets: stored
+    states use available rewards with zero bootstrap at incomplete TD tails,
+    and search targets are valid independently of bootstrap availability.
+    A true terminal state has a valid zero-value target without an MCTS policy. Value-bootstrap fields carry compact real observations,
     stored bootstrap terms, and logical endpoint IDs so reanalysis can refresh
     and cache TD endpoint predictions without changing replay. Search values and zero-based
     transition ages (the number of newer replay transitions) are
@@ -122,7 +123,8 @@ class ReplayBatch:
         if self.search_value_targets is None:
             raise ValueError("batch has no MCTS search value targets")
 
-        search_mask = self.policy_mask & self.value_mask
+        # Search-root availability is independent of TD-bootstrap validity.
+        search_mask = self.policy_mask
         if mode == "mixed":
             if self.transition_ages is None:
                 raise ValueError("batch has no replay transition ages")
@@ -140,7 +142,9 @@ class ReplayBatch:
             self.search_value_targets,
             self.value_targets,
         )
-        return replace(self, value_targets=selected)
+        return replace(
+            self, value_targets=selected, value_mask=self.value_mask | search_mask
+        )
 
     def effective_transition_ages(
         self,

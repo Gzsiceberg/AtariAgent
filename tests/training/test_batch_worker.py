@@ -164,7 +164,7 @@ def test_worker_assigns_invalid_roots_minimum_valid_priority(valid_roots) -> Non
 
 
 @pytest.mark.parametrize("terminated", [False, True])
-def test_worker_replaces_invalid_timeout_errors_but_updates_terminal_zeros(
+def test_worker_updates_priorities_for_timeout_and_terminal_tails(
     terminated: bool,
 ) -> None:
     replay = FIFOReplayBuffer(4, unroll_steps=1, td_steps=2)
@@ -185,18 +185,15 @@ def test_worker_replaces_invalid_timeout_errors_but_updates_terminal_zeros(
     ) as worker:
         worker.start(0, 1)
         ready = worker.next_ready()
-        # Both valid terminal zeros and invalid placeholders have value zero.
+        # Missing bootstraps no longer make timeout-tail roots invalid.
         assert torch.all(ready.cpu_batch.value_targets[:, 0] == 0)
-        assert ready.cpu_batch.value_mask[:, 0].sum().item() == (4 if terminated else 2)
-        # Use distinct valid errors and NaN invalid candidates to establish
-        # that placeholder errors cannot enter either the minimum or updates.
+        assert ready.cpu_batch.value_mask[:, 0].all()
         ids = ready.cpu_batch.indices
-        valid = ready.cpu_batch.value_mask[:, 0]
-        candidates = torch.where(valid, (ids + 1).float() / 10, float("nan"))
+        candidates = (ids + 1).float() / 10
         worker.complete(ready, candidates)
         worker.wait_idle()
 
-    expected = [0.1, 0.2, 0.3, 0.4] if terminated else [0.1, 0.2, 0.1, 0.1]
+    expected = [0.1, 0.2, 0.3, 0.4]
     np.testing.assert_allclose(replay.priorities, expected)
 
 

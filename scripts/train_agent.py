@@ -940,6 +940,14 @@ def main(config: TrainAgentConfig) -> None:
                 self_play_progress.update(
                     worker.total_transitions - previous_transitions
                 )
+                if worker.total_transitions >= config.self_play.total_transitions:
+                    # Insert pending starts before the last collection-phase
+                    # updates and any pre-final replay snapshot. Do not invent
+                    # terminals or full-game scores at the collection cutoff.
+                    grouped = tuple(
+                        emitted + pending
+                        for emitted, pending in zip(grouped, worker.flush(), strict=True)
+                    )
                 trajectories = tuple(flatten_trajectories(grouped))
                 completed_rewards = reward_tracker.add(trajectories)
                 self_play_episode_rewards.extend(completed_rewards)
@@ -1024,10 +1032,6 @@ def main(config: TrainAgentConfig) -> None:
                     )
                 )
 
-            # Deliberately discard in-progress partial trajectories at the
-            # collection budget. EfficientZero actors leave these unfinished
-            # trajectories out of replay rather than flushing them immediately
-            # before the learner-only phase.
 
         self_play_progress.close()
         if self_play_episode_rewards:

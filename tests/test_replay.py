@@ -164,6 +164,27 @@ def test_replay_rejects_snapshot_without_initial_priorities(
     assert len(restored) == 0
 
 
+@pytest.mark.parametrize("truncated", [False, True])
+def test_nonterminal_td_tails_use_available_rewards_and_zero_bootstrap(truncated) -> None:
+    replay = FIFOReplayBuffer(10, unroll_steps=2, td_steps=3, discount=0.5)
+    replay.add(make_trajectory(
+        4, truncated=truncated, predicted_values=(10.0, 11.0, 12.0, 13.0),
+    ))
+    stored = replay.state_dict()["trajectories"][0]
+    np.testing.assert_allclose(stored["value_targets"], [3.125, 4.5, 5.0, 4.0, 0.0])
+    np.testing.assert_array_equal(stored["value_valid_mask"], [True] * 4 + [False])
+    np.testing.assert_allclose(
+        stored["initial_priorities"],
+        np.array([5.625, 6.5, 7.0, 9.0]) + replay.state_dict()["priority_epsilon"],
+    )
+    batch = replay.sample(4)
+    for i, position in enumerate(batch.indices.tolist()):
+        assert batch.value_mask[i, 0]
+        assert bool(batch.value_bootstrap_mask[i, 0]) == (position == 0)
+        if position > 0:
+            assert batch.value_bootstrap_discounts[i, 0] == 0
+
+
 def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:
     replay = FIFOReplayBuffer(max_transitions=5, unroll_steps=2, td_steps=2)
 
@@ -513,12 +534,9 @@ def reference_value_targets(
                 discount**td_steps
                 * trajectory.search_results[bootstrap_position].root_value
             )
-            valid[offset] = True
             bootstrap_mask[offset] = True
-            values[offset] = reward_return
-        elif trajectory.terminated:
-            valid[offset] = True
-            values[offset] = reward_return
+        valid[offset] = True
+        values[offset] = reward_return
     return values, valid, bootstrap_mask
 
 
@@ -934,7 +952,7 @@ def test_failed_trajectory_preparation_does_not_evict_existing_data() -> None:
     assert sorted(batch.frames[:, 0, 0, 0, 0].tolist()) == [0, 1]
 
 
-def test_timeout_masks_incomplete_value_targets() -> None:
+def test_timeout_trains_available_returns_with_zero_bootstrap() -> None:
     replay = FIFOReplayBuffer(
         10, unroll_steps=2, td_steps=3, discount=0.5,
     )
@@ -943,7 +961,7 @@ def test_timeout_masks_incomplete_value_targets() -> None:
     stored = replay.state_dict()["trajectories"][0]
     assert stored["truncated"] and not stored["terminated"]
     np.testing.assert_array_equal(
-        stored["value_valid_mask"], [True, False, False, False, False]
+        stored["value_valid_mask"], [True, True, True, True, False]
     )
     batch = replay.sample(4)
     for i in range(batch.batch_size):

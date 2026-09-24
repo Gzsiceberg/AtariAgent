@@ -44,7 +44,7 @@ replay:
   use_max_priority: false
   # V1 timeout targets: remaining rewards with zero continuation, not masked tails.
   # Combine with environment.time_limit_mode=full_game for V1 time-limit behavior.
-  treat_truncations_as_terminal: false
+  treat_truncations_as_terminal: true
   # Sample with priority**0.6 and linearly anneal the
   # importance-sampling exponent from 0.4 to 1.0 over all learner updates.
   priority_alpha: 0.6
