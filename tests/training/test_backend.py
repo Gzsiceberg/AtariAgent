@@ -31,32 +31,22 @@ def backend(train_script, monkeypatch):
 
 
 @pytest.mark.parametrize("deterministic", [False, True])
-@pytest.mark.parametrize("autotune", [False, True])
-def test_backend_autotuning_is_independent_of_determinism_and_tf32(
-    train_script, backend, deterministic, autotune
+def test_backend_only_changes_cudnn_determinism(
+    train_script, backend, deterministic
 ):
     _, cudnn, matmul, precision = backend
-    train_script.configure_training_backend(deterministic, cudnn_benchmark=autotune)
-    assert cudnn.benchmark is autotune
+    train_script.configure_training_backend(deterministic)
+    assert cudnn.benchmark is None
     assert cudnn.deterministic is deterministic
-    assert cudnn.allow_tf32 is (not deterministic)
-    assert matmul.allow_tf32 is (not deterministic)
-    assert precision == ["highest" if deterministic else "high"]
-
-
-def test_default_disables_autotuning_without_disabling_tf32(train_script, backend):
-    _, cudnn, matmul, precision = backend
-    train_script.configure_training_backend(False)
-    assert cudnn.benchmark is False
-    assert cudnn.allow_tf32 is True
-    assert matmul.allow_tf32 is True
-    assert precision == ["high"]
+    assert cudnn.allow_tf32 is None
+    assert matmul.allow_tf32 is None
+    assert precision == []
 
 
 def test_backend_is_unchanged_without_cuda(train_script, backend):
     fake_torch, cudnn, matmul, precision = backend
     fake_torch.cuda.is_available = lambda: False
-    train_script.configure_training_backend(False, cudnn_benchmark=True)
+    train_script.configure_training_backend(True)
     assert vars(cudnn) == {"benchmark": None, "deterministic": None, "allow_tf32": None}
     assert matmul.allow_tf32 is None
     assert precision == []

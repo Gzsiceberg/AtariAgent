@@ -203,8 +203,8 @@ def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
     assert config.progress_interval_seconds == pytest.approx(0.1)
 
 
-def test_cudnn_autotuning_defaults_off_and_can_be_enabled() -> None:
-    assert TrainingConfig().cudnn_benchmark is False
+def test_determinism_can_be_enabled_without_changing_precision() -> None:
+    assert not hasattr(TrainingConfig(), "cudnn_benchmark")
     register_train_agent_config()
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")
 
@@ -212,12 +212,12 @@ def test_cudnn_autotuning_defaults_off_and_can_be_enabled() -> None:
         default = compose(config_name="train_agent")
         enabled = compose(
             config_name="train_agent",
-            overrides=["training.cudnn_benchmark=true"],
+            overrides=["training.deterministic=true"],
         )
 
-    assert default.training.cudnn_benchmark is False
-    assert enabled.training.cudnn_benchmark is True
-    assert enabled.training.deterministic == default.training.deterministic
+    assert "cudnn_benchmark" not in default.training
+    assert default.training.deterministic is False
+    assert enabled.training.deterministic is True
     assert enabled.training.precision == default.training.precision
 
 
