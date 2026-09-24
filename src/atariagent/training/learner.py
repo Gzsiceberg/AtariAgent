@@ -127,13 +127,12 @@ class _LearnerUnroll(nn.Module):
         value_logits: Tensor,
         policy_targets: Tensor,
         value_targets: Tensor,
-        policy_mask: Tensor,
         value_mask: Tensor,
         offset: int,
     ) -> tuple[Tensor, Tensor]:
         policy_loss = ReplayBatch._policy_cross_entropy(
             policy_logits, policy_targets[:, offset]
-        ) * policy_mask[:, offset].to(policy_logits.dtype)
+        )
         value_loss = ReplayBatch._scalar_loss(
             value_logits,
             value_targets[:, offset],
@@ -265,12 +264,12 @@ class _LearnerUnroll(nn.Module):
         policy_targets: Tensor,
         value_targets: Tensor,
         action_mask: Tensor,
-        policy_mask: Tensor,
         value_mask: Tensor,
         importance_weights: Tensor,
     ) -> tuple[Tensor, ...]:
         """Return losses, replay priorities, and policy diagnostics."""
         batch_size = actions.shape[0]
+        policy_mask = policy_targets.sum(dim=-1) > 0
         stack_size = frames.shape[1] - self.unroll_steps
         observations, target_frames = self._prepare_observations(frames)
 
@@ -301,7 +300,6 @@ class _LearnerUnroll(nn.Module):
             value_logits,
             policy_targets,
             value_targets,
-            policy_mask,
             value_mask,
             0,
         )
@@ -369,7 +367,6 @@ class _LearnerUnroll(nn.Module):
                 value_logits,
                 policy_targets,
                 value_targets,
-                policy_mask,
                 value_mask,
                 step + 1,
             )
@@ -727,7 +724,6 @@ class Trainer:
                 batch.policy_targets,
                 batch.value_targets,
                 batch.action_mask,
-                batch.policy_mask,
                 batch.value_mask,
                 batch.importance_weights,
             )
@@ -833,8 +829,6 @@ class Trainer:
         target_shape = (batch.batch_size, self.unroll_steps + 1)
         if batch.policy_targets.shape[:2] != target_shape:
             raise ValueError("policy_targets has an invalid shape")
-        if batch.policy_mask.shape != target_shape:
-            raise ValueError("policy_mask has an invalid shape")
         if batch.value_targets.shape != target_shape:
             raise ValueError("value_targets has an invalid shape")
         if batch.value_mask.shape != target_shape:

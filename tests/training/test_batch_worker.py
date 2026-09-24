@@ -22,7 +22,6 @@ def _batch(index: int = 0) -> ReplayBatch:
         policy_targets=torch.full((2, 2, 2), 0.5),
         value_targets=torch.zeros(2, 2),
         action_mask=torch.ones(2, 1, dtype=torch.bool),
-        policy_mask=torch.ones(2, 2, dtype=torch.bool),
         value_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.tensor([index * 2, index * 2 + 1]),
         importance_weights=torch.ones(2),

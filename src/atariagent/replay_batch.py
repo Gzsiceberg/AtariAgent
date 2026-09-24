@@ -18,8 +18,9 @@ class ReplayBatch:
 
     ``frames`` contains the initial stack context followed by one new frame
     per unroll action. ``action_mask`` identifies real
-    action/reward steps. ``policy_mask`` identifies states with stored search
-    policy targets. ``value_mask`` identifies supervised value targets: stored
+    action/reward steps. Missing policy targets are all zeros, so they
+    contribute no policy loss. ``policy_mask`` is derived from these targets
+    only when search-root validity or diagnostic counts are needed. ``value_mask`` identifies supervised value targets: stored
     states use available rewards with zero bootstrap at incomplete TD tails,
     and search targets are valid independently of bootstrap availability.
     A true terminal state has a valid zero-value target without an MCTS policy. Value-bootstrap fields carry compact real observations,
@@ -38,7 +39,6 @@ class ReplayBatch:
     policy_targets: Float[Tensor, "batch states actions"]
     value_targets: Float[Tensor, "batch states"]
     action_mask: Bool[Tensor, "batch unroll"]
-    policy_mask: Bool[Tensor, "batch states"]
     value_mask: Bool[Tensor, "batch states"]
     indices: Int[Tensor, "batch"]
     importance_weights: Float[Tensor, "batch"]
@@ -55,6 +55,11 @@ class ReplayBatch:
     search_value_targets: Float[Tensor, "batch states"] | None = None
     transition_ages: Int[Tensor, "batch"] | None = None
     reanalysis_state_ids: Int[Tensor, "batch states"] | None = None
+
+    @property
+    def policy_mask(self) -> Bool[Tensor, "batch states"]:
+        """Derive search-root validity from nonzero policy targets."""
+        return self.policy_targets.sum(dim=-1) > 0
 
     @property
     def batch_size(self) -> int:

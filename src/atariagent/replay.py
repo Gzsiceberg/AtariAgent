@@ -749,7 +749,6 @@ class FIFOReplayBuffer:
                 (batch_size, self.unroll_steps),
                 np.dtype(np.bool_),
             ),
-            "policy_mask": ((batch_size, states), np.dtype(np.bool_)),
             "value_mask": ((batch_size, states), np.dtype(np.bool_)),
             "reanalysis_frames": (
                 (
@@ -858,7 +857,6 @@ class FIFOReplayBuffer:
             policy_targets=torch.from_numpy(arrays["policy_targets"]),
             value_targets=torch.from_numpy(arrays["value_targets"]),
             action_mask=torch.from_numpy(arrays["action_mask"]),
-            policy_mask=torch.from_numpy(arrays["policy_mask"]),
             value_mask=torch.from_numpy(arrays["value_mask"]),
             indices=torch.from_numpy(arrays["indices"]),
             importance_weights=torch.from_numpy(arrays["importance_weights"]),
@@ -923,7 +921,6 @@ class FIFOReplayBuffer:
         policy_targets = arrays["policy_targets"]
         value_targets = arrays["value_targets"]
         action_mask = arrays["action_mask"]
-        policy_mask = arrays["policy_mask"]
         value_mask = arrays["value_mask"]
         reanalysis_frames = arrays.get("reanalysis_frames")
         value_bootstrap_frames = arrays.get("value_bootstrap_frames")
@@ -977,14 +974,9 @@ class FIFOReplayBuffer:
             policy_count = min(state_count, stored_count - start)
             if policy_count < state_count:
                 policy_targets[batch_index].fill(0)
-                policy_mask[batch_index].fill(False)
-            else:
-                policy_mask[batch_index].fill(True)
             policy_targets[batch_index, :policy_count] = trajectory.policy_targets[
                 start : start + policy_count
             ]
-            if policy_count < state_count:
-                policy_mask[batch_index, :policy_count] = True
             reanalysis_state_ids[batch_index].fill(-1)
             reanalysis_state_ids[batch_index, :policy_count] = (
                 trajectory_state_ids[start : start + policy_count]

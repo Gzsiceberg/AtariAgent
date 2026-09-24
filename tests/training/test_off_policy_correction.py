@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 import torch
@@ -11,16 +11,36 @@ def _batch() -> ReplayBatch:
         frames=torch.zeros(2, 2, 1, 1, 1, dtype=torch.uint8),
         actions=torch.zeros(2, 1, 1, dtype=torch.long),
         rewards=torch.zeros(2, 1),
-        policy_targets=torch.full((2, 2, 2), 0.5),
+        policy_targets=torch.tensor([[[0.5, 0.5], [0.5, 0.5]], [[0.5, 0.5], [0.0, 0.0]]]),
         value_targets=torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
         action_mask=torch.ones(2, 1, dtype=torch.bool),
-        policy_mask=torch.tensor([[True, True], [True, False]]),
         value_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.tensor([10, 11]),
         importance_weights=torch.ones(2),
         search_value_targets=torch.tensor([[10.0, 20.0], [30.0, 40.0]]),
         transition_ages=torch.tensor([5_000, 4_999]),
     )
+
+
+def test_policy_validity_is_derived_from_zero_targets_not_stored() -> None:
+    batch = _batch()
+    assert "policy_mask" not in {field.name for field in fields(batch)}
+    torch.testing.assert_close(
+        batch.policy_mask, torch.tensor([[True, True], [True, False]])
+    )
+    padded = replace(batch, policy_targets=torch.zeros_like(batch.policy_targets))
+    assert not padded.policy_mask.any()
+    assert batch.policy_mask.any()
+
+
+def test_zero_policy_targets_have_zero_loss_and_gradient() -> None:
+    targets = _batch().policy_targets
+    logits = torch.randn(4, 2, requires_grad=True)
+    losses = ReplayBatch._policy_cross_entropy(logits, targets.flatten(0, 1))
+    assert losses[-1] == 0
+    losses.sum().backward()
+    assert torch.count_nonzero(logits.grad[-1]) == 0
+    assert torch.count_nonzero(logits.grad[:-1]) > 0
 
 
 def test_mixed_values_use_td_before_start_step() -> None:

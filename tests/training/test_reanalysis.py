@@ -28,7 +28,6 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
         policy_targets=torch.full((batch_size, 2, 2), 0.5),
         value_targets=torch.zeros(batch_size, 2),
         action_mask=torch.ones(batch_size, 1, dtype=torch.bool),
-        policy_mask=torch.ones(batch_size, 2, dtype=torch.bool),
         value_mask=torch.ones(batch_size, 2, dtype=torch.bool),
         indices=torch.arange(batch_size),
         importance_weights=torch.ones(batch_size),
@@ -138,13 +137,32 @@ def test_policy_reanalysis_replaces_stored_targets_immediately() -> None:
     batch = _batch()
     batch = replace(
         batch,
-        policy_targets=torch.zeros_like(batch.policy_targets),
+        policy_targets=torch.tensor([0.9, 0.1]).expand_as(batch.policy_targets).clone(),
     )
     try:
         pipeline.submit(batch, trained_steps=0)
         reanalyzed = pipeline.wait_next().batch
 
         assert not torch.equal(reanalyzed.policy_targets, batch.policy_targets)
+    finally:
+        pipeline.close()
+
+
+def test_native_reanalysis_skips_zero_policy_targets() -> None:
+    pipeline = _pipeline(prefetch_batches=1)
+    batch = _batch()
+    targets = batch.policy_targets.clone()
+    targets[:, 1] = 0
+    batch = replace(batch, policy_targets=targets)
+    try:
+        pipeline.submit(batch)
+        ready = pipeline.wait_next()
+        assert ready.policy_roots_searched == 2
+        torch.testing.assert_close(
+            ready.batch.policy_mask, torch.tensor([[True, False], [True, False]])
+        )
+        assert not ready.batch.policy_targets[:, 1].any()
+        assert not ready.batch.search_value_targets[:, 1].any()
     finally:
         pipeline.close()
 
@@ -172,7 +190,7 @@ def test_cache_does_not_copy_an_invalid_value_to_a_valid_duplicate() -> None:
     pipeline = _pipeline(prefetch_batches=1)
     batch = replace(
         _batch(),
-        policy_mask=torch.tensor([[True, False], [True, False]]),
+        policy_targets=torch.tensor([[[0.5, 0.5], [0.0, 0.0]], [[0.5, 0.5], [0.0, 0.0]]]),
         value_mask=torch.tensor([[False, False], [True, False]]),
         value_targets=torch.tensor([[0.0, 0.0], [10.0, 0.0]]),
         value_bootstrap_mask=torch.zeros(2, 2, dtype=torch.bool),
@@ -347,7 +365,7 @@ def test_native_pipeline_validates_native_batch_tensor_contract() -> None:
     try:
         with pytest.raises(ValueError, match="policy_mask must be a 2D bool"):
             pipeline.submit(
-                replace(_batch(), policy_mask=torch.ones(2, 2))
+                replace(_batch(), policy_targets=torch.ones(2, 2))
             )
         with pytest.raises(ValueError, match="indices must be a 1D int64"):
             pipeline.submit(

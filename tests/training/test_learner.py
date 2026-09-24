@@ -136,7 +136,6 @@ def test_agent_train_step_updates_all_supervised_output_heads() -> None:
         ),
         value_targets=torch.tensor([[1.0, 0.5], [-1.0, -0.5]]),
         action_mask=torch.ones(2, 1, dtype=torch.bool),
-        policy_mask=torch.ones(2, 2, dtype=torch.bool),
         value_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
@@ -329,7 +328,6 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         ),
         value_targets=torch.tensor([[0.0, 1.0, 0.5], [1.0, 0.0, 0.5]]),
         action_mask=torch.ones(2, 2, dtype=torch.bool),
-        policy_mask=torch.ones(2, 3, dtype=torch.bool),
         value_mask=torch.ones(2, 3, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.tensor([0.5, 1.0]),
@@ -392,10 +390,9 @@ def test_logged_losses_ignore_importance_weights_and_padding(
         frames=torch.zeros(2, 3, 1, 1, 1, dtype=torch.uint8),
         actions=torch.zeros(2, 2, 1, dtype=torch.long),
         rewards=torch.zeros(2, 2),
-        policy_targets=torch.full((2, 3, 2), 0.5),
+        policy_targets=torch.full((2, 3, 2), 0.5) * policy_mask[..., None],
         value_targets=torch.zeros(2, 3),
         action_mask=action_mask,
-        policy_mask=policy_mask,
         value_mask=value_mask,
         indices=torch.arange(2),
         importance_weights=torch.full((2,), importance_weight),
@@ -464,7 +461,6 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
         ),
         value_targets=torch.zeros(2, 3),
         action_mask=torch.zeros(2, 2, dtype=torch.bool),
-        policy_mask=torch.ones(2, 3, dtype=torch.bool),
         value_mask=torch.zeros(2, 3, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
@@ -473,7 +469,7 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
     metrics = trainer.train_step(batch)
 
     assert metrics.policy_loss == pytest.approx(
-        2.0 / 3.0 * torch.log(torch.tensor(2.0)).item()
+        torch.log(torch.tensor(2.0)).item()
     )
     assert representation.weight.grad == pytest.approx(-0.1875)
 
@@ -495,7 +491,6 @@ def test_agent_logs_mean_absolute_error(lstm_horizon: int) -> None:
         policy_targets=torch.full((2, 3, 3), 1.0 / 3.0),
         value_targets=torch.tensor([[1.0, 2.0, 3.0], [-1.0, -2.0, -3.0]]),
         action_mask=torch.ones(2, 2, dtype=torch.bool),
-        policy_mask=torch.ones(2, 3, dtype=torch.bool),
         value_mask=torch.ones(2, 3, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
