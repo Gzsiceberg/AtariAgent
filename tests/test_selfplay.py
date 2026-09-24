@@ -393,7 +393,7 @@ def test_final_flush_preserves_all_collected_starts(
         assert worker.total_transitions == 2 * steps
         assert worker.total_vector_steps == steps
         assert worker.current_episode_rewards == rewards_before
-        replay = FIFOReplayBuffer(2 * steps, unroll_steps=2, td_steps=2)
+        replay = FIFOReplayBuffer(2 * steps, unroll_steps=2)
         tracker = EpisodeRewardTracker()
         for earlier, tail in zip(emitted, pending, strict=True):
             blocks = earlier + tail
@@ -421,7 +421,7 @@ def test_final_flush_preserves_all_collected_starts(
             assert stored["value_targets"][count - 1] == stored["rewards"][-1]
         batch = replay.sample(min(8, len(replay)))
         assert torch.isfinite(batch.value_targets).all()
-        restored = FIFOReplayBuffer(2 * steps, unroll_steps=2, td_steps=2)
+        restored = FIFOReplayBuffer(2 * steps, unroll_steps=2)
         restored.load_state_dict(replay.state_dict())
         assert len(restored) == 2 * steps
         # Further collection neither re-emits starts nor resets game returns.
@@ -462,7 +462,7 @@ def test_flush_preserves_reanalysis_ids_for_existing_lookahead() -> None:
         emitted = worker.run(13)[0]
         pending = worker.flush()[0]
         assert [len(b) for b in emitted + pending] == [4, 4, 4, 1]
-        replay = FIFOReplayBuffer(20, unroll_steps=2, td_steps=2)
+        replay = FIFOReplayBuffer(20, unroll_steps=2)
         replay.extend(emitted + pending)
         # The first emitted block already references all nine pending states.
         # Flushing must retain their canonical IDs for reanalysis deduplication.
@@ -480,7 +480,7 @@ def test_flush_blocks_fit_original_block_capacity() -> None:
         assert worker.run(11) == ((),)
         blocks = worker.flush()[0]
         assert [len(block) for block in blocks] == [4, 4, 3]
-        replay = FIFOReplayBuffer(4, unroll_steps=2, td_steps=2)
+        replay = FIFOReplayBuffer(4, unroll_steps=2)
         assert replay.extend(blocks).added_transitions == 11
 
 

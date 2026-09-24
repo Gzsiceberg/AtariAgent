@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from hydra import compose, initialize_config_dir
+from hydra.errors import ConfigCompositionException
 
 from atariagent.training.config import (
     AugmentationConfig,
@@ -22,6 +23,25 @@ from atariagent.training.config import (
     target_network_update_due,
     visit_softmax_temperature,
 )
+
+
+def test_training_has_one_shared_horizon() -> None:
+    assert TrainingConfig().unroll_steps == 5
+    assert not hasattr(TrainingConfig(), "td_steps")
+    assert not hasattr(TrainingConfig(), "lstm_horizon")
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        default = compose(config_name="train_agent")
+        custom = compose(
+            config_name="train_agent", overrides=["training.unroll_steps=3"],
+        )
+        for removed in ("td_steps", "lstm_horizon"):
+            assert removed not in default.training
+            with pytest.raises(ConfigCompositionException):
+                compose(config_name="train_agent", overrides=[f"training.{removed}=3"])
+    assert default.training.unroll_steps == 5
+    assert custom.training.unroll_steps == 3
 
 
 def test_output_paths_are_derived_from_environment_id() -> None:

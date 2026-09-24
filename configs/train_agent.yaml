@@ -82,9 +82,8 @@ training:
   # keeping learner progress proportional to collected transitions.
   updates_per_iteration: 100
   batch_size: 256
+  # Shared learner unroll, TD bootstrap, and value-prefix LSTM horizon.
   unroll_steps: 5
-  td_steps: 5
-  lstm_horizon: 5
   # EfficientZero V2 uses TD values early/recently and MCTS root values for
   # stale replay states after the model has become reliable.
   value_target: mixed

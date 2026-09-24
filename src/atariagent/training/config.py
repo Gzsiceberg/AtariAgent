@@ -70,9 +70,8 @@ class TrainingConfig:
     visit_softmax_temperature_horizon: str = "collect_steps"
     updates_per_iteration: int = 100
     batch_size: int = 256
+    # Shared learner unroll, TD bootstrap, and value-prefix LSTM horizon.
     unroll_steps: int = 5
-    td_steps: int = 5
-    lstm_horizon: int = 5
     value_target: str = "mixed"
     mixed_value_start_step: int = 30_000
     mixed_value_threshold: int = 20_000

@@ -65,7 +65,6 @@ def test_replay_state_round_trip_restores_data_priorities_and_rng(
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=2,
-        td_steps=2,
         discount=0.5,
         seed=7,
     )
@@ -84,7 +83,6 @@ def test_replay_state_round_trip_restores_data_priorities_and_rng(
     restored = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=2,
-        td_steps=2,
         discount=0.5,
         seed=999,
     )
@@ -166,7 +164,7 @@ def test_replay_rejects_snapshot_without_initial_priorities(
 
 @pytest.mark.parametrize("truncated", [False, True])
 def test_nonterminal_td_tails_use_available_rewards_and_zero_bootstrap(truncated) -> None:
-    replay = FIFOReplayBuffer(10, unroll_steps=2, td_steps=3, discount=0.5)
+    replay = FIFOReplayBuffer(10, unroll_steps=3, discount=0.5)
     replay.add(make_trajectory(
         4, truncated=truncated, predicted_values=(10.0, 11.0, 12.0, 13.0),
     ))
@@ -186,7 +184,7 @@ def test_nonterminal_td_tails_use_available_rewards_and_zero_bootstrap(truncated
 
 
 def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:
-    replay = FIFOReplayBuffer(max_transitions=5, unroll_steps=2, td_steps=2)
+    replay = FIFOReplayBuffer(max_transitions=5, unroll_steps=2)
 
     replay.add(make_trajectory(3, block_id=0))
     result = replay.add(make_trajectory(3, block_id=1, initial_value=10))
@@ -281,7 +279,6 @@ def test_replay_can_skip_target_network_bootstrap_metadata() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=2,
-        td_steps=2,
         seed=3,
     )
     replay.add(make_trajectory(3, terminated=True))
@@ -303,7 +300,6 @@ def test_reanalysis_state_ids_share_real_states_across_block_overlap() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=20,
         unroll_steps=2,
-        td_steps=2,
         seed=1,
     )
     replay.add(make_trajectory(7, block_id=0, lookahead_steps=2))
@@ -361,18 +357,17 @@ def test_replay_builds_fixed_n_step_values_from_stored_root_values() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=3,
-        td_steps=2,
         discount=0.5,
         seed=3,
     )
-    replay.add(make_trajectory(3, terminated=True))
+    replay.add(make_trajectory(4, terminated=True))
 
-    batch = replay.sample(batch_size=3)
+    batch = replay.sample(batch_size=4)
     start_zero = int((batch.frames[:, 0, 0, 0, 0] == 0).nonzero().item())
 
     torch.testing.assert_close(
         batch.value_targets[start_zero],
-        torch.tensor([2.5, 3.5, 3.0, 0.0]),
+        torch.tensor([3.125, 4.5, 5.0, 4.0]),
     )
     torch.testing.assert_close(
         batch.value_mask[start_zero],
@@ -385,17 +380,16 @@ def test_replay_builds_fixed_n_step_values_from_stored_root_values() -> None:
         batch.value_bootstrap_mask[start_zero],
         torch.tensor([True, False, False, False]),
     )
-    assert batch.value_bootstrap_values[start_zero, 0] == 2.0
-    assert batch.value_bootstrap_discounts[start_zero, 0] == 0.25
+    assert batch.value_bootstrap_values[start_zero, 0] == 3.0
+    assert batch.value_bootstrap_discounts[start_zero, 0] == 0.125
     assert batch.value_bootstrap_frames is not None
-    assert batch.value_bootstrap_frames[start_zero, 0, 0, 0, 0] == 2
+    assert batch.value_bootstrap_frames[start_zero, 0, 0, 0, 0] == 3
 
 
 def test_replay_builds_value_targets_from_local_lookahead() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=6,
         unroll_steps=5,
-        td_steps=5,
         discount=0.5,
     )
     replay.add(make_trajectory(11, lookahead_steps=5))
@@ -418,21 +412,19 @@ def test_replay_builds_value_targets_from_local_lookahead() -> None:
     )
 
 
-def test_replay_requires_lookahead_to_cover_unroll_and_td_steps() -> None:
+def test_replay_requires_lookahead_to_cover_shared_horizon() -> None:
     trajectory = make_trajectory(5, lookahead_steps=2)
 
     with pytest.raises(ValueError, match="lookahead_steps"):
-        FIFOReplayBuffer(max_transitions=3, unroll_steps=3, td_steps=2).add(trajectory)
-    with pytest.raises(ValueError, match="lookahead_steps"):
-        FIFOReplayBuffer(max_transitions=3, unroll_steps=2, td_steps=3).add(trajectory)
+        FIFOReplayBuffer(max_transitions=3, unroll_steps=3).add(trajectory)
 
-    replay = FIFOReplayBuffer(max_transitions=3, unroll_steps=2, td_steps=2)
+    replay = FIFOReplayBuffer(max_transitions=3, unroll_steps=2)
     replay.add(trajectory)
     assert replay.sample(batch_size=1).action_mask.all()
 
 
 def test_replay_stores_compact_overlapping_frame_context() -> None:
-    replay = FIFOReplayBuffer(max_transitions=10, unroll_steps=1, td_steps=1, seed=1)
+    replay = FIFOReplayBuffer(max_transitions=10, unroll_steps=1, seed=1)
     replay.add(make_trajectory(2, stack_size=4))
 
     batch = replay.sample(batch_size=2)
@@ -447,7 +439,7 @@ def test_replay_stores_compact_overlapping_frame_context() -> None:
 
 def test_replay_unroll_uses_local_lookahead_transitions() -> None:
     trajectory = make_trajectory(7, lookahead_steps=5)
-    replay = FIFOReplayBuffer(max_transitions=10, unroll_steps=3, td_steps=3, seed=2)
+    replay = FIFOReplayBuffer(max_transitions=10, unroll_steps=3, seed=2)
     replay.add(trajectory)
 
     batch = replay.sample(batch_size=2)
@@ -468,7 +460,6 @@ def test_replay_unroll_uses_local_lookahead_transitions() -> None:
     value_replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=3,
-        td_steps=2,
         discount=0.5,
         seed=2,
     )
@@ -479,7 +470,7 @@ def test_replay_unroll_uses_local_lookahead_transitions() -> None:
     )
     torch.testing.assert_close(
         value_batch.value_targets[crossing_value_sample],
-        torch.tensor([4.25, 6.0, 7.75, 9.5]),
+        torch.tensor([5.0, 6.875, 8.75, 9.75]),
     )
     torch.testing.assert_close(
         value_batch.value_mask[crossing_value_sample],
@@ -490,17 +481,20 @@ def test_replay_unroll_uses_local_lookahead_transitions() -> None:
     assert value_batch.value_bootstrap_mask is not None
     torch.testing.assert_close(
         value_batch.value_bootstrap_values[crossing_value_sample],
-        torch.tensor([3.0, 4.0, 5.0, 6.0]),
+        torch.tensor([4.0, 5.0, 6.0, 0.0]),
     )
     torch.testing.assert_close(
         value_batch.value_bootstrap_discounts[crossing_value_sample],
-        torch.full((4,), 0.25),
+        torch.tensor([0.125, 0.125, 0.125, 0.0]),
     )
-    assert value_batch.value_bootstrap_mask[crossing_value_sample].all()
+    torch.testing.assert_close(
+        value_batch.value_bootstrap_mask[crossing_value_sample],
+        torch.tensor([True, True, True, False]),
+    )
     assert value_batch.value_bootstrap_frames is not None
     torch.testing.assert_close(
         value_batch.value_bootstrap_frames[crossing_value_sample, :, 0, 0, 0],
-        torch.tensor([3, 4, 5, 6], dtype=torch.uint8),
+        torch.tensor([4, 5, 6, 7], dtype=torch.uint8),
     )
 
 
@@ -509,7 +503,7 @@ def reference_value_targets(
     position: int,
     *,
     target_count: int,
-    td_steps: int,
+    unroll_steps: int,
     discount: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     values = np.zeros(target_count, dtype=np.float32)
@@ -523,7 +517,7 @@ def reference_value_targets(
             continue
         if target_position >= stored_count:
             continue
-        bootstrap_position = target_position + td_steps
+        bootstrap_position = target_position + unroll_steps
         reward_end = min(bootstrap_position, stored_count)
         reward_return = sum(
             discount**step * trajectory.rewards[target_position + step]
@@ -531,7 +525,7 @@ def reference_value_targets(
         )
         if bootstrap_position < stored_count:
             reward_return += (
-                discount**td_steps
+                discount**unroll_steps
                 * trajectory.search_results[bootstrap_position].root_value
             )
             bootstrap_mask[offset] = True
@@ -554,8 +548,7 @@ def test_precomputed_values_match_reference_for_boundary_types(
 ) -> None:
     replay = FIFOReplayBuffer(
         10,
-        unroll_steps=2,
-        td_steps=3,
+        unroll_steps=3,
         discount=0.5,
         seed=5,
     )
@@ -568,8 +561,8 @@ def test_precomputed_values_match_reference_for_boundary_types(
         expected_values, expected_valid, expected_bootstrap = reference_value_targets(
             trajectory,
             position,
-            target_count=3,
-            td_steps=3,
+            target_count=4,
+            unroll_steps=3,
             discount=0.5,
         )
         np.testing.assert_allclose(
@@ -588,7 +581,6 @@ def test_prioritized_replay_matches_efficientzero_v1_atari() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
-        td_steps=1,
         seed=4,
     )
     replay.add(make_trajectory(3, terminated=True))
@@ -618,7 +610,6 @@ def test_prioritized_replay_clips_weights(clip, alpha, beta) -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
-        td_steps=1,
         priority_weight_clip=clip,
         priority_alpha=alpha,
         priority_beta=0.2,
@@ -674,7 +665,6 @@ def test_insertion_uses_v2_maximum_but_preserves_individual_errors(priority_weig
     replay = FIFOReplayBuffer(
         max_transitions=10,
         unroll_steps=1,
-        td_steps=1,
         discount=0.5,
         priority_weight_clip=priority_weight_clip,
         priority_epsilon=1e-6,
@@ -712,8 +702,7 @@ def test_insertion_uses_v2_maximum_but_preserves_individual_errors(priority_weig
 def test_initial_priorities_handle_terminal_tail_and_zero_error(priority_weight_clip: float) -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
-        unroll_steps=1,
-        td_steps=2,
+        unroll_steps=2,
         discount=0.5,
         priority_weight_clip=priority_weight_clip,
         priority_epsilon=1e-6,
@@ -731,7 +720,7 @@ def test_initial_priorities_handle_terminal_tail_and_zero_error(priority_weight_
     np.testing.assert_array_equal(replay.priorities, [1.0, 1.0, 1.0])
 
     restored = FIFOReplayBuffer(
-        max_transitions=10, unroll_steps=1, td_steps=2,
+        max_transitions=10, unroll_steps=2,
         discount=0.5, priority_weight_clip=priority_weight_clip, priority_epsilon=1e-6,
     )
     restored.load_state_dict(replay.state_dict())
@@ -742,7 +731,6 @@ def test_first_replay_transitions_use_maximum_error_above_one() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=2,
         unroll_steps=1,
-        td_steps=1,
         discount=0.5,
         priority_epsilon=1e-6,
     )
@@ -774,7 +762,7 @@ def test_first_replay_transitions_use_maximum_error_above_one() -> None:
 @pytest.mark.parametrize("use_max_priority", [False, True])
 def test_maximum_insertion_branches(priority_weight_clip, capacity, existing, errors, expected, use_max_priority):
     replay = FIFOReplayBuffer(
-        max_transitions=capacity, unroll_steps=1, td_steps=1,
+        max_transitions=capacity, unroll_steps=1,
         discount=0.0, priority_weight_clip=priority_weight_clip, priority_epsilon=1e-6,
         use_max_priority=use_max_priority,
     )
@@ -803,7 +791,7 @@ def test_maximum_insertion_branches(priority_weight_clip, capacity, existing, er
 @pytest.mark.parametrize("use_max_priority", [False, True])
 def test_maximum_insertion_extends_sequentially_and_survives_restore(priority_weight_clip, use_max_priority):
     replay = FIFOReplayBuffer(
-        max_transitions=10, unroll_steps=1, td_steps=1, discount=0.0,
+        max_transitions=10, unroll_steps=1, discount=0.0,
         priority_weight_clip=priority_weight_clip, use_max_priority=use_max_priority,
     )
     replay.extend([
@@ -816,7 +804,7 @@ def test_maximum_insertion_extends_sequentially_and_survives_restore(priority_we
     # Restore current priorities verbatim, not original insertion errors.
     replay.update_priorities(range(4), [0.1, 0.2, 0.3, 0.4])
     restored = FIFOReplayBuffer(
-        max_transitions=10, unroll_steps=1, td_steps=1, discount=0.0,
+        max_transitions=10, unroll_steps=1, discount=0.0,
         priority_weight_clip=priority_weight_clip, use_max_priority=use_max_priority,
     )
     restored.load_state_dict(replay.state_dict())
@@ -843,8 +831,7 @@ def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
     [
         ("unroll_steps", 0, ValueError),
         ("unroll_steps", True, TypeError),
-        ("td_steps", 0, ValueError),
-        ("td_steps", 1.5, TypeError),
+        ("unroll_steps", 1.5, TypeError),
         ("discount", -0.1, ValueError),
         ("discount", 1.1, ValueError),
         ("discount", float("nan"), ValueError),
@@ -871,7 +858,7 @@ def test_replay_validates_fixed_target_configuration(
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_replay_can_construct_batches_in_pinned_memory() -> None:
-    replay = FIFOReplayBuffer(3, unroll_steps=1, td_steps=1)
+    replay = FIFOReplayBuffer(3, unroll_steps=1)
     replay.add(make_trajectory(2, terminated=True))
 
     batch = replay.sample(2, pin_memory=True)
@@ -891,11 +878,10 @@ def test_replay_can_construct_batches_in_pinned_memory() -> None:
 
 
 def test_replay_sample_does_not_accept_target_configuration_overrides() -> None:
-    replay = FIFOReplayBuffer(3, unroll_steps=1, td_steps=1, discount=0.5)
+    replay = FIFOReplayBuffer(3, unroll_steps=1, discount=0.5)
     replay.add(make_trajectory(1, terminated=True))
 
     assert replay.unroll_steps == 1
-    assert replay.td_steps == 1
     assert replay.discount == 0.5
     with pytest.raises(AttributeError):
         replay.unroll_steps = 2  # type: ignore[misc]
@@ -904,7 +890,7 @@ def test_replay_sample_does_not_accept_target_configuration_overrides() -> None:
 
 
 def test_replay_prepares_read_only_contiguous_targets_on_add() -> None:
-    replay = FIFOReplayBuffer(3, unroll_steps=2, td_steps=2, discount=0.5)
+    replay = FIFOReplayBuffer(3, unroll_steps=2, discount=0.5)
     replay.add(make_trajectory(3, terminated=True))
 
     stored = replay._trajectories[0]
@@ -925,7 +911,7 @@ def test_replay_prepares_read_only_contiguous_targets_on_add() -> None:
 
 
 def test_failed_trajectory_preparation_does_not_evict_existing_data() -> None:
-    replay = FIFOReplayBuffer(2, unroll_steps=1, td_steps=1, seed=1)
+    replay = FIFOReplayBuffer(2, unroll_steps=1, seed=1)
     replay.add(make_trajectory(2, terminated=True))
     invalid = make_trajectory(
         2,
@@ -954,7 +940,7 @@ def test_failed_trajectory_preparation_does_not_evict_existing_data() -> None:
 
 def test_timeout_trains_available_returns_with_zero_bootstrap() -> None:
     replay = FIFOReplayBuffer(
-        10, unroll_steps=2, td_steps=3, discount=0.5,
+        10, unroll_steps=3, discount=0.5,
     )
     trajectory = make_trajectory(4, truncated=True)
     replay.add(trajectory)
@@ -968,7 +954,7 @@ def test_timeout_trains_available_returns_with_zero_bootstrap() -> None:
         position = int(batch.frames[i, 0, 0, 0, 0])
         values, valid, bootstrap = reference_value_targets(
             trajectory, position,
-            target_count=3, td_steps=3, discount=0.5,
+            target_count=4, unroll_steps=3, discount=0.5,
         )
         np.testing.assert_allclose(batch.value_targets[i], values)
         np.testing.assert_array_equal(batch.value_mask[i], valid)
@@ -977,7 +963,7 @@ def test_timeout_trains_available_returns_with_zero_bootstrap() -> None:
 
 @pytest.mark.parametrize("length", [1, 4, 8])
 def test_v1_timeout_targets_match_terminal_targets(length: int) -> None:
-    options = dict(max_transitions=20, unroll_steps=2, td_steps=3, discount=0.5)
+    options = dict(max_transitions=20, unroll_steps=3, discount=0.5)
     replay = FIFOReplayBuffer(**options, treat_truncations_as_terminal=True)
     terminal_replay = FIFOReplayBuffer(**options)
     replay.add(make_trajectory(length, truncated=True))

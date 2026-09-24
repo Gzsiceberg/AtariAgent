@@ -87,11 +87,9 @@ class Consistency(nn.Module):
         return state, target
 
 
-@pytest.mark.parametrize("horizon,expected_steps", [(1, 2), (2, 1)])
+@pytest.mark.parametrize("unroll_steps", [1, 2, 5])
 @pytest.mark.parametrize("weight", [0.0, 0.7])
-def test_unroll_prefix_resets_weighting_padding_and_disabled(
-    horizon, expected_steps, weight
-):
+def test_shared_unroll_prefix_weighting_padding_and_disabled(unroll_steps, weight):
     unroll = _LearnerUnroll(
         Representation(),
         Dynamics(),
@@ -99,8 +97,7 @@ def test_unroll_prefix_resets_weighting_padding_and_disabled(
         Consistency(),
         None,
         observation_dtype=torch.float32,
-        unroll_steps=2,
-        lstm_horizon=horizon,
+        unroll_steps=unroll_steps,
         policy_weight=0.0,
         value_weight=0.0,
         reward_weight=0.0,
@@ -112,22 +109,21 @@ def test_unroll_prefix_resets_weighting_padding_and_disabled(
         priority_epsilon=1e-6,
     )
     outputs = unroll(
-        torch.zeros(2, 3, 1, 1, 1, dtype=torch.uint8),
-        torch.zeros(2, 2, 1, dtype=torch.long),
-        torch.zeros(2, 2),
-        torch.full((2, 3, 2), 0.5),
-        torch.zeros(2, 3),
-        torch.tensor([[True, True], [False, False]]),
-        torch.ones(2, 3, dtype=torch.bool),
-        torch.ones(2, 3, dtype=torch.bool),
+        torch.zeros(2, unroll_steps + 1, 1, 1, 1, dtype=torch.uint8),
+        torch.zeros(2, unroll_steps, 1, dtype=torch.long),
+        torch.zeros(2, unroll_steps),
+        torch.full((2, unroll_steps + 1, 2), 0.5),
+        torch.zeros(2, unroll_steps + 1),
+        torch.tensor([[True], [False]]).expand(-1, unroll_steps),
+        torch.ones(2, unroll_steps + 1, dtype=torch.bool),
         torch.tensor([0.4, 1.0]),
     )
     # Only the first sample is valid; importance weighting and 1/unroll_steps
     # apply to the objective, but not to the logged valid-action mean.
     assert outputs[0].item() == pytest.approx(
-        weight * expected_steps * math.log(2) * 0.4 / 4
+        weight * math.log(2) * 0.4 / (2 * unroll_steps)
     )
     assert outputs[5][4].item() == pytest.approx(
-        expected_steps * math.log(2) / 2 if weight else 0.0
+        math.log(2) / unroll_steps if weight else 0.0
     )
     outputs[0].backward()

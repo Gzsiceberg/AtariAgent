@@ -112,7 +112,6 @@ def test_agent_train_step_updates_all_supervised_output_heads() -> None:
         prediction,
         consistency_network=consistency,
         unroll_steps=1,
-        lstm_horizon=1,
     )
     policy_output = prediction.policy.projection[-1]
     value_output = prediction.value.projection[-1]
@@ -298,7 +297,6 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         momentum=0.0,
         weight_decay=0.0,
         unroll_steps=2,
-        lstm_horizon=2,
         support_min=0,
         support_max=1,
         max_gradient_norm=100.0,
@@ -379,7 +377,6 @@ def test_logged_losses_ignore_importance_weights_and_padding(
         _ScalarPrediction(),
         consistency_network=_AlignedConsistency(),
         unroll_steps=2,
-        lstm_horizon=2,
         support_min=0,
         support_max=1,
     )
@@ -442,7 +439,6 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
         consistency_network=_ZeroConsistency(),
         learning_rate=0.1,
         unroll_steps=2,
-        lstm_horizon=2,
         policy_weight=1.0,
         value_weight=0.0,
         reward_weight=0.0,
@@ -474,15 +470,13 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
     assert representation.weight.grad == pytest.approx(-0.1875)
 
 
-@pytest.mark.parametrize("lstm_horizon", [1, 2])
-def test_agent_logs_mean_absolute_error(lstm_horizon: int) -> None:
+def test_agent_logs_mean_absolute_error() -> None:
     trainer = Trainer(
         RepresentationNetwork(4),
         DynamicsNetwork(action_space_size=3),
         PredictionNetwork(action_space_size=3),
         consistency_network=_ZeroConsistency(),
         unroll_steps=2,
-        lstm_horizon=lstm_horizon,
     )
     batch = ReplayBatch(
         frames=torch.randint(0, 256, (2, 6, 1, 96, 96), dtype=torch.uint8),
@@ -504,7 +498,7 @@ def test_agent_logs_mean_absolute_error(lstm_horizon: int) -> None:
     # Uniform symmetric-support logits decode to zero before the update.
     # Positive and negative targets contribute equally to MAE.
     assert metrics.value_loss == pytest.approx(2.0)
-    assert metrics.reward_loss == pytest.approx(1.5 if lstm_horizon == 1 else 2.0)
+    assert metrics.reward_loss == pytest.approx(2.0)
     assert metrics.consistency_loss == 0.0
     assert metrics.search_target_entropy == pytest.approx(
         torch.log(torch.tensor(3.0)).item()

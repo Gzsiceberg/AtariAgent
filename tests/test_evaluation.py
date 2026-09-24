@@ -118,7 +118,10 @@ def test_evaluate_agent_rejects_invalid_parallelism() -> None:
 
 @pytest.mark.parametrize("precision", [None, "fp32", "bf16"])
 @pytest.mark.parametrize("action_embedding", [None, True, False])
-def test_load_agent_checkpoint_applies_search_overrides(monkeypatch, precision, action_embedding) -> None:
+@pytest.mark.parametrize("unroll_steps", [2, 5])
+def test_load_agent_checkpoint_applies_search_overrides(
+    monkeypatch, precision, action_embedding, unroll_steps,
+) -> None:
     checkpoint = {
         "config": {
             "environment": {
@@ -130,7 +133,7 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch, precision, 
                 "num_simulations": 16,
                 "search_algorithm": "gumbel",
             },
-            "training": {"discount": 0.997, "lstm_horizon": 5},
+            "training": {"discount": 0.997, "unroll_steps": unroll_steps},
         },
         "representation": {},
         "dynamics": {},
@@ -182,6 +185,7 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch, precision, 
     assert agent.precision == (precision or "fp32")
     assert agent.search_config.search_algorithm == "puct"
     assert agent.search_config.num_simulations == 50
+    assert agent.search_config.value_prefix_horizon == unroll_steps
     assert saved_config is checkpoint["config"]
 
     gumbel_agent, _ = load_agent_checkpoint(
@@ -193,6 +197,7 @@ def test_load_agent_checkpoint_applies_search_overrides(monkeypatch, precision, 
     assert gumbel_agent.search_config.search_algorithm == "gumbel"
     assert gumbel_agent.search_config.num_simulations == 16
     assert gumbel_agent.search_config.num_top_actions == 8
+    assert gumbel_agent.search_config.value_prefix_horizon == unroll_steps
 
 
 def test_evaluation_history_writes_json_and_plot(tmp_path) -> None:

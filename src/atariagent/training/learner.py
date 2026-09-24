@@ -70,7 +70,6 @@ class _LearnerUnroll(nn.Module):
         *,
         observation_dtype: torch.dtype,
         unroll_steps: int,
-        lstm_horizon: int,
         policy_weight: float,
         value_weight: float,
         reward_weight: float,
@@ -89,7 +88,6 @@ class _LearnerUnroll(nn.Module):
         self.augmentation = augmentation
         self.observation_dtype = observation_dtype
         self.unroll_steps = unroll_steps
-        self.lstm_horizon = lstm_horizon
         self.policy_weight = policy_weight
         self.value_weight = value_weight
         self.reward_weight = reward_weight
@@ -273,15 +271,8 @@ class _LearnerUnroll(nn.Module):
         stack_size = frames.shape[1] - self.unroll_steps
         observations, target_frames = self._prepare_observations(frames)
 
-        prefix = torch.zeros_like(rewards[:, 0])
-        prefix_targets: list[Tensor] = []
-        for step in range(self.unroll_steps):
-            prefix = prefix + rewards[:, step] * action_mask[:, step].to(
-                rewards.dtype
-            )
-            prefix_targets.append(prefix)
-            if (step + 1) % self.lstm_horizon == 0:
-                prefix = torch.zeros_like(prefix)
+        # The LSTM starts fresh for each unroll and never resets inside it.
+        prefix_targets = (rewards * action_mask.to(rewards.dtype)).cumsum(dim=1)
 
         recurrent_policy_loss = observations.new_zeros(batch_size)
         recurrent_value_loss = observations.new_zeros(batch_size)
@@ -333,12 +324,12 @@ class _LearnerUnroll(nn.Module):
                 state, action_mask[:, step]
             ) * action_mask[:, step].sum()
             reward_error += (
-                (self._decode_values(value_prefix_logits) - prefix_targets[step]).abs()
+                (self._decode_values(value_prefix_logits) - prefix_targets[:, step]).abs()
                 * action_mask[:, step]
             ).sum()
             recurrent_reward_loss += ReplayBatch._scalar_loss(
                 value_prefix_logits,
-                prefix_targets[step],
+                prefix_targets[:, step],
                 support_min=self.support_min,
                 support_max=self.support_max,
             ) * action_mask[:, step].to(value_prefix_logits.dtype)
@@ -346,7 +337,7 @@ class _LearnerUnroll(nn.Module):
             policy_logits, value_logits = self.prediction(state)
             if self.behavior_regularization_weight > 0.0:
                 predicted_prefix = self._decode_values(value_prefix_logits)
-                # The reward head predicts a prefix, reset with the LSTM horizon.
+                # The reward head predicts a prefix over this entire unroll.
                 predicted_reward = predicted_prefix - previous_prefix
                 behavior_loss += self._behavior_loss(
                     behavior_logits,
@@ -357,11 +348,7 @@ class _LearnerUnroll(nn.Module):
                     action_mask[:, step],
                     self.discount,
                 )
-                previous_prefix = (
-                    torch.zeros_like(predicted_prefix)
-                    if (step + 1) % self.lstm_horizon == 0
-                    else predicted_prefix
-                )
+                previous_prefix = predicted_prefix
             step_policy_loss, step_value_loss = self._prediction_losses(
                 policy_logits,
                 value_logits,
@@ -397,9 +384,6 @@ class _LearnerUnroll(nn.Module):
             recurrent_consistency_loss += consist_loss_func(
                 predicted_projection, target_projection
             ) * action_mask[:, step].to(predicted_projection.dtype)
-
-            if (step + 1) % self.lstm_horizon == 0:
-                hidden = None
 
         loss_scale = 1.0 / self.unroll_steps
         sample_weights = importance_weights.to(root_policy_loss.dtype)
@@ -460,6 +444,7 @@ class Trainer:
     """Train all agent networks from :class:`ReplayBatch` self-play data.
 
     Root and recurrent losses are summed and scaled by ``1 / unroll_steps``.
+    The value-prefix LSTM runs for the same horizon, starting fresh per unroll.
     Recurrent latent-state gradients are halved following EfficientZero.
     Replay batches already contain asynchronously refreshed value and policy
     targets. Recurrent dynamics states are aligned with stop-gradient
@@ -489,7 +474,6 @@ class Trainer:
         steps: int = 100_000,
         final_steps: int = 20_000,
         unroll_steps: int = 5,
-        lstm_horizon: int = 5,
         policy_weight: float = 1.0,
         value_weight: float = 0.25,
         reward_weight: float = 1.0,
@@ -513,10 +497,10 @@ class Trainer:
             )
         if not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be in [0, 1]")
+        if isinstance(unroll_steps, bool) or not isinstance(unroll_steps, int):
+            raise TypeError("unroll_steps must be an integer")
         if unroll_steps <= 0:
             raise ValueError("unroll_steps must be positive")
-        if lstm_horizon <= 0:
-            raise ValueError("lstm_horizon must be positive")
         if augmentation_shift_delta < 0:
             raise ValueError("augmentation_shift_delta must be non-negative")
         if augmentation_intensity_scale < 0.0:
@@ -600,7 +584,6 @@ class Trainer:
         self.consistency_network = consistency_network
         self._unroll: nn.Module
         self.unroll_steps = unroll_steps
-        self.lstm_horizon = lstm_horizon
         self.policy_weight = policy_weight
         self.value_weight = value_weight
         self.reward_weight = reward_weight
@@ -648,7 +631,6 @@ class Trainer:
             # In particular, intensity noise must also be sampled in FP32.
             observation_dtype=torch.float32,
             unroll_steps=unroll_steps,
-            lstm_horizon=lstm_horizon,
             policy_weight=policy_weight,
             value_weight=value_weight,
             reward_weight=reward_weight,

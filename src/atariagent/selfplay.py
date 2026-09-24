@@ -133,14 +133,13 @@ class GameTrajectory:
         """Return all stored transitions, including lookahead context."""
         return len(self.actions)
 
-    def validate_lookahead(self, unroll_steps: int, td_steps: int) -> None:
-        """Ensure a complete nonterminal tail covers both replay horizons."""
-        required_steps = max(unroll_steps, td_steps)
+    def validate_lookahead(self, unroll_steps: int) -> None:
+        """Ensure a complete tail covers the shared unroll/bootstrap horizon."""
         if (
             self.lookahead_steps == 0
             or self.terminated
             or self.truncated
-            or self.lookahead_steps >= required_steps
+            or self.lookahead_steps >= unroll_steps
         ):
             # Terminal blocks need no bootstrap. A zero-lookahead block may be
             # incomplete; replay uses available rewards with zero continuation
@@ -148,8 +147,8 @@ class GameTrajectory:
             return
         raise ValueError(
             "trajectory lookahead_steps must be greater than or equal to "
-            f"unroll_steps and td_steps; got {self.lookahead_steps}, "
-            f"unroll_steps={unroll_steps}, td_steps={td_steps}"
+            f"unroll_steps; got {self.lookahead_steps}, "
+            f"unroll_steps={unroll_steps}"
         )
 
     @property

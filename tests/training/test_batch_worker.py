@@ -166,7 +166,7 @@ def test_worker_assigns_invalid_roots_minimum_valid_priority(valid_roots) -> Non
 def test_worker_updates_priorities_for_timeout_and_terminal_tails(
     terminated: bool,
 ) -> None:
-    replay = FIFOReplayBuffer(4, unroll_steps=1, td_steps=2)
+    replay = FIFOReplayBuffer(4, unroll_steps=2)
     replay.add(GameTrajectory(
         environment_index=0, episode_id=0, block_id=0, stack_size=1,
         frames=tuple(np.zeros((1, 2, 2), dtype=np.uint8) for _ in range(5)),

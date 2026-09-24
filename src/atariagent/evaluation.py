@@ -229,7 +229,7 @@ def load_agent_checkpoint(
         discount = float(training_config["discount"]) ** int(
             environment_config["frame_skip"]
         )
-        lstm_horizon = int(training_config["lstm_horizon"])
+        unroll_steps = int(training_config["unroll_steps"])
         # Checkpoints predating ModelConfig used the learned action embedding.
         model_config = config.get("model", {})
         if not isinstance(model_config, Mapping):
@@ -265,7 +265,7 @@ def load_agent_checkpoint(
         search_config=SearchConfig(
             num_simulations=num_simulations,
             discount=discount,
-            value_prefix_horizon=lstm_horizon,
+            value_prefix_horizon=unroll_steps,
             search_algorithm=search_algorithm,
             num_top_actions=num_top_actions,
             c_visit=c_visit,

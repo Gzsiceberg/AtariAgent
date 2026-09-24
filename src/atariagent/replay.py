@@ -67,8 +67,9 @@ class FIFOReplayBuffer:
     independently of the sampling mode.
     V1 uses configurable alpha/beta and unfloored importance weights;
     V2 forces alpha=beta=1 and a 0.1 normalized importance-weight floor.
-    Trailing lookahead transitions remain local target context and are not
-    replay starts. Reanalysis remains outside this buffer.
+    ``unroll_steps`` also sets the TD-bootstrap horizon. Trailing lookahead
+    transitions remain local target context and are not replay starts.
+    Reanalysis remains outside this buffer.
     """
 
     def __init__(
@@ -76,7 +77,6 @@ class FIFOReplayBuffer:
         max_transitions: int,
         *,
         unroll_steps: int = 5,
-        td_steps: int = 5,
         discount: float = 0.997,
         priority_weight_clip: float = 0.0,
         use_max_priority: bool = False,
@@ -90,14 +90,10 @@ class FIFOReplayBuffer:
             raise TypeError("max_transitions must be an integer")
         if max_transitions <= 0:
             raise ValueError("max_transitions must be positive")
-        for value, name in (
-            (unroll_steps, "unroll_steps"),
-            (td_steps, "td_steps"),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise TypeError(f"{name} must be an integer")
-            if value <= 0:
-                raise ValueError(f"{name} must be positive")
+        if isinstance(unroll_steps, bool) or not isinstance(unroll_steps, int):
+            raise TypeError("unroll_steps must be an integer")
+        if unroll_steps <= 0:
+            raise ValueError("unroll_steps must be positive")
         if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be finite and in [0, 1]")
         if not isinstance(treat_truncations_as_terminal, bool):
@@ -116,7 +112,6 @@ class FIFOReplayBuffer:
 
         self.max_transitions = max_transitions
         self._unroll_steps = unroll_steps
-        self._td_steps = td_steps
         self._discount = float(discount)
         self._priority_weight_clip = float(priority_weight_clip)
         self._use_max_priority = use_max_priority
@@ -125,9 +120,9 @@ class FIFOReplayBuffer:
         self._priority_beta = float(priority_beta)
         self._priority_epsilon = float(priority_epsilon)
         self._reward_discounts = self.discount ** np.arange(
-            self.td_steps, dtype=np.float64
+            self.unroll_steps, dtype=np.float64
         )
-        self._bootstrap_discount = float(self.discount**self.td_steps)
+        self._bootstrap_discount = float(self.discount**self.unroll_steps)
         self._trajectories: deque[_StoredTrajectory] = deque()
         self._reanalysis_state_ids: deque[np.ndarray] = deque()
         self._reanalysis_state_registry: dict[
@@ -155,10 +150,6 @@ class FIFOReplayBuffer:
     @property
     def unroll_steps(self) -> int:
         return self._unroll_steps
-
-    @property
-    def td_steps(self) -> int:
-        return self._td_steps
 
     @property
     def discount(self) -> float:
@@ -203,7 +194,6 @@ class FIFOReplayBuffer:
             "treat_truncations_as_terminal": self._treat_truncations_as_terminal,
             "max_transitions": self.max_transitions,
             "unroll_steps": self.unroll_steps,
-            "td_steps": self.td_steps,
             "discount": self.discount,
             "priority_epsilon": self._priority_epsilon,
             "trajectories": [
@@ -229,7 +219,6 @@ class FIFOReplayBuffer:
         expected_configuration = {
             "max_transitions": self.max_transitions,
             "unroll_steps": self.unroll_steps,
-            "td_steps": self.td_steps,
             "discount": self.discount,
             "priority_epsilon": self._priority_epsilon,
         }
@@ -354,7 +343,7 @@ class FIFOReplayBuffer:
             raise ValueError("trajectory identity already exists in replay")
 
         # Preparation and all validation happen before replay state is mutated.
-        trajectory.validate_lookahead(self.unroll_steps, self.td_steps)
+        trajectory.validate_lookahead(self.unroll_steps)
         stored = self._prepare_trajectory(trajectory)
         action_space_size = int(stored.policy_targets.shape[1])
         frame_shape = tuple(stored.frames.shape[1:])
@@ -642,16 +631,16 @@ class FIFOReplayBuffer:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Precompute fixed-horizon values for every stored state."""
         stored_count = int(rewards.shape[0])
-        bootstrap_count = max(0, stored_count - self.td_steps)
+        bootstrap_count = max(0, stored_count - self.unroll_steps)
         values64 = np.zeros(stored_count + 1, dtype=np.float64)
         valid_mask = np.zeros(stored_count + 1, dtype=np.bool_)
 
         # Match EZ V2: missing future values zero only the bootstrap term,
         # not the whole value loss. Tail targets use all available rewards,
         # including for unfinished blocks drained at the collection budget.
-        padded_rewards = np.pad(rewards, (0, self.td_steps - 1))
+        padded_rewards = np.pad(rewards, (0, self.unroll_steps - 1))
         reward_windows = np.lib.stride_tricks.sliding_window_view(
-            padded_rewards, self.td_steps
+            padded_rewards, self.unroll_steps
         )[:stored_count]
         values64[:stored_count] = reward_windows @ self._reward_discounts
         valid_mask[:stored_count] = True
@@ -662,7 +651,7 @@ class FIFOReplayBuffer:
         if bootstrap_count:
             values64[:bootstrap_count] += (
                 self._bootstrap_discount
-                * root_values[self.td_steps : self.td_steps + bootstrap_count]
+                * root_values[self.unroll_steps : self.unroll_steps + bootstrap_count]
             )
         return values64.astype(np.float32), valid_mask
 
@@ -753,7 +742,7 @@ class FIFOReplayBuffer:
             "reanalysis_frames": (
                 (
                     batch_size,
-                    self._stack_size + self.unroll_steps + self.td_steps,
+                    self._stack_size + 2 * self.unroll_steps,
                     *self._frame_shape,
                 ),
                 np.dtype(np.uint8),
@@ -825,7 +814,7 @@ class FIFOReplayBuffer:
             frame_count = self._stack_size + self.unroll_steps
             arrays["frames"] = shared_frames[:, :frame_count]
             arrays["value_bootstrap_frames"] = shared_frames[
-                :, self.td_steps : self.td_steps + frame_count
+                :, self.unroll_steps : self.unroll_steps + frame_count
             ]
         return arrays
 
@@ -998,7 +987,7 @@ class FIFOReplayBuffer:
                 assert value_bootstrap_discounts is not None
                 assert value_bootstrap_mask is not None
                 assert value_bootstrap_state_ids is not None
-                bootstrap_start = start + self.td_steps
+                bootstrap_start = start + self.unroll_steps
                 bootstrap_count = min(
                     state_count, max(0, stored_count - bootstrap_start)
                 )

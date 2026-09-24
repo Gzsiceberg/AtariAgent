@@ -529,7 +529,7 @@ def main(config: TrainAgentConfig) -> None:
             search_config=SearchConfig(
                 num_simulations=config.self_play.num_simulations,
                 discount=discount,
-                value_prefix_horizon=config.training.lstm_horizon,
+                value_prefix_horizon=config.training.unroll_steps,
                 search_algorithm=config.self_play.search_algorithm,
                 root_exploration_fraction=(
                     config.self_play.root_exploration_fraction
@@ -570,7 +570,6 @@ def main(config: TrainAgentConfig) -> None:
             steps=config.training.steps,
             final_steps=config.training.final_steps,
             unroll_steps=config.training.unroll_steps,
-            lstm_horizon=config.training.lstm_horizon,
             policy_weight=config.loss.policy_weight,
             value_weight=config.loss.value_weight,
             reward_weight=config.loss.reward_weight,
@@ -586,7 +585,6 @@ def main(config: TrainAgentConfig) -> None:
         replay = FIFOReplayBuffer(
             config.replay.max_transitions,
             unroll_steps=config.training.unroll_steps,
-            td_steps=config.training.td_steps,
             discount=discount,
             priority_weight_clip=config.replay.priority_weight_clip,
             use_max_priority=config.replay.use_max_priority,
@@ -894,10 +892,7 @@ def main(config: TrainAgentConfig) -> None:
             environments=environments,
             frame_stack=config.environment.frame_stack,
             trajectory_length=config.self_play.trajectory_length,
-            lookahead_steps=max(
-                config.training.unroll_steps,
-                config.training.td_steps,
-            ),
+            lookahead_steps=config.training.unroll_steps,
             base_seed=config.seed,
             clip_rewards=config.self_play.clip_rewards,
         ) as worker:
