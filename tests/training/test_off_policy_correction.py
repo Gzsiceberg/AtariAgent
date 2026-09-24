@@ -13,7 +13,7 @@ def _batch() -> ReplayBatch:
         rewards=torch.zeros(2, 1),
         policy_targets=torch.tensor([[[0.5, 0.5], [0.5, 0.5]], [[0.5, 0.5], [0.0, 0.0]]]),
         value_targets=torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
-        action_mask=torch.ones(2, 1, dtype=torch.bool),
+        reachable_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.tensor([10, 11]),
         importance_weights=torch.ones(2),
         search_value_targets=torch.tensor([[10.0, 20.0], [30.0, 0.0]]),
@@ -139,7 +139,7 @@ def test_search_values_use_zero_at_block_endpoint_not_td_fallback() -> None:
 
 @pytest.mark.parametrize("mode", ["td", "mixed", "search"])
 def test_value_loss_mask_requires_an_original_block_policy_target(mode) -> None:
-    batch = replace(_batch(), action_mask=torch.tensor([[False], [True]]))
+    batch = replace(_batch(), reachable_mask=torch.tensor([[True, False], [True, True]]))
     selected = batch.with_selected_value_targets(
         mode=mode,
         learner_step=30_000,

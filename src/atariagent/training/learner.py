@@ -261,7 +261,7 @@ class _LearnerUnroll(nn.Module):
         rewards: Tensor,
         policy_targets: Tensor,
         value_targets: Tensor,
-        action_mask: Tensor,
+        reachable_mask: Tensor,
         importance_weights: Tensor,
     ) -> tuple[Tensor, ...]:
         """Return losses, replay priorities, and policy diagnostics."""
@@ -269,10 +269,8 @@ class _LearnerUnroll(nn.Module):
         # Search targets exist only inside the original block. Recorded
         # lookahead transitions still train reward/consistency, but neither
         # their policy nor value predictions receive direct supervision.
-        reachable = torch.cat(
-            (torch.ones_like(action_mask[:, :1]), action_mask), dim=1
-        )
-        policy_mask = (policy_targets.sum(dim=-1) > 0) & reachable
+        action_mask = reachable_mask[:, 1:]
+        policy_mask = (policy_targets.sum(dim=-1) > 0) & reachable_mask
         value_mask = policy_mask
         behavior_mask = action_mask & policy_mask[:, :-1]
         stack_size = frames.shape[1] - self.unroll_steps
@@ -712,7 +710,7 @@ class Trainer:
                 batch.rewards,
                 batch.policy_targets,
                 batch.value_targets,
-                batch.action_mask,
+                batch.reachable_mask,
                 batch.importance_weights,
             )
             (
@@ -819,6 +817,10 @@ class Trainer:
             raise ValueError("policy_targets has an invalid shape")
         if batch.value_targets.shape != target_shape:
             raise ValueError("value_targets has an invalid shape")
+        if batch.reachable_mask.shape != target_shape:
+            raise ValueError("reachable_mask has an invalid shape")
+        if batch.reachable_mask.dtype != torch.bool:
+            raise ValueError("reachable_mask must have boolean dtype")
         bootstrap_metadata = (
             batch.value_bootstrap_frames,
             batch.value_bootstrap_values,

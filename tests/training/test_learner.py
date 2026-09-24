@@ -135,7 +135,7 @@ def test_agent_train_step_updates_all_supervised_output_heads() -> None:
             ]
         ),
         value_targets=torch.tensor([[1.0, 0.5], [-1.0, -0.5]]),
-        action_mask=torch.ones(2, 1, dtype=torch.bool),
+        reachable_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
         value_bootstrap_frames=torch.randint(
@@ -325,7 +325,7 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
             ]
         ),
         value_targets=torch.tensor([[0.0, 1.0, 0.5], [1.0, 0.0, 0.5]]),
-        action_mask=torch.ones(2, 2, dtype=torch.bool),
+        reachable_mask=torch.ones(2, 3, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.tensor([0.5, 1.0]),
     )
@@ -379,7 +379,7 @@ def test_logged_losses_ignore_importance_weights_and_padding(
         support_min=0,
         support_max=1,
     )
-    action_mask = torch.arange(2).expand(2, -1) < valid_steps
+    reachable_mask = torch.arange(3).expand(2, -1) <= valid_steps
     policy_mask = torch.arange(3).expand(2, -1) < valid_steps
     batch = ReplayBatch(
         frames=torch.zeros(2, 3, 1, 1, 1, dtype=torch.uint8),
@@ -387,7 +387,7 @@ def test_logged_losses_ignore_importance_weights_and_padding(
         rewards=torch.zeros(2, 2),
         policy_targets=torch.full((2, 3, 2), 0.5) * policy_mask[..., None],
         value_targets=torch.zeros(2, 3),
-        action_mask=action_mask,
+        reachable_mask=reachable_mask,
         indices=torch.arange(2),
         importance_weights=torch.full((2,), importance_weight),
     )
@@ -431,7 +431,7 @@ def test_padding_mask_blocks_all_recurrent_target_gradients_after_last_action() 
         rewards=torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
         policy_targets=torch.tensor([[[0.5, 0.5], [0.0, 0.0], [0.0, 0.0]]] * 2),
         value_targets=torch.tensor([[1.0, 0.0, 0.0]] * 2),
-        action_mask=torch.tensor([[True, False]] * 2),
+        reachable_mask=torch.tensor([[True, True, False]] * 2),
         indices=torch.arange(2), importance_weights=torch.ones(2),
     )
     # State 1 is an unsupervised prediction endpoint. State 2/action 1 are
@@ -511,7 +511,7 @@ def test_lookahead_has_reward_and_consistency_gradients_but_no_prediction_loss(
         policy_targets=policies,
         # Poison the unsupervised values to catch accidental endpoint loss.
         value_targets=torch.tensor([[0.0, 100.0, 100.0, 100.0, 100.0, 100.0]] * 2),
-        action_mask=(torch.arange(5)[None, :] < recorded_steps).expand(2, -1),
+        reachable_mask=(torch.arange(6)[None, :] <= recorded_steps).expand(2, -1),
         indices=torch.arange(2), importance_weights=torch.ones(2),
     )
     trainer.train_step(batch)
@@ -562,7 +562,7 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
             ]
         ),
         value_targets=torch.zeros(2, 3),
-        action_mask=torch.ones(2, 2, dtype=torch.bool),
+        reachable_mask=torch.ones(2, 3, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
     )
@@ -589,7 +589,7 @@ def test_agent_logs_mean_absolute_error() -> None:
         rewards=torch.tensor([[1.0, 2.0], [-1.0, -2.0]]),
         policy_targets=torch.full((2, 3, 3), 1.0 / 3.0),
         value_targets=torch.tensor([[1.0, 2.0, 3.0], [-1.0, -2.0, -3.0]]),
-        action_mask=torch.ones(2, 2, dtype=torch.bool),
+        reachable_mask=torch.ones(2, 3, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
     )

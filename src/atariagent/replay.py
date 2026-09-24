@@ -727,10 +727,7 @@ class FIFOReplayBuffer:
                 np.dtype(np.float32),
             ),
             "value_targets": ((batch_size, states), np.dtype(np.float32)),
-            "action_mask": (
-                (batch_size, self.unroll_steps),
-                np.dtype(np.bool_),
-            ),
+            "reachable_mask": ((batch_size, states), np.dtype(np.bool_)),
             "reanalysis_frames": (
                 (
                     batch_size,
@@ -837,7 +834,7 @@ class FIFOReplayBuffer:
             rewards=torch.from_numpy(arrays["rewards"]),
             policy_targets=torch.from_numpy(arrays["policy_targets"]),
             value_targets=torch.from_numpy(arrays["value_targets"]),
-            action_mask=torch.from_numpy(arrays["action_mask"]),
+            reachable_mask=torch.from_numpy(arrays["reachable_mask"]),
             indices=torch.from_numpy(arrays["indices"]),
             importance_weights=torch.from_numpy(arrays["importance_weights"]),
             value_bootstrap_frames=bootstrap_frames,
@@ -900,7 +897,9 @@ class FIFOReplayBuffer:
         rewards = arrays["rewards"]
         policy_targets = arrays["policy_targets"]
         value_targets = arrays["value_targets"]
-        action_mask = arrays["action_mask"]
+        reachable_mask = arrays["reachable_mask"]
+        reachable_mask[:, 0] = True
+        action_mask = reachable_mask[:, 1:]
         reanalysis_frames = arrays.get("reanalysis_frames")
         value_bootstrap_frames = arrays.get("value_bootstrap_frames")
         value_bootstrap_values = arrays.get("value_bootstrap_values")

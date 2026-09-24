@@ -276,6 +276,29 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert torch.all(batch.policy_targets[final_sample, 1:] == 0)
 
 
+@pytest.mark.parametrize("include_bootstraps", [False, True])
+def test_replay_stores_only_reachable_mask_and_exposes_action_view(include_bootstraps) -> None:
+    replay = FIFOReplayBuffer(4, unroll_steps=3)
+    replay.add(make_trajectory(6, lookahead_steps=2))
+    batch = replay.sample(4, include_value_bootstraps=include_bootstraps)
+    names = {field.name for field in fields(batch)}
+    assert "reachable_mask" in names
+    assert "action_mask" not in names
+    assert batch.reachable_mask.shape == (4, 4)
+    assert batch.reachable_mask.dtype == torch.bool
+    assert batch.reachable_mask[:, 0].all()
+    assert batch.action_mask.untyped_storage().data_ptr() == batch.reachable_mask.untyped_storage().data_ptr()
+    assert batch.action_mask.storage_offset() == batch.reachable_mask.storage_offset() + 1
+    torch.testing.assert_close(batch.action_mask, batch.reachable_mask[:, 1:])
+    torch.testing.assert_close(batch.value_mask, batch.policy_mask & batch.reachable_mask)
+    # Lookahead successors remain reachable but receive no prediction loss.
+    last = int((batch.indices == 3).nonzero().item())
+    assert batch.reachable_mask[last].all()
+    assert not batch.value_mask[last, 1:].any()
+    specs = replay._batch_array_specs(4, include_value_bootstraps=include_bootstraps)
+    assert "reachable_mask" in specs and "action_mask" not in specs
+
+
 def test_replay_can_skip_target_network_bootstrap_metadata() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=10,
@@ -581,6 +604,9 @@ def test_separate_prediction_and_dynamics_masks_at_block_boundaries(
         real_actions = min(horizon, trajectory.stored_transition_count - start)
         np.testing.assert_array_equal(
             batch.action_mask[row], np.arange(horizon) < real_actions
+        )
+        np.testing.assert_array_equal(
+            batch.reachable_mask[row], np.arange(horizon + 1) <= real_actions
         )
         np.testing.assert_array_equal(
             batch.value_mask[row], start + np.arange(horizon + 1) < block_length

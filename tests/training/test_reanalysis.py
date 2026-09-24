@@ -27,7 +27,7 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
         rewards=torch.zeros(batch_size, 1),
         policy_targets=torch.full((batch_size, 2, 2), 0.5),
         value_targets=torch.zeros(batch_size, 2),
-        action_mask=torch.ones(batch_size, 1, dtype=torch.bool),
+        reachable_mask=torch.ones(batch_size, 2, dtype=torch.bool),
         indices=torch.arange(batch_size),
         importance_weights=torch.ones(batch_size),
         value_bootstrap_frames=reanalysis_frames[:, 1:],

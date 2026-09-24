@@ -21,7 +21,7 @@ def _batch(index: int = 0) -> ReplayBatch:
         rewards=torch.zeros(2, 1),
         policy_targets=torch.full((2, 2, 2), 0.5),
         value_targets=torch.zeros(2, 2),
-        action_mask=torch.ones(2, 1, dtype=torch.bool),
+        reachable_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.tensor([index * 2, index * 2 + 1]),
         importance_weights=torch.ones(2),
         value_bootstrap_frames=torch.zeros(2, 2, 1, 1, 1, dtype=torch.uint8),
@@ -130,7 +130,7 @@ def test_worker_anneals_priority_beta_by_learner_step() -> None:
 def test_worker_updates_every_root_independent_of_recurrent_mask(valid_actions) -> None:
     batch = replace(
         _batch().without_value_bootstraps(),
-        action_mask=torch.tensor(valid_actions)[:, None],
+        reachable_mask=torch.tensor([[True, valid] for valid in valid_actions]),
     )
     replay = _FakeReplay(lambda _: batch)
     candidates = torch.tensor([34.586, 123.0], requires_grad=True)

@@ -17,8 +17,9 @@ class ReplayBatch:
     """A padded EfficientZero-style unroll batch.
 
     ``frames`` contains the initial stack context followed by one new frame
-    per unroll action. ``action_mask`` identifies recorded transitions,
-    including lookahead, for reward and consistency supervision. Nonzero
+    per unroll action. ``reachable_mask`` stores root and successor-state
+    availability. ``action_mask`` is its zero-copy ``[:, 1:]`` view, identifying
+    recorded transitions (including lookahead) for reward/consistency loss. Nonzero
     policy targets identify states inside the original block; only those
     states receive policy/value loss and search reanalysis. ``value_mask``
     derives from policy availability and real-action reachability, not TD
@@ -38,7 +39,7 @@ class ReplayBatch:
     rewards: Float[Tensor, "batch unroll"]
     policy_targets: Float[Tensor, "batch states actions"]
     value_targets: Float[Tensor, "batch states"]
-    action_mask: Bool[Tensor, "batch unroll"]
+    reachable_mask: Bool[Tensor, "batch states"]
     indices: Int[Tensor, "batch"]
     importance_weights: Float[Tensor, "batch"]
     value_bootstrap_frames: (
@@ -56,12 +57,14 @@ class ReplayBatch:
     reanalysis_state_ids: Int[Tensor, "batch states"] | None = None
 
     @property
+    def action_mask(self) -> Bool[Tensor, "batch unroll"]:
+        """Zero-copy transition-validity view of the stored state mask."""
+        return self.reachable_mask[:, 1:]
+
+    @property
     def value_mask(self) -> Bool[Tensor, "batch states"]:
         """Original-block states only, excluding lookahead and padded states."""
-        reachable = torch.cat(
-            (torch.ones_like(self.action_mask[:, :1]), self.action_mask), dim=1
-        )
-        return self.policy_mask & reachable
+        return self.policy_mask & self.reachable_mask
 
     @property
     def policy_mask(self) -> Bool[Tensor, "batch states"]:
