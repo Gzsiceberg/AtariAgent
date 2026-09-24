@@ -580,9 +580,9 @@ class SelfPlayWorker:
         """Drain pending replay starts without stepping or ending the games.
 
         Preserve block identities and emit each replay start exactly once.
-        Retain available lookahead as reward context, not extra replay starts
-        or unroll actions. Replay uses available rewards with zero bootstrap
-        at block boundaries, following V2's Atari target construction.
+        Retain available lookahead without duplicating replay starts. Replay
+        merges adjacent blocks, including these flushed continuations, and
+        treats the merged sampleable end as a temporary zero-value terminal.
         Environment terminal flags and full-game scores remain untouched.
 
         Repeated calls without further collection return no blocks. Closing

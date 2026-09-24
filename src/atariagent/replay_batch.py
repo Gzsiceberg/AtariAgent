@@ -19,12 +19,12 @@ class ReplayBatch:
     ``frames`` contains the initial stack context followed by one new frame
     per unroll action. ``reachable_mask`` stores root and successor-state
     availability. ``action_mask`` is its zero-copy ``[:, 1:]`` view, identifying
-    recorded transitions (including lookahead) for reward/consistency loss. Nonzero
-    policy targets identify states inside the original block; only those
-    states receive policy/value loss and search reanalysis. ``value_mask``
-    derives from policy availability and real-action reachability, not TD
-    bootstrap validity. Zero values outside the block are placeholders, not
-    supervision toward zero. Value-bootstrap fields carry compact real observations,
+    active transitions for reward/consistency loss. Nonzero policy targets
+    identify roots inside the currently merged trajectory. ``value_mask`` also
+    includes its real or temporary endpoint via ``terminal_mask``. The first
+    lookahead state receives zero-value supervision and no policy loss; later
+    lookahead is inactive. Arriving continuation blocks remove old temporary
+    boundaries and extend the training trajectory. Value-bootstrap fields carry compact real observations,
     stored bootstrap terms, and logical endpoint IDs so reanalysis can refresh
     and cache TD endpoint predictions without changing replay. Search values and zero-based
     transition ages (the number of newer replay transitions) are
@@ -55,6 +55,7 @@ class ReplayBatch:
     search_value_targets: Float[Tensor, "batch states"] | None = None
     transition_ages: Int[Tensor, "batch"] | None = None
     reanalysis_state_ids: Int[Tensor, "batch states"] | None = None
+    terminal_mask: Bool[Tensor, "batch states"] | None = None
 
     @property
     def action_mask(self) -> Bool[Tensor, "batch unroll"]:
@@ -63,8 +64,11 @@ class ReplayBatch:
 
     @property
     def value_mask(self) -> Bool[Tensor, "batch states"]:
-        """Original-block states only, excluding lookahead and padded states."""
-        return self.policy_mask & self.reachable_mask
+        """Merged-trajectory roots plus its reachable real/temporary endpoint."""
+        mask = self.policy_mask
+        if self.terminal_mask is not None:
+            mask = mask | self.terminal_mask
+        return mask & self.reachable_mask
 
     @property
     def policy_mask(self) -> Bool[Tensor, "batch states"]:
@@ -106,7 +110,10 @@ class ReplayBatch:
                 raise ValueError("search value targets are on the wrong device")
         return replace(
             self,
-            value_targets=value_targets,
+            value_targets=(
+                value_targets.masked_fill(self.terminal_mask, 0)
+                if self.terminal_mask is not None else value_targets
+            ),
             policy_targets=policy_targets,
             search_value_targets=search_value_targets,
         )
@@ -139,7 +146,7 @@ class ReplayBatch:
             raise ValueError("batch has no MCTS search value targets")
 
         # V2 selects the whole unroll by sample age. Search values outside
-        # the original block are zero, just like TD endpoint targets.
+        # the merged trajectory are zero, just like TD endpoint targets.
         search_mask = torch.ones_like(self.value_targets, dtype=torch.bool)
         if mode == "mixed":
             if self.transition_ages is None:
@@ -160,6 +167,8 @@ class ReplayBatch:
             self.search_value_targets,
             self.value_targets,
         )
+        if self.terminal_mask is not None:
+            selected = selected.masked_fill(self.terminal_mask, 0)
         return replace(self, value_targets=selected)
 
     def effective_transition_ages(

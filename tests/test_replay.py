@@ -59,6 +59,20 @@ def make_trajectory(
 
 
 @pytest.mark.parametrize("tensor_arrays", [False, True])
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_replay_rejects_legacy_cached_target_semantics(tensor_arrays: bool, version: int) -> None:
+    replay = FIFOReplayBuffer(10, unroll_steps=2)
+    replay.add(make_trajectory(4, lookahead_steps=1))
+    state = replay.state_dict(tensor_arrays=tensor_arrays)
+    assert state["version"] == 4
+    state["version"] = version
+    restored = FIFOReplayBuffer(10, unroll_steps=2)
+    with pytest.raises(ValueError, match="unsupported replay state version"):
+        restored.load_state_dict(state)
+    assert len(restored) == 0
+
+
+@pytest.mark.parametrize("tensor_arrays", [False, True])
 def test_replay_state_round_trip_restores_data_priorities_and_rng(
     tmp_path: Path, tensor_arrays: bool,
 ) -> None:
@@ -183,23 +197,23 @@ def test_nonterminal_td_tails_use_available_rewards_and_zero_bootstrap(truncated
             assert batch.value_bootstrap_discounts[i, 0] == 0
 
 
-def test_fifo_replay_evicts_oldest_complete_trajectories() -> None:
+def test_replay_keeps_all_episodes_past_reporting_budget() -> None:
     replay = FIFOReplayBuffer(max_transitions=5, unroll_steps=2)
 
     replay.add(make_trajectory(3, block_id=0))
     result = replay.add(make_trajectory(3, block_id=1, initial_value=10))
 
-    assert len(replay) == 3
-    assert replay.trajectory_count == 1
-    assert replay.utilization == pytest.approx(0.6)
-    assert result.evicted_trajectories == 1
-    assert result.evicted_transitions == 3
+    assert len(replay) == 6
+    assert replay.trajectory_count == 2
+    assert replay.utilization == pytest.approx(1.2)
+    assert result.evicted_trajectories == 0
+    assert result.evicted_transitions == 0
 
-    batch = replay.sample(3)
-    assert torch.all(batch.frames[:, 0] >= 10)
+    batch = replay.sample(6)
+    assert sorted(batch.frames[:, 0, 0, 0, 0].tolist()) == [0, 1, 2, 10, 11, 12]
     assert batch.transition_ages is not None
     age_by_id = dict(zip(batch.indices.tolist(), batch.transition_ages.tolist()))
-    assert age_by_id == {3: 2, 4: 1, 5: 0}
+    assert age_by_id == {i: 5 - i for i in range(6)}
     final_sample = int((batch.frames[:, 0, 0, 0, 0] == 12).nonzero().item())
     torch.testing.assert_close(
         batch.policy_mask[final_sample],
@@ -265,7 +279,10 @@ def test_replay_samples_padded_five_step_tensor_batches() -> None:
     assert batch.value_targets[final_sample, 0] == 3.0
     assert batch.value_targets[final_sample, 1] == 0.0
     assert batch.value_mask[final_sample, 0]
-    assert not batch.value_mask[final_sample, 1:].any()
+    assert batch.value_mask[final_sample, 1]
+    assert not batch.value_mask[final_sample, 2:].any()
+    assert batch.terminal_mask[final_sample, 1]
+    assert batch.value_targets[final_sample, 1] == 0
     assert torch.all(batch.policy_targets[final_sample, 1] == 0)
     assert batch.rewards[final_sample, 0] == 3.0
     assert torch.all(batch.rewards[final_sample, 1:] == 0)
@@ -290,11 +307,13 @@ def test_replay_stores_only_reachable_mask_and_exposes_action_view(include_boots
     assert batch.action_mask.untyped_storage().data_ptr() == batch.reachable_mask.untyped_storage().data_ptr()
     assert batch.action_mask.storage_offset() == batch.reachable_mask.storage_offset() + 1
     torch.testing.assert_close(batch.action_mask, batch.reachable_mask[:, 1:])
-    torch.testing.assert_close(batch.value_mask, batch.policy_mask & batch.reachable_mask)
-    # Lookahead successors remain reachable but receive no prediction loss.
+    torch.testing.assert_close(
+        batch.value_mask, (batch.policy_mask | batch.terminal_mask) & batch.reachable_mask
+    )
+    # Only the transition into the temporary terminal is active.
     last = int((batch.indices == 3).nonzero().item())
-    assert batch.reachable_mask[last].all()
-    assert not batch.value_mask[last, 1:].any()
+    assert batch.reachable_mask[last].tolist() == [True, True, False, False]
+    assert batch.value_mask[last].tolist() == [True, True, False, False]
     specs = replay._batch_array_specs(4, include_value_bootstraps=include_bootstraps)
     assert "reachable_mask" in specs and "action_mask" not in specs
 
@@ -349,9 +368,12 @@ def test_reanalysis_state_ids_share_real_states_across_block_overlap() -> None:
     assert batch.reanalysis_state_ids is not None
     root_values = batch.frames[:, 0, 0, 0, 0]
     first_block_tail = int((root_values == 4).nonzero().item())
-    # Lookahead states are no longer search roots of the preceding block.
-    assert (batch.reanalysis_state_ids[first_block_tail, 1:] == -1).all()
+    # Once the owner arrives, old lookahead becomes ordinary merged roots.
     same_environment = int((batch.indices == 5).nonzero().item())
+    torch.testing.assert_close(
+        batch.reanalysis_state_ids[first_block_tail, 1:],
+        batch.reanalysis_state_ids[same_environment, :2],
+    )
     other_environment = int((batch.indices == 8).nonzero().item())
     assert batch.reanalysis_state_ids[same_environment, 0] != batch.reanalysis_state_ids[other_environment, 0]
     preceding = int((root_values == 3).nonzero().item())
@@ -398,7 +420,7 @@ def test_replay_builds_fixed_n_step_values_from_stored_root_values() -> None:
     assert batch.value_bootstrap_frames[start_zero, 0, 0, 0, 0] == 3
 
 
-def test_replay_builds_value_targets_from_local_lookahead() -> None:
+def test_replay_stores_lookahead_but_stops_returns_at_temporary_terminal() -> None:
     replay = FIFOReplayBuffer(
         max_transitions=6,
         unroll_steps=5,
@@ -409,7 +431,7 @@ def test_replay_builds_value_targets_from_local_lookahead() -> None:
     trajectory = replay._trajectories[0]
     expected = np.asarray(
         [
-            sum(0.5**step * (offset + step + 1) for step in range(5))
+            sum(0.5**step * (offset + step + 1) for step in range(min(5, 6 - offset)))
             + (0.5**5 * (offset + 5) if offset + 5 < 6 else 0)
             for offset in range(6)
         ],
@@ -447,7 +469,7 @@ def test_replay_stores_compact_overlapping_frame_context() -> None:
     )
 
 
-def test_replay_lookahead_trains_dynamics_but_not_policy_or_value() -> None:
+def test_replay_lookahead_is_inactive_before_continuation_arrives() -> None:
     trajectory = make_trajectory(7, lookahead_steps=5)
     replay = FIFOReplayBuffer(max_transitions=10, unroll_steps=3, seed=2)
     replay.add(trajectory)
@@ -457,11 +479,11 @@ def test_replay_lookahead_trains_dynamics_but_not_policy_or_value() -> None:
 
     torch.testing.assert_close(
         batch.frames[crossing_sample, :, 0, 0, 0],
-        torch.tensor([1, 2, 3, 4], dtype=torch.uint8),
+        torch.tensor([1, 2, 2, 2], dtype=torch.uint8),
     )
     torch.testing.assert_close(
         batch.action_mask[crossing_sample],
-        torch.tensor([True, True, True]),
+        torch.tensor([True, False, False]),
     )
     torch.testing.assert_close(
         batch.policy_mask[crossing_sample],
@@ -480,11 +502,11 @@ def test_replay_lookahead_trains_dynamics_but_not_policy_or_value() -> None:
     )
     torch.testing.assert_close(
         value_batch.value_targets[crossing_value_sample],
-        torch.tensor([4.5, 0.0, 0.0, 0.0]),
+        torch.tensor([2.0, 0.0, 0.0, 0.0]),
     )
     torch.testing.assert_close(
         value_batch.value_mask[crossing_value_sample],
-        torch.tensor([True, False, False, False]),
+        torch.tensor([True, True, False, False]),
     )
     assert value_batch.value_bootstrap_values is not None
     assert value_batch.value_bootstrap_discounts is not None
@@ -504,8 +526,34 @@ def test_replay_lookahead_trains_dynamics_but_not_policy_or_value() -> None:
     assert value_batch.value_bootstrap_frames is not None
     torch.testing.assert_close(
         value_batch.value_bootstrap_frames[crossing_value_sample, :, 0, 0, 0],
-        torch.tensor([4, 5, 6, 7], dtype=torch.uint8),
+        torch.tensor([2, 2, 2, 2], dtype=torch.uint8),
     )
+
+
+@pytest.mark.parametrize("mode", ["td", "search", "mixed"])
+@pytest.mark.parametrize("truncated", [False, True])
+def test_episode_endpoint_stays_zero_after_reanalysis_and_target_selection(
+    mode: str, truncated: bool,
+) -> None:
+    replay = FIFOReplayBuffer(10, unroll_steps=3)
+    replay.add(make_trajectory(2, terminated=not truncated, truncated=truncated))
+    batch = replay.sample(2)
+    terminal = batch.terminal_mask
+    assert terminal is not None and terminal.sum() == 2
+    assert not batch.policy_mask[terminal].any()
+    assert batch.value_mask[terminal].all()
+    refreshed = batch.with_reanalysis_targets(
+        value_targets=torch.full_like(batch.value_targets, 17),
+        policy_targets=batch.policy_targets,
+        search_value_targets=torch.full_like(batch.value_targets, 23),
+    )
+    selected = refreshed.with_selected_value_targets(
+        mode=mode, learner_step=10, collection_steps=10,
+        mixed_start_step=0, freshness_threshold=0,
+    )
+    assert not selected.value_targets[terminal].any()
+    torch.testing.assert_close(selected.value_mask, batch.value_mask)
+    torch.testing.assert_close(selected.to("cpu").terminal_mask, terminal)
 
 
 def reference_value_targets(
@@ -519,13 +567,13 @@ def reference_value_targets(
     values = np.zeros(target_count, dtype=np.float32)
     valid = np.zeros(target_count, dtype=bool)
     bootstrap_mask = np.zeros(target_count, dtype=bool)
-    stored_count = trajectory.stored_transition_count
     for offset in range(target_count):
         target_position = position + offset
         if target_position >= len(trajectory):
+            valid[offset] = target_position == len(trajectory)
             continue
         bootstrap_position = target_position + unroll_steps
-        reward_end = min(bootstrap_position, stored_count)
+        reward_end = min(bootstrap_position, len(trajectory))
         reward_return = sum(
             discount**step * trajectory.rewards[target_position + step]
             for step in range(reward_end - target_position)
@@ -601,7 +649,7 @@ def test_separate_prediction_and_dynamics_masks_at_block_boundaries(
     batch = replay.sample(block_length, include_value_bootstraps=include_bootstraps)
     for row, raw_start in enumerate(batch.indices):
         start = int(raw_start)
-        real_actions = min(horizon, trajectory.stored_transition_count - start)
+        real_actions = min(horizon, block_length - start)
         np.testing.assert_array_equal(
             batch.action_mask[row], np.arange(horizon) < real_actions
         )
@@ -609,13 +657,14 @@ def test_separate_prediction_and_dynamics_masks_at_block_boundaries(
             batch.reachable_mask[row], np.arange(horizon + 1) <= real_actions
         )
         np.testing.assert_array_equal(
-            batch.value_mask[row], start + np.arange(horizon + 1) < block_length
+            batch.value_mask[row],
+            start + np.arange(horizon + 1) <= block_length
         )
         np.testing.assert_array_equal(
             batch.policy_mask[row], start + np.arange(horizon + 1) < block_length
         )
-        # Out-of-block states have no prediction loss. Recorded actions,
-        # including lookahead, still supply reward/consistency supervision.
+        # Both real and temporary endpoints have zero-value supervision;
+        # inactive lookahead supplies no reward/consistency supervision.
         expected, _, bootstrap_mask = reference_value_targets(
             trajectory, start, target_count=horizon + 1,
             unroll_steps=horizon, discount=0.5,
@@ -631,7 +680,7 @@ def test_separate_prediction_and_dynamics_masks_at_block_boundaries(
         # Frame context is retained independently of action validity.
         for offset in range(horizon + 1):
             assert batch.frames[row, offset, 0, 0, 0] == min(
-                start + offset, trajectory.stored_transition_count
+                start + offset, block_length
             )
 
 
@@ -735,13 +784,13 @@ def test_insertion_uses_v2_maximum_but_preserves_individual_errors(priority_weig
         )
     )
 
-    # Prediction-bootstrapped targets are [11, 17], giving errors [1, 3].
+    # Targets stop at the temporary terminal: [11, 2], errors [1, 18].
     # Lookahead is not inserted; both starts receive the trajectory maximum.
-    np.testing.assert_allclose(replay.priorities, [3.000001, 3.000001])
+    np.testing.assert_allclose(replay.priorities, [18.000001, 18.000001])
 
     replay.update_priorities([0, 1], [100.0, 200.0])
     initial = replay.state_dict()["trajectories"][0]["initial_priorities"]
-    np.testing.assert_allclose(initial, [1.000001, 3.000001])
+    np.testing.assert_allclose(initial, [1.000001, 18.000001])
     assert not initial.flags.writeable
     replay.add(
         make_trajectory(
@@ -800,7 +849,7 @@ def test_first_replay_transitions_use_maximum_error_above_one() -> None:
         )
     )
 
-    np.testing.assert_allclose(replay.priorities, [3.000001, 3.000001])
+    np.testing.assert_allclose(replay.priorities, [18.000001, 18.000001])
 
 
 @pytest.mark.parametrize("priority_weight_clip", [0.0, 0.1])
@@ -834,9 +883,8 @@ def test_maximum_insertion_branches(priority_weight_clip, capacity, existing, er
         3, episode_id=1, terminated=True,
         predicted_values=tuple(i + 1 + error for i, error in enumerate(errors)),
     ))
-    # At capacity=3 the previous maximum is evicted by this insertion, but
-    # must still seed the new trajectory, matching insertion-before-eviction.
-    prefix = existing if existing is not None and capacity == 6 else []
+    # The reporting budget never causes eviction.
+    prefix = existing if existing is not None else []
     np.testing.assert_allclose(replay.priorities, [*prefix, *([expected] * 3)])
     # Sampling-mode differences must not prevent individual priority updates.
     first_id = 3 if existing is not None else 0
@@ -871,17 +919,15 @@ def test_maximum_insertion_extends_sequentially_and_survives_restore(priority_we
     np.testing.assert_allclose(restored.priorities, [0.1, 0.2, 0.3, 0.4, 0.4, 0.4])
 
 
-def test_replay_rejects_invalid_capacity_and_oversized_samples() -> None:
+def test_replay_rejects_invalid_budget_and_oversized_samples() -> None:
     with pytest.raises(ValueError, match="positive"):
         FIFOReplayBuffer(0)
 
     replay = FIFOReplayBuffer(3)
-    with pytest.raises(ValueError, match="exceeds"):
-        replay.add(make_trajectory(4))
-
-    replay.add(make_trajectory(2))
+    replay.add(make_trajectory(4))
+    assert len(replay) == 4
     with pytest.raises(ValueError, match="cannot sample"):
-        replay.sample(3)
+        replay.sample(5)
 
 
 @pytest.mark.parametrize(
@@ -968,7 +1014,7 @@ def test_replay_prepares_read_only_contiguous_targets_on_add() -> None:
     np.testing.assert_array_equal(stored.value_valid_mask, [True, True, True, False])
 
 
-def test_failed_trajectory_preparation_does_not_evict_existing_data() -> None:
+def test_failed_trajectory_preparation_does_not_mutate_existing_data() -> None:
     replay = FIFOReplayBuffer(2, unroll_steps=1, seed=1)
     replay.add(make_trajectory(2, terminated=True))
     invalid = make_trajectory(
@@ -1020,9 +1066,9 @@ def test_timeout_trains_available_returns_with_zero_bootstrap() -> None:
 
 
 @pytest.mark.parametrize("length", [1, 4, 8])
-def test_v1_timeout_targets_match_terminal_targets(length: int) -> None:
+def test_timeout_targets_match_terminal_targets(length: int) -> None:
     options = dict(max_transitions=20, unroll_steps=3, discount=0.5)
-    replay = FIFOReplayBuffer(**options, treat_truncations_as_terminal=True)
+    replay = FIFOReplayBuffer(**options)
     terminal_replay = FIFOReplayBuffer(**options)
     replay.add(make_trajectory(length, truncated=True))
     terminal_replay.add(make_trajectory(length, terminated=True))
@@ -1042,32 +1088,6 @@ def test_v1_timeout_targets_match_terminal_targets(length: int) -> None:
         "value_bootstrap_values", "rewards", "policy_mask", "action_mask",
     ):
         torch.testing.assert_close(getattr(actual_batch, name), getattr(expected_batch, name))
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-def test_timeout_target_mode_checkpoint_compatibility(enabled: bool) -> None:
-    replay = FIFOReplayBuffer(10, treat_truncations_as_terminal=enabled)
-    replay.add(make_trajectory(4, truncated=True))
-    state = replay.state_dict()
-    restored = FIFOReplayBuffer(10, treat_truncations_as_terminal=enabled)
-    restored.load_state_dict(state)
-    np.testing.assert_array_equal(
-        restored.state_dict()["trajectories"][0]["value_valid_mask"],
-        state["trajectories"][0]["value_valid_mask"],
-    )
-    with pytest.raises(ValueError, match="treat_truncations_as_terminal"):
-        FIFOReplayBuffer(10, treat_truncations_as_terminal=not enabled).load_state_dict(state)
-    if not enabled:
-        del state["treat_truncations_as_terminal"]
-        restored.load_state_dict(state)
-        with pytest.raises(ValueError, match="treat_truncations_as_terminal"):
-            FIFOReplayBuffer(10, treat_truncations_as_terminal=True).load_state_dict(state)
-
-
-@pytest.mark.parametrize("invalid", [1, "true", None])
-def test_timeout_target_mode_requires_boolean(invalid) -> None:
-    with pytest.raises(TypeError, match="treat_truncations_as_terminal"):
-        FIFOReplayBuffer(10, treat_truncations_as_terminal=invalid)
 
 
 def test_truncated_targets_survive_checkpoint_round_trip() -> None:

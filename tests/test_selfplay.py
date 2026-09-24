@@ -418,10 +418,8 @@ def test_final_flush_preserves_all_collected_starts(
             count = stored["sampleable_transition_count"]
             expected = np.arange(len(stored["actions"]) + 1) < count
             np.testing.assert_array_equal(stored["value_valid_mask"], expected)
-            expected_tail = sum(
-                replay.discount ** i * reward
-                for i, reward in enumerate(stored["rewards"][count - 1:count + 1])
-            )
+            # Snapshots store exactly one merged trajectory per environment.
+            expected_tail = stored["rewards"][count - 1]
             assert stored["value_targets"][count - 1] == pytest.approx(expected_tail)
         batch = replay.sample(min(8, len(replay)))
         assert torch.isfinite(batch.value_targets).all()
@@ -467,13 +465,49 @@ def test_flush_preserves_reanalysis_ids_for_existing_lookahead() -> None:
         pending = worker.flush()[0]
         assert [len(b) for b in emitted + pending] == [4, 4, 4, 1]
         replay = FIFOReplayBuffer(20, unroll_steps=2)
-        replay.extend(emitted + pending)
-        # The first emitted block already references all nine pending states.
-        # Flushing must retain their canonical IDs for reanalysis deduplication.
-        ids = list(replay._reanalysis_state_ids)
-        np.testing.assert_array_equal(
-            ids[0][4:], np.concatenate([item[:len(block)] for item, block in zip(ids[1:], pending, strict=True)])
+        replay.extend(emitted)
+        old_ids = replay._trajectories[0].transition_ids.copy()
+        replay.extend(pending)
+        assert replay.trajectory_count == 1
+        ids = replay._trajectories[0].transition_ids
+        np.testing.assert_array_equal(ids[:4], old_ids)
+        np.testing.assert_array_equal(ids, np.arange(13))
+        batch = replay.sample(13)
+        root_three = int((batch.indices == 3).nonzero().item())
+        root_four = int((batch.indices == 4).nonzero().item())
+        assert batch.reanalysis_state_ids[root_three, 1] == batch.reanalysis_state_ids[root_four, 0]
+
+
+@pytest.mark.parametrize("steps", [4, 5, 6])
+def test_flush_at_block_and_lookahead_boundaries(steps: int) -> None:
+    """Flushed continuation starts remove the previous temporary terminal."""
+    from atariagent.replay import FIFOReplayBuffer
+
+    with SelfPlayWorker(
+        FakeAgent(), environments=[FakeEnvironment(100)],
+        trajectory_length=4, lookahead_steps=2, clip_rewards=True,
+    ) as worker:
+        emitted = worker.run(steps)[0]
+        pending = worker.flush()[0]
+        assert len(emitted) == int(steps == 6)
+        blocks = emitted + pending
+        assert [len(block) for block in blocks] == (
+            [4] if steps == 4 else [4, steps - 4]
         )
+        assert blocks[0].lookahead_steps == steps - 4
+        replay = FIFOReplayBuffer(10, unroll_steps=2, discount=0.5, seed=0)
+        replay.extend(blocks)
+        batch = replay.sample(steps)
+        # Sampling all starts is without replacement. ID 3 is the last
+        # original-block root, even when its successor exists as lookahead.
+        row = int((batch.indices == 3).nonzero().item())
+        assert batch.value_targets[row, 0] == {4: 1.0, 5: 1.5, 6: 3.0}[steps]
+        assert batch.policy_mask[row].tolist() == [3 + k < steps for k in range(3)]
+        assert batch.value_mask[row].tolist() == [3 + k <= steps for k in range(3)]
+        assert batch.action_mask[row].tolist() == [True, steps > 4]
+        assert batch.value_bootstrap_mask[row].tolist() == [steps == 6, False, False]
+        assert sum(map(len, blocks)) == steps
+        assert worker.flush() == ((),)
 
 
 def test_flush_blocks_fit_original_block_capacity() -> None:

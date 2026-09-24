@@ -452,7 +452,7 @@ def test_padding_mask_blocks_all_recurrent_target_gradients_after_last_action() 
 
 
 @pytest.mark.parametrize("recorded_steps", [1, 3, 5])
-def test_lookahead_has_reward_and_consistency_gradients_but_no_prediction_loss(
+def test_active_prefix_and_real_or_temporary_terminal_gradients(
     recorded_steps: int,
 ) -> None:
     class RecordingPrediction(_ScalarPrediction):
@@ -500,24 +500,29 @@ def test_lookahead_has_reward_and_consistency_gradients_but_no_prediction_loss(
         consistency_network=consistency, unroll_steps=5,
         support_min=0, support_max=1,
     )
-    # The root is the last state in its block (100). Successors 101..105
-    # have no policy/value targets, even when real lookahead is available.
+    # All states before the endpoint are active roots; only the endpoint
+    # has zero-value/no-policy supervision. Inactive lookahead is masked.
     policies = torch.zeros(2, 6, 2)
-    policies[:, 0] = torch.tensor([1.0, 0.0])
+    policies[:, :recorded_steps] = torch.tensor([1.0, 0.0])
+    terminal_mask = torch.zeros(2, 6, dtype=torch.bool)
+    terminal_mask[:, recorded_steps] = True
+    targets = torch.full((2, 6), 100.0)
+    targets[:, :recorded_steps + 1] = 0
     batch = ReplayBatch(
         frames=torch.zeros(2, 6, 1, 1, 1, dtype=torch.uint8),
         actions=torch.tensor([[[0], [1], [0], [1], [1]]] * 2),
         rewards=torch.full((2, 5), 0.25),
         policy_targets=policies,
-        # Poison the unsupervised values to catch accidental endpoint loss.
-        value_targets=torch.tensor([[0.0, 100.0, 100.0, 100.0, 100.0, 100.0]] * 2),
+        # Poison states after the endpoint to catch accidental padding loss.
+        value_targets=targets,
+        terminal_mask=terminal_mask,
         reachable_mask=(torch.arange(6)[None, :] <= recorded_steps).expand(2, -1),
         indices=torch.arange(2), importance_weights=torch.ones(2),
     )
     trainer.train_step(batch)
     for offset, (policy, value) in enumerate(prediction.outputs):
-        assert bool(policy.grad.abs().sum() > 0) == (offset == 0)
-        assert bool(value.grad.abs().sum() > 0) == (offset == 0)
+        assert bool(policy.grad.abs().sum() > 0) == (offset < recorded_steps)
+        assert bool(value.grad.abs().sum() > 0) == (offset <= recorded_steps)
     for step, (reward, projection) in enumerate(zip(
         dynamics.outputs, consistency.outputs, strict=True
     )):

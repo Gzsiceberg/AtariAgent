@@ -1,10 +1,9 @@
-"""FIFO trajectory replay buffer with prioritized tensor-batch sampling."""
+"""Append-only episode replay with prioritized tensor-batch sampling."""
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import warnings
 
 import numpy as np
@@ -17,7 +16,7 @@ from .selfplay import GameTrajectory
 
 @dataclass(frozen=True, slots=True)
 class ReplayAddResult:
-    """Summary of one replay insertion operation."""
+    """Insertion statistics; legacy eviction counters are always zero."""
 
     added_trajectories: int
     added_transitions: int
@@ -32,6 +31,7 @@ class _StoredTrajectory:
     environment_index: int
     episode_id: int
     block_id: int
+    last_block_id: int
     stack_size: int
     sampleable_transition_count: int
     lookahead_steps: int
@@ -44,6 +44,7 @@ class _StoredTrajectory:
     root_values: np.ndarray
     predicted_values: np.ndarray
     initial_priorities: np.ndarray
+    transition_ids: np.ndarray
     value_targets: np.ndarray
     value_valid_mask: np.ndarray
 
@@ -56,7 +57,11 @@ class _StoredTrajectory:
 
 
 class FIFOReplayBuffer:
-    """Store prepared trajectories with FIFO prioritized sampling.
+    """Store one contiguous NumPy trajectory per episode segment.
+
+    The historical class name and ``max_transitions`` argument remain for
+    compatibility. The latter is a reporting budget, not a capacity: replay
+    grows without eviction. Life-loss terminals separate episode segments.
 
     Target horizons and discount are fixed for the buffer lifetime.
     By default both modes use V2 maximum-priority insertion: every new
@@ -68,8 +73,11 @@ class FIFOReplayBuffer:
     V1 uses configurable alpha/beta and unfloored importance weights;
     V2 forces alpha=beta=1 and a 0.1 normalized importance-weight floor.
     ``unroll_steps`` also sets the TD-bootstrap horizon. Trailing lookahead
-    transitions remain local target context and are not replay starts.
-    Reanalysis remains outside this buffer.
+    transitions are inactive until their owning continuation block arrives.
+    Continuations replace the episode arrays on insertion, with a temporary
+    terminal at the new sampleable end. Direct NumPy slot-to-episode/offset
+    tables make sampling independent of insertion-block count. No original
+    chunk payloads or secondary merged copies are retained.
     """
 
     def __init__(
@@ -80,7 +88,6 @@ class FIFOReplayBuffer:
         discount: float = 0.997,
         priority_weight_clip: float = 0.0,
         use_max_priority: bool = False,
-        treat_truncations_as_terminal: bool = False,
         priority_alpha: float = 0.6,
         priority_beta: float = 0.4,
         priority_epsilon: float = 1e-6,
@@ -96,8 +103,6 @@ class FIFOReplayBuffer:
             raise ValueError("unroll_steps must be positive")
         if not np.isfinite(discount) or not 0.0 <= discount <= 1.0:
             raise ValueError("discount must be finite and in [0, 1]")
-        if not isinstance(treat_truncations_as_terminal, bool):
-            raise TypeError("treat_truncations_as_terminal must be a boolean")
         if not isinstance(use_max_priority, bool):
             raise TypeError("use_max_priority must be a boolean")
         for value, name in (
@@ -115,7 +120,6 @@ class FIFOReplayBuffer:
         self._discount = float(discount)
         self._priority_weight_clip = float(priority_weight_clip)
         self._use_max_priority = use_max_priority
-        self._treat_truncations_as_terminal = treat_truncations_as_terminal
         self._priority_alpha = float(priority_alpha)
         self._priority_beta = float(priority_beta)
         self._priority_epsilon = float(priority_epsilon)
@@ -123,12 +127,10 @@ class FIFOReplayBuffer:
             self.unroll_steps, dtype=np.float64
         )
         self._bootstrap_discount = float(self.discount**self.unroll_steps)
-        self._trajectories: deque[_StoredTrajectory] = deque()
-        self._reanalysis_state_ids: deque[np.ndarray] = deque()
-        self._reanalysis_state_registry: dict[
-            tuple[int, int, int, int], tuple[int, int]
-        ] = {}
-        self._next_reanalysis_state_id = 0
+        self._trajectories: list[_StoredTrajectory] = []
+        self._latest_trajectory_rows: dict[int, int] = {}
+        self._trajectory_rows = np.empty(0, dtype=np.int64)
+        self._trajectory_offsets = np.empty(0, dtype=np.int64)
         self._transition_ids = np.empty(0, dtype=np.int64)
         self._priorities = np.empty(0, dtype=np.float64)
         self._next_transition_id = 0
@@ -145,6 +147,7 @@ class FIFOReplayBuffer:
 
     @property
     def trajectory_count(self) -> int:
+        """Number of stored episode segments, not incoming blocks."""
         return len(self._trajectories)
 
     @property
@@ -161,6 +164,7 @@ class FIFOReplayBuffer:
 
     @property
     def utilization(self) -> float:
+        """Fraction of the reporting budget used; may exceed one."""
         return self._transition_count / self.max_transitions
 
     @property
@@ -190,8 +194,7 @@ class FIFOReplayBuffer:
 
         trajectory_fields = tuple(_StoredTrajectory.__dataclass_fields__)
         return {
-            "version": 1,
-            "treat_truncations_as_terminal": self._treat_truncations_as_terminal,
+            "version": 4,
             "max_transitions": self.max_transitions,
             "unroll_steps": self.unroll_steps,
             "discount": self.discount,
@@ -214,7 +217,9 @@ class FIFOReplayBuffer:
         """Restore replay data produced by :meth:`state_dict`."""
         if not isinstance(state, Mapping):
             raise TypeError("replay state must be a mapping")
-        if state.get("version") != 1:
+        # Older snapshots used different boundary/target semantics.
+        # Reject rather than silently train on stale targets or priorities.
+        if state.get("version") != 4:
             raise ValueError("unsupported replay state version")
         expected_configuration = {
             "max_transitions": self.max_transitions,
@@ -228,13 +233,6 @@ class FIFOReplayBuffer:
                     f"replay state {name} does not match the configured buffer"
                 )
 
-        # Older snapshots used masked truncation tails. Reject mismatched modes
-        # because targets and initial priorities are precomputed in the snapshot.
-        if state.get("treat_truncations_as_terminal", False) != self._treat_truncations_as_terminal:
-            raise ValueError(
-                "replay state treat_truncations_as_terminal does not match the configured buffer"
-            )
-
         raw_trajectories = state.get("trajectories")
         if not isinstance(raw_trajectories, list):
             raise TypeError("replay trajectories must be a list")
@@ -247,10 +245,11 @@ class FIFOReplayBuffer:
             "root_values",
             "predicted_values",
             "initial_priorities",
+            "transition_ids",
             "value_targets",
             "value_valid_mask",
         }
-        trajectories: deque[_StoredTrajectory] = deque()
+        trajectories: list[_StoredTrajectory] = []
         for raw in raw_trajectories:
             if not isinstance(raw, Mapping):
                 raise TypeError("each replay trajectory must be a mapping")
@@ -279,8 +278,6 @@ class FIFOReplayBuffer:
             raise TypeError("replay next_transition_id must be an integer")
         if transition_count != sum(map(len, trajectories)):
             raise ValueError("replay transition count does not match trajectories")
-        if transition_count > self.max_transitions:
-            raise ValueError("replay state exceeds the configured capacity")
         if transition_ids.shape != (transition_count,):
             raise ValueError("replay transition IDs have an invalid shape")
         if priorities.shape != (transition_count,):
@@ -289,26 +286,37 @@ class FIFOReplayBuffer:
             not np.all(np.isfinite(priorities)) or np.any(priorities <= 0.0)
         ):
             raise ValueError("replay priorities must be finite and positive")
-        if transition_ids.size > 1 and np.any(np.diff(transition_ids) != 1):
-            raise ValueError("replay transition IDs must be contiguous")
-        if transition_ids.size and next_transition_id <= int(transition_ids[-1]):
+        if not np.array_equal(transition_ids, np.arange(transition_count)):
+            raise ValueError("replay transition IDs must be contiguous from zero")
+        if next_transition_id != transition_count:
             raise ValueError("replay next transition ID is invalid")
 
-        trajectory_keys = {self._trajectory_key(item) for item in trajectories}
-        if len(trajectory_keys) != len(trajectories):
-            raise ValueError("replay trajectory identities must be unique")
-        reanalysis_state_ids: deque[np.ndarray] = deque()
-        reanalysis_state_registry: dict[
-            tuple[int, int, int, int], tuple[int, int]
-        ] = {}
-        next_reanalysis_state_id = 0
-        for trajectory in trajectories:
-            state_ids, next_reanalysis_state_id = self._intern_state_ids(
-                trajectory,
-                reanalysis_state_registry,
-                next_reanalysis_state_id,
-            )
-            reanalysis_state_ids.append(state_ids)
+        # Build the hot-path tables once, not at sampling time. Episode IDs
+        # can interleave globally, so lengths/cumulative offsets are insufficient.
+        rows = np.empty(transition_count, dtype=np.int64)
+        offsets = np.empty(transition_count, dtype=np.int64)
+        seen = np.zeros(transition_count, dtype=np.bool_)
+        trajectory_keys: set[tuple[int, int, int]] = set()
+        latest_rows: dict[int, int] = {}
+        for row, trajectory in enumerate(trajectories):
+            ids = trajectory.transition_ids
+            if (ids.dtype != np.int64 or ids.shape != (len(trajectory),)
+                    or np.any(ids < 0) or np.any(ids >= transition_count)
+                    or np.unique(ids).size != ids.size or np.any(seen[ids])):
+                raise ValueError("episode transition IDs are invalid or duplicated")
+            seen[ids] = True
+            rows[ids] = row
+            offsets[ids] = np.arange(len(trajectory))
+            if trajectory.last_block_id < trajectory.block_id:
+                raise ValueError("episode block range is invalid")
+            for block_id in range(trajectory.block_id, trajectory.last_block_id + 1):
+                key = (trajectory.environment_index, trajectory.episode_id, block_id)
+                if key in trajectory_keys:
+                    raise ValueError("replay trajectory identities must be unique")
+                trajectory_keys.add(key)
+            latest_rows[trajectory.environment_index] = row
+        if not seen.all():
+            raise ValueError("episode transition IDs do not cover replay")
         rng = np.random.default_rng()
         try:
             rng.bit_generator.state = state["rng_state"]  # type: ignore[assignment]
@@ -316,9 +324,9 @@ class FIFOReplayBuffer:
             raise ValueError("replay RNG state is invalid") from error
 
         self._trajectories = trajectories
-        self._reanalysis_state_ids = reanalysis_state_ids
-        self._reanalysis_state_registry = reanalysis_state_registry
-        self._next_reanalysis_state_id = next_reanalysis_state_id
+        self._latest_trajectory_rows = latest_rows
+        self._trajectory_rows = rows
+        self._trajectory_offsets = offsets
         self._transition_ids = transition_ids
         self._priorities = priorities
         self._next_transition_id = next_transition_id
@@ -333,17 +341,15 @@ class FIFOReplayBuffer:
         self._rng = rng
 
     def add(self, trajectory: GameTrajectory) -> ReplayAddResult:
-        """Prepare one trajectory, then append it with FIFO eviction."""
+        """Append a block to its episode; concatenate only on this cold path."""
         trajectory_length = len(trajectory)
-        if trajectory_length > self.max_transitions:
-            raise ValueError("trajectory length exceeds replay transition capacity")
 
         key = self._trajectory_key(trajectory)
         if key in self._trajectory_keys:
             raise ValueError("trajectory identity already exists in replay")
 
         # Preparation and all validation happen before replay state is mutated.
-        # Partial lookahead is valid: available rewards still form TD targets.
+        # Partial lookahead is stored but inactive until its owning block arrives.
         stored = self._prepare_trajectory(trajectory)
         action_space_size = int(stored.policy_targets.shape[1])
         frame_shape = tuple(stored.frames.shape[1:])
@@ -358,7 +364,7 @@ class FIFOReplayBuffer:
         # Match EZ V2 save_trajectory: use the live buffer maximum (not a
         # historical high-water mark) and the maximum error of replay starts,
         # excluding lookahead. Errors already include epsilon; do not add it
-        # again. Compute before eviction so insertion sees the current buffer.
+        # again. Existing starts retain their individually updated priorities.
         buffer_maximum = (
             float(self._priorities.max()) if self._transition_count else 1.0
         )
@@ -371,55 +377,98 @@ class FIFOReplayBuffer:
             trajectory_length, insertion_priority, dtype=np.float64
         )
 
-        evicted_trajectories = 0
-        evicted_transitions = 0
-        state_ids, self._next_reanalysis_state_id = self._intern_state_ids(
-            stored,
-            self._reanalysis_state_registry,
-            self._next_reanalysis_state_id,
-        )
-        while self._transition_count + trajectory_length > self.max_transitions:
-            evicted = self._trajectories.popleft()
-            evicted_state_ids = self._reanalysis_state_ids.popleft()
-            self._release_state_ids(evicted, evicted_state_ids)
-            self._trajectory_keys.remove(self._trajectory_key(evicted))
-            self._transition_count -= len(evicted)
-            evicted_trajectories += 1
-            evicted_transitions += len(evicted)
+        row = self._latest_trajectory_rows.get(stored.environment_index)
+        previous = self._trajectories[row] if row is not None else None
+        joins = previous is not None and self._can_join(previous, stored)
+        offset = len(previous) if joins else 0
+        if joins:
+            assert previous is not None
+            prepared = self._concat_episode(previous, stored)
+        else:
+            row = len(self._trajectories)
+            prepared = stored
+        assert row is not None
 
-        if evicted_transitions:
-            self._transition_ids = self._transition_ids[evicted_transitions:]
-            self._priorities = self._priorities[evicted_transitions:]
-
-        # Existing priorities remain unchanged; only new starts receive the
-        # shared maximum. Learner updates subsequently assign individual errors.
-        transition_ids = np.arange(
-            self._next_transition_id,
-            self._next_transition_id + trajectory_length,
-            dtype=np.int64,
-        )
+        # All allocations/target construction precede mutation. Global slots
+        # stay in insertion order even when episode continuations interleave.
+        transition_ids = np.concatenate((self._transition_ids, stored.transition_ids))
+        priorities = np.concatenate((self._priorities, insertion_priorities))
+        rows = np.concatenate((
+            self._trajectory_rows, np.full(trajectory_length, row, dtype=np.int64),
+        ))
+        offsets = np.concatenate((
+            self._trajectory_offsets, np.arange(offset, offset + trajectory_length),
+        ))
+        self._transition_ids = transition_ids
+        self._priorities = priorities
+        self._trajectory_rows = rows
+        self._trajectory_offsets = offsets
         self._next_transition_id += trajectory_length
-        self._transition_ids = np.concatenate((self._transition_ids, transition_ids))
-        self._priorities = np.concatenate(
-            (
-                self._priorities,
-                insertion_priorities,
-            )
-        )
 
         if self._action_space_size is None:
             self._action_space_size = action_space_size
             self._stack_size = stored.stack_size
             self._frame_shape = frame_shape
-        self._trajectories.append(stored)
-        self._reanalysis_state_ids.append(state_ids)
+        if joins:
+            self._trajectories[row] = prepared
+        else:
+            self._trajectories.append(prepared)
+        self._latest_trajectory_rows[stored.environment_index] = row
         self._trajectory_keys.add(key)
         self._transition_count += trajectory_length
         return ReplayAddResult(
-            added_trajectories=1,
+            added_trajectories=int(not joins),
             added_transitions=trajectory_length,
-            evicted_trajectories=evicted_trajectories,
-            evicted_transitions=evicted_transitions,
+            evicted_trajectories=0,
+            evicted_transitions=0,
+        )
+
+    @staticmethod
+    def _can_join(previous: _StoredTrajectory, incoming: _StoredTrajectory) -> bool:
+        return (
+            previous.environment_index == incoming.environment_index
+            and previous.episode_id == incoming.episode_id
+            and previous.last_block_id + 1 == incoming.block_id
+            # A terminal in older lookahead belongs to the arriving owner.
+            and not ((previous.terminated or previous.truncated)
+                     and previous.lookahead_steps == 0)
+            and np.array_equal(
+                previous.frames[len(previous) + previous.stack_size - 1],
+                incoming.frames[incoming.stack_size - 1],
+            )
+        )
+
+    def _concat_episode(
+        self, previous: _StoredTrajectory, incoming: _StoredTrajectory,
+    ) -> _StoredTrajectory:
+        """Replace inactive lookahead with its owner and extend one episode.
+
+        Only the new arrays survive insertion; there is no parallel chunk or
+        merged-context store. Immutable old arrays remain safe for snapshots.
+        """
+        count = len(previous) + len(incoming)
+        arrays = {
+            name: np.concatenate((
+                getattr(previous, name)[:len(previous)], getattr(incoming, name),
+            ))
+            for name in (
+                "actions", "rewards", "policy_targets", "root_values",
+                "predicted_values", "initial_priorities", "transition_ids",
+            )
+        }
+        arrays["frames"] = np.concatenate((
+            previous.frames[:len(previous) + previous.stack_size],
+            incoming.frames[incoming.stack_size:],
+        ))
+        arrays["value_targets"], arrays["value_valid_mask"] = self._build_value_target_table(
+            arrays["rewards"], arrays["root_values"], sampleable_count=count,
+        )
+        for array in arrays.values():
+            array.setflags(write=False)
+        return replace(
+            previous, last_block_id=incoming.last_block_id,
+            sampleable_transition_count=count, lookahead_steps=incoming.lookahead_steps,
+            terminated=incoming.terminated, truncated=incoming.truncated, **arrays,
         )
 
     def extend(self, trajectories: Iterable[GameTrajectory]) -> ReplayAddResult:
@@ -449,7 +498,7 @@ class FIFOReplayBuffer:
         pin_memory: bool = False,
         priority_beta: float | None = None,
     ) -> ReplayBatch:
-        """Prioritize unique starts and copy their prepared local context."""
+        """Prioritize unique starts and gather precomputed episode targets."""
         self._validate_sample_request(batch_size)
         if not isinstance(include_value_bootstraps, bool):
             raise TypeError("include_value_bootstraps must be a boolean")
@@ -566,11 +615,10 @@ class FIFOReplayBuffer:
         value_targets, value_valid_mask = self._build_value_target_table(
             rewards64, root_values64, sampleable_count=len(trajectory)
         )
-        # V2's insertion-priority path (GameTrajectory.get_bootstrapped_value)
-        # can bootstrap from padded predictions, unlike learner TD targets.
+        # Initial priorities also respect the temporary terminal.
         priority_targets, priority_valid_mask = self._build_value_target_table(
             rewards64, predicted_values64,
-            sampleable_count=trajectory.stored_transition_count,
+            sampleable_count=len(trajectory),
         )
         valid = priority_valid_mask[: len(trajectory)]
         initial_priorities = np.full(
@@ -581,7 +629,12 @@ class FIFOReplayBuffer:
             - priority_targets[: len(trajectory)][valid]
         )
 
+        transition_ids = np.arange(
+            self._next_transition_id, self._next_transition_id + len(trajectory),
+            dtype=np.int64,
+        )
         arrays = (
+            transition_ids,
             frames,
             actions,
             rewards,
@@ -599,6 +652,7 @@ class FIFOReplayBuffer:
             environment_index=trajectory.environment_index,
             episode_id=trajectory.episode_id,
             block_id=trajectory.block_id,
+            last_block_id=trajectory.block_id,
             stack_size=trajectory.stack_size,
             sampleable_transition_count=len(trajectory),
             lookahead_steps=trajectory.lookahead_steps,
@@ -611,6 +665,7 @@ class FIFOReplayBuffer:
             root_values=root_values,
             predicted_values=predicted_values,
             initial_priorities=initial_priorities,
+            transition_ids=transition_ids,
             value_targets=value_targets,
             value_valid_mask=value_valid_mask,
         )
@@ -622,19 +677,19 @@ class FIFOReplayBuffer:
         *,
         sampleable_count: int,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """V2 Atari TD targets: lookahead rewards, block-local bootstrap.
+        """TD returns inside the currently available merged trajectory.
 
-        No target is computed for lookahead roots or the block endpoint;
-        those states are excluded from policy/value supervision.
+        Its sampleable end is a zero-value terminal, real or temporary.
+        Stored lookahead rewards remain inactive until their owner arrives.
         """
         stored_count = int(rewards.shape[0])
         bootstrap_count = max(0, sampleable_count - self.unroll_steps)
         values64 = np.zeros(stored_count + 1, dtype=np.float64)
         valid_mask = np.zeros(stored_count + 1, dtype=np.bool_)
 
-        # Missing future values zero only the bootstrap term. Lookahead
-        # rewards can still contribute beyond the original action boundary.
-        padded_rewards = np.pad(rewards, (0, self.unroll_steps - 1))
+        padded_rewards = np.pad(
+            rewards[:sampleable_count], (0, self.unroll_steps - 1)
+        )
         reward_windows = np.lib.stride_tricks.sliding_window_view(
             padded_rewards, self.unroll_steps
         )[:sampleable_count]
@@ -665,7 +720,7 @@ class FIFOReplayBuffer:
         *,
         priority_beta: float | None = None,
     ) -> tuple[
-        list[tuple[_StoredTrajectory, int]],
+        list[tuple[_StoredTrajectory, np.ndarray, int]],
         np.ndarray,
         np.ndarray,
     ]:
@@ -728,6 +783,7 @@ class FIFOReplayBuffer:
             ),
             "value_targets": ((batch_size, states), np.dtype(np.float32)),
             "reachable_mask": ((batch_size, states), np.dtype(np.bool_)),
+            "terminal_mask": ((batch_size, states), np.dtype(np.bool_)),
             "reanalysis_frames": (
                 (
                     batch_size,
@@ -835,6 +891,7 @@ class FIFOReplayBuffer:
             policy_targets=torch.from_numpy(arrays["policy_targets"]),
             value_targets=torch.from_numpy(arrays["value_targets"]),
             reachable_mask=torch.from_numpy(arrays["reachable_mask"]),
+            terminal_mask=torch.from_numpy(arrays["terminal_mask"]),
             indices=torch.from_numpy(arrays["indices"]),
             importance_weights=torch.from_numpy(arrays["importance_weights"]),
             value_bootstrap_frames=bootstrap_frames,
@@ -854,27 +911,13 @@ class FIFOReplayBuffer:
     def _locations_for_indices(
         self, flat_indices: np.ndarray
     ) -> list[tuple[_StoredTrajectory, np.ndarray, int]]:
-        """Resolve flat replay offsets with vectorized cumulative boundaries."""
-        trajectories = tuple(self._trajectories)
-        state_ids = tuple(self._reanalysis_state_ids)
-        lengths = np.fromiter(
-            (len(trajectory) for trajectory in trajectories),
-            dtype=np.int64,
-            count=len(trajectories),
-        )
-        ends = np.cumsum(lengths)
-        trajectory_indices = np.searchsorted(ends, flat_indices, side="right")
-        starts = ends - lengths
-        positions = flat_indices - starts[trajectory_indices]
+        """O(batch size) direct lookup; no scan, prefix sum, or key lookup."""
+        rows = self._trajectory_rows[flat_indices].tolist()
+        offsets = self._trajectory_offsets[flat_indices].tolist()
         return [
-            (
-                trajectories[int(trajectory_index)],
-                state_ids[int(trajectory_index)],
-                int(position),
-            )
-            for trajectory_index, position in zip(
-                trajectory_indices, positions, strict=True
-            )
+            (trajectory, trajectory.transition_ids, offset)
+            for row, offset in zip(rows, offsets, strict=True)
+            for trajectory in (self._trajectories[row],)
         ]
 
     def _fill_batch_arrays(
@@ -899,6 +942,8 @@ class FIFOReplayBuffer:
         value_targets = arrays["value_targets"]
         reachable_mask = arrays["reachable_mask"]
         reachable_mask[:, 0] = True
+        terminal_mask = arrays["terminal_mask"]
+        terminal_mask.fill(False)
         action_mask = reachable_mask[:, 1:]
         reanalysis_frames = arrays.get("reanalysis_frames")
         value_bootstrap_frames = arrays.get("value_bootstrap_frames")
@@ -912,12 +957,13 @@ class FIFOReplayBuffer:
             locations
         ):
             block_count = len(trajectory)
-            # Lookahead contains real actions/rewards for dynamics training.
-            # Policy/value roots below remain limited to the original block.
-            action_count = min(unroll_steps, trajectory.stored_transition_count - start)
-            # V2 retains observation context even where padded actions are
-            # masked; this is also identical with/without bootstrap metadata.
-            frame_count = min(full_frame_count, trajectory.frames.shape[0] - start)
+            endpoint = block_count - start
+            if endpoint <= unroll_steps:
+                terminal_mask[batch_index, endpoint] = True
+            # The first inactive lookahead state is a temporary terminal.
+            # Merging a continuation moves this endpoint forward.
+            action_count = min(unroll_steps, endpoint)
+            frame_count = min(full_frame_count, block_count + stack_size - start)
             if reanalysis_frames is None:
                 frames[batch_index, :frame_count] = trajectory.frames[
                     start : start + frame_count
@@ -929,7 +975,7 @@ class FIFOReplayBuffer:
             else:
                 available_frames = min(
                     reanalysis_frames.shape[1],
-                    trajectory.frames.shape[0] - start,
+                    block_count + stack_size - start,
                 )
                 reanalysis_frames[batch_index, :available_frames] = trajectory.frames[
                     start : start + available_frames
@@ -967,8 +1013,8 @@ class FIFOReplayBuffer:
                 trajectory_state_ids[start : start + policy_count]
             )
 
-            # Out-of-block values are placeholders, not zero-value supervision.
-            # Their absent policy targets also exclude them from value loss.
+            # Only the real/temporary endpoint receives zero-value supervision;
+            # later padded states have no prediction loss.
             value_targets[batch_index].fill(0)
             value_targets[batch_index, :policy_count] = trajectory.value_targets[
                 start : start + policy_count
@@ -1031,61 +1077,6 @@ class FIFOReplayBuffer:
         # has age zero and exactly ``freshness_threshold`` transitions satisfy
         # ``age < freshness_threshold``.
         arrays["transition_ages"][:] = self._next_transition_id - 1 - transition_ids
-
-    @staticmethod
-    def _logical_state_key(
-        trajectory: _StoredTrajectory,
-        position: int,
-    ) -> tuple[int, int, int, int]:
-        block_offset, block_position = divmod(position, len(trajectory))
-        return (
-            trajectory.environment_index,
-            trajectory.episode_id,
-            trajectory.block_id + block_offset,
-            block_position,
-        )
-
-    @classmethod
-    def _intern_state_ids(
-        cls,
-        trajectory: _StoredTrajectory,
-        registry: dict[tuple[int, int, int, int], tuple[int, int]],
-        next_state_id: int,
-    ) -> tuple[np.ndarray, int]:
-        """Assign compact IDs while sharing canonical overlapping states."""
-        state_ids = np.empty(trajectory.stored_transition_count, dtype=np.int64)
-        for position in range(trajectory.stored_transition_count):
-            key = cls._logical_state_key(trajectory, position)
-            registered = registry.get(key)
-            if registered is None:
-                state_id = next_state_id
-                next_state_id += 1
-                registry[key] = (state_id, 1)
-            else:
-                state_id, references = registered
-                registry[key] = (state_id, references + 1)
-            state_ids[position] = state_id
-        state_ids.setflags(write=False)
-        return state_ids, next_state_id
-
-    def _release_state_ids(
-        self,
-        trajectory: _StoredTrajectory,
-        state_ids: np.ndarray,
-    ) -> None:
-        """Release canonical identities once no stored block references them."""
-        for position, raw_state_id in enumerate(state_ids):
-            key = self._logical_state_key(trajectory, position)
-            state_id, references = self._reanalysis_state_registry[key]
-            if state_id != int(raw_state_id):
-                raise RuntimeError("reanalysis state identity is inconsistent")
-            if references == 1:
-                del self._reanalysis_state_registry[key]
-            else:
-                self._reanalysis_state_registry[key] = (
-                    state_id,
-                    references - 1,
-                )
 
     @staticmethod
     def _trajectory_key(

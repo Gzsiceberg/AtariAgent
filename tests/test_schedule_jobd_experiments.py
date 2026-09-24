@@ -162,9 +162,6 @@ def test_new_clip_experiments(scheduler, index, experiment, selection):
     assert [arg for arg in call if arg.startswith("environment.time_limit_mode=")] == (
         ["environment.time_limit_mode=full_game"] if index == "5" else []
     )
-    assert [arg for arg in call if arg.startswith("replay.treat_truncations_as_terminal=")] == (
-        ["replay.treat_truncations_as_terminal=true"] if index == "5" else []
-    )
 
 
 @pytest.mark.parametrize("selectors", [(), ("all",)])
@@ -180,7 +177,6 @@ def test_all_experiments(scheduler, selectors):
     assert calls[4][5] == "runs/test/gumbel_t400_mv10000_ttl_200_clip"
     assert calls[5][5] == "runs/test/gumbel_t400_clip_v1timeout"
     assert "environment.time_limit_mode=full_game" in calls[5]
-    assert "replay.treat_truncations_as_terminal=true" in calls[5]
     for call in calls[:-1]:
         assert not any(arg.startswith("checkpoint.collection_interval=") for arg in call)
     assert "replay.use_max_priority=true" in calls[0]

@@ -34,6 +34,7 @@ self_play:
   clip_rewards: true
 
 replay:
+  # Reporting budget only: replay keeps all transitions without eviction.
   max_transitions: 100000
   warmup_transitions: 2000
   # By default both modes use V2 insertion: each new trajectory gets
@@ -42,9 +43,6 @@ replay:
   priority_weight_clip: 0.0
   # Override insertion with V1's buffer maximum only (1 when empty).
   use_max_priority: false
-  # V1 timeout targets: remaining rewards with zero continuation, not masked tails.
-  # Combine with environment.time_limit_mode=full_game for V1 time-limit behavior.
-  treat_truncations_as_terminal: true
   # Sample with priority**0.6 and linearly anneal the
   # importance-sampling exponent from 0.4 to 1.0 over all learner updates.
   priority_alpha: 0.6

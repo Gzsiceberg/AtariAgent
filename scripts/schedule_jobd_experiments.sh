@@ -119,7 +119,7 @@ for experiment in "${experiments[@]}"; do
             overrides+=("reanalysis.cache_target_ttl=25")
             ;;
         gumbel_t400_clip_v1timeout)
-            overrides+=("environment.time_limit_mode=full_game" "replay.treat_truncations_as_terminal=true")
+            overrides+=("environment.time_limit_mode=full_game")
             ;;
         gumbel_t400_mv10000_ttl_50*)
             overrides+=("training.mixed_value_threshold=10000" "reanalysis.cache_target_ttl=50")

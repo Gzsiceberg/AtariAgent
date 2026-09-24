@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train AtariAgent from FIFO self-play replay."""
+"""Train AtariAgent from append-only episode replay."""
 
 from __future__ import annotations
 
@@ -588,7 +588,6 @@ def main(config: TrainAgentConfig) -> None:
             discount=discount,
             priority_weight_clip=config.replay.priority_weight_clip,
             use_max_priority=config.replay.use_max_priority,
-            treat_truncations_as_terminal=config.replay.treat_truncations_as_terminal,
             priority_alpha=config.replay.priority_alpha,
             priority_beta=config.replay.priority_beta_initial,
             priority_epsilon=config.replay.priority_epsilon,

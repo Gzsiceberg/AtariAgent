@@ -47,13 +47,13 @@ class SelfPlayConfig:
 
 @dataclass
 class ReplayConfig:
-    """FIFO replay settings."""
+    """Append-only episode replay settings."""
 
+    # Reporting budget only; storage grows without eviction.
     max_transitions: int = 10_000
     warmup_transitions: int = 2_000
     priority_weight_clip: float = 0.0
     use_max_priority: bool = False
-    treat_truncations_as_terminal: bool = False
     priority_alpha: float = 0.6
     priority_beta_initial: float = 0.4
     priority_beta_final: float = 1.0
