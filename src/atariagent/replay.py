@@ -343,7 +343,7 @@ class FIFOReplayBuffer:
             raise ValueError("trajectory identity already exists in replay")
 
         # Preparation and all validation happen before replay state is mutated.
-        trajectory.validate_lookahead(self.unroll_steps)
+        # Partial lookahead is valid: available rewards still form TD targets.
         stored = self._prepare_trajectory(trajectory)
         action_space_size = int(stored.policy_targets.shape[1])
         frame_shape = tuple(stored.frames.shape[1:])
@@ -563,21 +563,14 @@ class FIFOReplayBuffer:
         predicted_values = np.ascontiguousarray(
             predicted_values64, dtype=np.float32
         )
-        # Preserve the environment flags; only target construction treats a
-        # timeout as terminal when V1-style zero continuation is requested.
-        terminal_target = trajectory.terminated or (
-            self._treat_truncations_as_terminal and trajectory.truncated
-        )
         value_targets, value_valid_mask = self._build_value_target_table(
-            rewards64,
-            root_values64,
-            terminated=terminal_target,
+            rewards64, root_values64, sampleable_count=len(trajectory)
         )
-        # Initial errors bootstrap from network predictions, not MCTS values.
+        # V2's insertion-priority path (GameTrajectory.get_bootstrapped_value)
+        # can bootstrap from padded predictions, unlike learner TD targets.
         priority_targets, priority_valid_mask = self._build_value_target_table(
-            rewards64,
-            predicted_values64,
-            terminated=terminal_target,
+            rewards64, predicted_values64,
+            sampleable_count=trajectory.stored_transition_count,
         )
         valid = priority_valid_mask[: len(trajectory)]
         initial_priorities = np.full(
@@ -627,26 +620,28 @@ class FIFOReplayBuffer:
         rewards: np.ndarray,
         root_values: np.ndarray,
         *,
-        terminated: bool,
+        sampleable_count: int,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Precompute fixed-horizon values for every stored state."""
+        """V2 Atari TD targets: lookahead rewards, block-local bootstrap.
+
+        Boundary successors are supervised as zero by the action mask even
+        for nonterminal blocks. No target is computed for lookahead roots.
+        """
         stored_count = int(rewards.shape[0])
-        bootstrap_count = max(0, stored_count - self.unroll_steps)
+        bootstrap_count = max(0, sampleable_count - self.unroll_steps)
         values64 = np.zeros(stored_count + 1, dtype=np.float64)
         valid_mask = np.zeros(stored_count + 1, dtype=np.bool_)
 
-        # Match EZ V2: missing future values zero only the bootstrap term,
-        # not the whole value loss. Tail targets use all available rewards,
-        # including for unfinished blocks drained at the collection budget.
+        # Missing future values zero only the bootstrap term. Lookahead
+        # rewards can still contribute beyond the original action boundary.
         padded_rewards = np.pad(rewards, (0, self.unroll_steps - 1))
         reward_windows = np.lib.stride_tricks.sliding_window_view(
             padded_rewards, self.unroll_steps
-        )[:stored_count]
-        values64[:stored_count] = reward_windows @ self._reward_discounts
-        valid_mask[:stored_count] = True
-        # Only a known terminal has a supervised absorbing state after the
-        # final stored action. Do not turn an unfinished game into a terminal.
-        valid_mask[stored_count] = terminated
+        )[:sampleable_count]
+        values64[:sampleable_count] = reward_windows @ self._reward_discounts
+        # Retained for snapshot compatibility; loss validity is now derived
+        # solely from real actions (plus the always-supervised root).
+        valid_mask[: sampleable_count + 1] = True
 
         if bootstrap_count:
             values64[:bootstrap_count] += (
@@ -738,7 +733,6 @@ class FIFOReplayBuffer:
                 (batch_size, self.unroll_steps),
                 np.dtype(np.bool_),
             ),
-            "value_mask": ((batch_size, states), np.dtype(np.bool_)),
             "reanalysis_frames": (
                 (
                     batch_size,
@@ -846,7 +840,6 @@ class FIFOReplayBuffer:
             policy_targets=torch.from_numpy(arrays["policy_targets"]),
             value_targets=torch.from_numpy(arrays["value_targets"]),
             action_mask=torch.from_numpy(arrays["action_mask"]),
-            value_mask=torch.from_numpy(arrays["value_mask"]),
             indices=torch.from_numpy(arrays["indices"]),
             importance_weights=torch.from_numpy(arrays["importance_weights"]),
             value_bootstrap_frames=bootstrap_frames,
@@ -910,7 +903,6 @@ class FIFOReplayBuffer:
         policy_targets = arrays["policy_targets"]
         value_targets = arrays["value_targets"]
         action_mask = arrays["action_mask"]
-        value_mask = arrays["value_mask"]
         reanalysis_frames = arrays.get("reanalysis_frames")
         value_bootstrap_frames = arrays.get("value_bootstrap_frames")
         value_bootstrap_values = arrays.get("value_bootstrap_values")
@@ -922,9 +914,11 @@ class FIFOReplayBuffer:
         for batch_index, (trajectory, trajectory_state_ids, start) in enumerate(
             locations
         ):
-            stored_count = trajectory.stored_transition_count
-            action_count = min(unroll_steps, stored_count - start)
-            frame_count = stack_size + action_count
+            block_count = len(trajectory)
+            action_count = min(unroll_steps, block_count - start)
+            # V2 retains observation context even where padded actions are
+            # masked; this is also identical with/without bootstrap metadata.
+            frame_count = min(full_frame_count, trajectory.frames.shape[0] - start)
             if reanalysis_frames is None:
                 frames[batch_index, :frame_count] = trajectory.frames[
                     start : start + frame_count
@@ -947,7 +941,10 @@ class FIFOReplayBuffer:
                     )
 
             if action_count < unroll_steps:
-                actions[batch_index].fill(0)
+                # V2 pads unavailable Atari actions uniformly at random.
+                actions[batch_index, action_count:, 0] = self._rng.integers(
+                    trajectory.policy_targets.shape[1], size=unroll_steps - action_count
+                )
                 rewards[batch_index].fill(0)
                 action_mask[batch_index].fill(False)
             else:
@@ -960,7 +957,7 @@ class FIFOReplayBuffer:
             if action_count < unroll_steps:
                 action_mask[batch_index, :action_count] = True
 
-            policy_count = min(state_count, stored_count - start)
+            policy_count = min(state_count, block_count - start)
             if policy_count < state_count:
                 policy_targets[batch_index].fill(0)
             policy_targets[batch_index, :policy_count] = trajectory.policy_targets[
@@ -971,15 +968,11 @@ class FIFOReplayBuffer:
                 trajectory_state_ids[start : start + policy_count]
             )
 
-            value_count = min(state_count, stored_count + 1 - start)
-            if value_count < state_count:
-                value_targets[batch_index].fill(0)
-                value_mask[batch_index].fill(False)
-            value_targets[batch_index, :value_count] = trajectory.value_targets[
-                start : start + value_count
-            ]
-            value_mask[batch_index, :value_count] = trajectory.value_valid_mask[
-                start : start + value_count
+            # V2's episodic path assigns zero at/after the original block
+            # endpoint, even when stored lookahead continues the real game.
+            value_targets[batch_index].fill(0)
+            value_targets[batch_index, :policy_count] = trajectory.value_targets[
+                start : start + policy_count
             ]
 
             if value_bootstrap_frames is not None:
@@ -989,7 +982,7 @@ class FIFOReplayBuffer:
                 assert value_bootstrap_state_ids is not None
                 bootstrap_start = start + self.unroll_steps
                 bootstrap_count = min(
-                    state_count, max(0, stored_count - bootstrap_start)
+                    state_count, max(0, block_count - bootstrap_start)
                 )
                 bootstrap_frame_count = (
                     bootstrap_count + stack_size - 1 if bootstrap_count else 0

@@ -22,7 +22,6 @@ def _batch(index: int = 0) -> ReplayBatch:
         policy_targets=torch.full((2, 2, 2), 0.5),
         value_targets=torch.zeros(2, 2),
         action_mask=torch.ones(2, 1, dtype=torch.bool),
-        value_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.tensor([index * 2, index * 2 + 1]),
         importance_weights=torch.ones(2),
         value_bootstrap_frames=torch.zeros(2, 2, 1, 1, 1, dtype=torch.uint8),
@@ -127,13 +126,11 @@ def test_worker_anneals_priority_beta_by_learner_step() -> None:
     assert replay.priority_betas == pytest.approx([0.7])
 
 
-@pytest.mark.parametrize("valid_roots", [[True, False], [False, True], [False, False], [True, True]])
-def test_worker_assigns_invalid_roots_minimum_valid_priority(valid_roots) -> None:
-    root_mask = torch.tensor(valid_roots)
+@pytest.mark.parametrize("valid_actions", [[True, False], [False, True], [False, False], [True, True]])
+def test_worker_updates_every_root_independent_of_recurrent_mask(valid_actions) -> None:
     batch = replace(
         _batch().without_value_bootstraps(),
-        # Recurrent validity must not determine the root's priority update.
-        value_mask=torch.stack((root_mask, ~root_mask), dim=1),
+        action_mask=torch.tensor(valid_actions)[:, None],
     )
     replay = _FakeReplay(lambda _: batch)
     candidates = torch.tensor([34.586, 123.0], requires_grad=True)
@@ -154,10 +151,8 @@ def test_worker_assigns_invalid_roots_minimum_valid_priority(valid_roots) -> Non
 
     assert len(replay.priority_updates) == 1
     indices, priorities = replay.priority_updates[0]
-    minimum = candidates[root_mask].min() if root_mask.any() else 0.125
-    expected = torch.where(root_mask, candidates, minimum)
     torch.testing.assert_close(indices, batch.indices)
-    torch.testing.assert_close(priorities, expected)
+    torch.testing.assert_close(priorities, candidates)
     torch.testing.assert_close(candidates, original)
     assert not priorities.requires_grad
 
@@ -285,7 +280,7 @@ def test_worker_applies_mixed_values_before_learner_transfer() -> None:
             search_value_targets=torch.tensor(
                 [[10.0, 20.0], [30.0, 40.0]]
             ),
-            transition_ages=torch.tensor([5_000, 4_999]),
+            transition_ages=torch.tensor([4_999, 4_998]),
         )
         return batch
 

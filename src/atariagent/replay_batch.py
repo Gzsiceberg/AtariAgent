@@ -17,13 +17,13 @@ class ReplayBatch:
     """A padded EfficientZero-style unroll batch.
 
     ``frames`` contains the initial stack context followed by one new frame
-    per unroll action. ``action_mask`` identifies real
-    action/reward steps. Missing policy targets are all zeros, so they
-    contribute no policy loss. ``policy_mask`` is derived from these targets
-    only when search-root validity or diagnostic counts are needed. ``value_mask`` identifies supervised value targets: stored
-    states use available rewards with zero bootstrap at incomplete TD tails,
-    and search targets are valid independently of bootstrap availability.
-    A true terminal state has a valid zero-value target without an MCTS policy. Value-bootstrap fields carry compact real observations,
+    per unroll action. ``action_mask`` identifies actions inside the original
+    block, excluding lookahead. All recurrent losses use this mask, while root
+    losses are always enabled. ``value_mask`` is only a derived convenience
+    view: a true root followed by ``action_mask``, not TD-bootstrap validity.
+    Missing policy targets are zero, including at the block endpoint; its
+    value target is zero even when the underlying game continues. Lookahead
+    rewards provide TD context, not additional recurrent training steps. Value-bootstrap fields carry compact real observations,
     stored bootstrap terms, and logical endpoint IDs so reanalysis can refresh
     and cache TD endpoint predictions without changing replay. Search values and zero-based
     transition ages (the number of newer replay transitions) are
@@ -39,7 +39,6 @@ class ReplayBatch:
     policy_targets: Float[Tensor, "batch states actions"]
     value_targets: Float[Tensor, "batch states"]
     action_mask: Bool[Tensor, "batch unroll"]
-    value_mask: Bool[Tensor, "batch states"]
     indices: Int[Tensor, "batch"]
     importance_weights: Float[Tensor, "batch"]
     value_bootstrap_frames: (
@@ -55,6 +54,11 @@ class ReplayBatch:
     search_value_targets: Float[Tensor, "batch states"] | None = None
     transition_ages: Int[Tensor, "batch"] | None = None
     reanalysis_state_ids: Int[Tensor, "batch states"] | None = None
+
+    @property
+    def value_mask(self) -> Bool[Tensor, "batch states"]:
+        """V2 loss positions: every root and each real-action successor."""
+        return torch.cat((torch.ones_like(self.action_mask[:, :1]), self.action_mask), dim=1)
 
     @property
     def policy_mask(self) -> Bool[Tensor, "batch states"]:
@@ -128,8 +132,9 @@ class ReplayBatch:
         if self.search_value_targets is None:
             raise ValueError("batch has no MCTS search value targets")
 
-        # Search-root availability is independent of TD-bootstrap validity.
-        search_mask = self.policy_mask
+        # V2 selects the whole unroll by sample age. Search values outside
+        # the original block are zero, just like TD endpoint targets.
+        search_mask = torch.ones_like(self.value_targets, dtype=torch.bool)
         if mode == "mixed":
             if self.transition_ages is None:
                 raise ValueError("batch has no replay transition ages")
@@ -140,16 +145,16 @@ class ReplayBatch:
                 collection_steps=collection_steps,
                 advance_during_final=False,
             )
-            sample_uses_search = effective_ages >= freshness_threshold
+            # V2: idx > collected_transitions - threshold means recent.
+            # Our age is zero-based (N - 1 - idx), hence the +1 here.
+            sample_uses_search = effective_ages + 1 >= freshness_threshold
             search_mask = search_mask & sample_uses_search[:, None]
         selected = torch.where(
             search_mask,
             self.search_value_targets,
             self.value_targets,
         )
-        return replace(
-            self, value_targets=selected, value_mask=self.value_mask | search_mask
-        )
+        return replace(self, value_targets=selected)
 
     def effective_transition_ages(
         self,

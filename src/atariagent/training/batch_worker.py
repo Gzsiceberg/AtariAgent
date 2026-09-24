@@ -216,32 +216,16 @@ class BatchWorker:
 
     @torch.no_grad()
     def complete(self, ready: ReadyBatch, priorities: Tensor) -> None:
-        """Update priorities; invalid roots use the minimum valid batch priority.
-
-        If no root has a valid value target, use the current replay minimum.
-        """
+        """Update priorities for every sampled root, as in V2."""
         self._require_open()
         with self._outstanding_lock:
             if ready.token not in self._outstanding:
                 raise ValueError("batch was already completed or is not owned")
             self._outstanding.remove(ready.token)
         try:
-            # Always transfer, even if every root is invalid: this synchronizes
-            # learner completion before releasing the pinned batch's slot.
+            # Synchronize learner completion before releasing the pinned slot.
             cpu_priorities = priorities.cpu()
-            valid_roots = ready.cpu_batch.value_mask[:, 0]
             with self._replay_lock:
-                if not valid_roots.all():
-                    # Never use errors against missing-target placeholder zeros.
-                    # Read the fallback under the same lock as priority updates.
-                    minimum = (
-                        cpu_priorities[valid_roots].min()
-                        if valid_roots.any()
-                        else float(self.replay.priorities.min())
-                    )
-                    cpu_priorities = torch.where(
-                        valid_roots, cpu_priorities, minimum
-                    )
                 self.replay.update_priorities(
                     ready.cpu_batch.indices, cpu_priorities
                 )

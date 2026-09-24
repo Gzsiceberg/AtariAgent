@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Protocol
 
 import gymnasium as gym
@@ -579,12 +579,11 @@ class SelfPlayWorker:
     def flush(self) -> tuple[tuple[GameTrajectory, ...], ...]:
         """Drain pending replay starts without stepping or ending the games.
 
-        Preserve block identities and emit each transition exactly once. Strip
-        incomplete lookahead (owned by subsequent builders) so flushed blocks
-        use replay's zero-lookahead partial-block path. Replay trains TD tails
-        on available rewards with zero bootstrap, following EZ V2. This keeps
-        block sizes and reanalysis state identities unchanged; environment
-        terminal flags and full-game reward accounting remain untouched.
+        Preserve block identities and emit each replay start exactly once.
+        Retain available lookahead as reward context, not extra replay starts
+        or unroll actions. Replay uses available rewards with zero bootstrap
+        at block boundaries, following V2's Atari target construction.
+        Environment terminal flags and full-game scores remain untouched.
 
         Repeated calls without further collection return no blocks. Closing
         the worker does not implicitly flush; callers must insert the result.
@@ -599,22 +598,9 @@ class SelfPlayWorker:
             for builder in builders:
                 if not len(builder):
                     continue
-                block = builder.finalize(
+                blocks.append(builder.finalize(
                     terminated=False, truncated=False, full_episode_done=False
-                )
-                count = len(block)
-                blocks.append(
-                    replace(
-                        block,
-                        frames=block.frames[: count + block.stack_size],
-                        actions=block.actions[:count],
-                        rewards=block.rewards[:count],
-                        raw_rewards=block.raw_rewards[:count],
-                        search_results=block.search_results[:count],
-                        predicted_values=block.predicted_values[:count],
-                        lookahead_steps=0,
-                    )
-                )
+                ))
             completed.append(tuple(blocks))
             if blocks:
                 # An empty active builder already has the next unused ID.

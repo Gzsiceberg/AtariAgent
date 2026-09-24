@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 import torch
@@ -135,7 +136,6 @@ def test_agent_train_step_updates_all_supervised_output_heads() -> None:
         ),
         value_targets=torch.tensor([[1.0, 0.5], [-1.0, -0.5]]),
         action_mask=torch.ones(2, 1, dtype=torch.bool),
-        value_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
         value_bootstrap_frames=torch.randint(
@@ -326,7 +326,6 @@ def test_complete_compiled_unroll_matches_eager_update(monkeypatch) -> None:
         ),
         value_targets=torch.tensor([[0.0, 1.0, 0.5], [1.0, 0.0, 0.5]]),
         action_mask=torch.ones(2, 2, dtype=torch.bool),
-        value_mask=torch.ones(2, 3, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.tensor([0.5, 1.0]),
     )
@@ -382,7 +381,6 @@ def test_logged_losses_ignore_importance_weights_and_padding(
     )
     action_mask = torch.arange(2).expand(2, -1) < valid_steps
     policy_mask = torch.arange(3).expand(2, -1) < valid_steps
-    value_mask = torch.arange(3).expand(2, -1) < max(valid_steps - 1, 0)
     batch = ReplayBatch(
         frames=torch.zeros(2, 3, 1, 1, 1, dtype=torch.uint8),
         actions=torch.zeros(2, 2, 1, dtype=torch.long),
@@ -390,7 +388,6 @@ def test_logged_losses_ignore_importance_weights_and_padding(
         policy_targets=torch.full((2, 3, 2), 0.5) * policy_mask[..., None],
         value_targets=torch.zeros(2, 3),
         action_mask=action_mask,
-        value_mask=value_mask,
         indices=torch.arange(2),
         importance_weights=torch.full((2,), importance_weight),
     )
@@ -401,7 +398,7 @@ def test_logged_losses_ignore_importance_weights_and_padding(
                / (2 * 0.001)) ** 2 - 1
     for name, count, expected in (
         ("policy", valid_steps, log_two),
-        ("value", max(valid_steps - 1, 0), abs(decoded)),
+        ("value", valid_steps + 1, abs(decoded)),
         ("reward", valid_steps, abs(decoded)),
         ("consistency", valid_steps, -1.0),
     ):
@@ -413,11 +410,45 @@ def test_logged_losses_ignore_importance_weights_and_padding(
     # The optimization objective still uses weights and fixed unroll scaling.
     expected_loss = importance_weight / 2 * (
         valid_steps * log_two
-        + 0.25 * max(valid_steps - 1, 0) * log_two
+        + 0.25 * (valid_steps + 1) * log_two
         + valid_steps * log_two
         - 5.0 * valid_steps
     )
     assert metrics.loss.item() == pytest.approx(expected_loss)
+
+
+def test_v2_mask_blocks_all_recurrent_target_gradients_after_last_action() -> None:
+    def trainer():
+        return Trainer(
+            _ScalarRepresentation(), _RewardIdentityDynamics(), _ScalarPrediction(),
+            consistency_network=_AlignedConsistency(), unroll_steps=2,
+            support_min=0, support_max=1,
+        )
+
+    batch = ReplayBatch(
+        frames=torch.zeros(2, 3, 1, 1, 1, dtype=torch.uint8),
+        actions=torch.zeros(2, 2, 1, dtype=torch.long),
+        rewards=torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+        policy_targets=torch.tensor([[[0.5, 0.5], [0.0, 0.0], [0.0, 0.0]]] * 2),
+        value_targets=torch.tensor([[1.0, 0.0, 0.0]] * 2),
+        action_mask=torch.tensor([[True, False]] * 2),
+        indices=torch.arange(2), importance_weights=torch.ones(2),
+    )
+    # State 1 is the supervised zero-value endpoint. State 2/action 1 are
+    # padding: even nonzero policy targets there must not affect any gradient.
+    policies = batch.policy_targets.clone()
+    policies[:, 2] = torch.tensor([0.0, 1.0])
+    poisoned = replace(
+        batch, policy_targets=policies,
+        value_targets=torch.tensor([[1.0, 0.0, 123.0]] * 2),
+        rewards=torch.tensor([[1.0, 123.0]] * 2),
+    )
+    clean, dirty = trainer(), trainer()
+    clean_metrics, dirty_metrics = clean.train_step(batch), dirty.train_step(poisoned)
+    torch.testing.assert_close(clean_metrics.loss, dirty_metrics.loss)
+    for first, second in zip(clean._parameters, dirty._parameters, strict=True):
+        torch.testing.assert_close(first.grad, second.grad)
+        torch.testing.assert_close(first, second)
 
 
 def test_agent_requires_dynamics_gradient_scaling() -> None:
@@ -456,8 +487,7 @@ def test_agent_halves_each_recurrent_state_gradient() -> None:
             ]
         ),
         value_targets=torch.zeros(2, 3),
-        action_mask=torch.zeros(2, 2, dtype=torch.bool),
-        value_mask=torch.zeros(2, 3, dtype=torch.bool),
+        action_mask=torch.ones(2, 2, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
     )
@@ -485,7 +515,6 @@ def test_agent_logs_mean_absolute_error() -> None:
         policy_targets=torch.full((2, 3, 3), 1.0 / 3.0),
         value_targets=torch.tensor([[1.0, 2.0, 3.0], [-1.0, -2.0, -3.0]]),
         action_mask=torch.ones(2, 2, dtype=torch.bool),
-        value_mask=torch.ones(2, 3, dtype=torch.bool),
         indices=torch.arange(2),
         importance_weights=torch.ones(2),
     )

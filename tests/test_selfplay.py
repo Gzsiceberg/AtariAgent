@@ -410,15 +410,19 @@ def test_final_flush_preserves_all_collected_starts(
             for block in tail:
                 assert not block.terminated and not block.truncated
                 assert not block.full_episode_done
-                assert block.lookahead_steps == 0
+                assert block.lookahead_steps < max(1, lookahead_steps)
             replay.extend(blocks)
         assert len(replay) == 2 * steps
         # V2-style tails train on available rewards without a bootstrap.
         for stored in replay.state_dict()["trajectories"]:
-            count = len(stored["actions"])
-            expected = np.arange(count + 1) < count
+            count = stored["sampleable_transition_count"]
+            expected = np.arange(len(stored["actions"]) + 1) <= count
             np.testing.assert_array_equal(stored["value_valid_mask"], expected)
-            assert stored["value_targets"][count - 1] == stored["rewards"][-1]
+            expected_tail = sum(
+                replay.discount ** i * reward
+                for i, reward in enumerate(stored["rewards"][count - 1:count + 1])
+            )
+            assert stored["value_targets"][count - 1] == pytest.approx(expected_tail)
         batch = replay.sample(min(8, len(replay)))
         assert torch.isfinite(batch.value_targets).all()
         restored = FIFOReplayBuffer(2 * steps, unroll_steps=2)
@@ -467,7 +471,9 @@ def test_flush_preserves_reanalysis_ids_for_existing_lookahead() -> None:
         # The first emitted block already references all nine pending states.
         # Flushing must retain their canonical IDs for reanalysis deduplication.
         ids = list(replay._reanalysis_state_ids)
-        np.testing.assert_array_equal(ids[0][4:], np.concatenate(ids[1:]))
+        np.testing.assert_array_equal(
+            ids[0][4:], np.concatenate([item[:len(block)] for item, block in zip(ids[1:], pending, strict=True)])
+        )
 
 
 def test_flush_blocks_fit_original_block_capacity() -> None:

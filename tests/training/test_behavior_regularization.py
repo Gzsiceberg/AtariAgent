@@ -115,7 +115,6 @@ def test_shared_unroll_prefix_weighting_padding_and_disabled(unroll_steps, weigh
         torch.full((2, unroll_steps + 1, 2), 0.5),
         torch.zeros(2, unroll_steps + 1),
         torch.tensor([[True], [False]]).expand(-1, unroll_steps),
-        torch.ones(2, unroll_steps + 1, dtype=torch.bool),
         torch.tensor([0.4, 1.0]),
     )
     # Only the first sample is valid; importance weighting and 1/unroll_steps

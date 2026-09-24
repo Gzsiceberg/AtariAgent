@@ -28,7 +28,6 @@ def _batch(batch_size: int = 2) -> ReplayBatch:
         policy_targets=torch.full((batch_size, 2, 2), 0.5),
         value_targets=torch.zeros(batch_size, 2),
         action_mask=torch.ones(batch_size, 1, dtype=torch.bool),
-        value_mask=torch.ones(batch_size, 2, dtype=torch.bool),
         indices=torch.arange(batch_size),
         importance_weights=torch.ones(batch_size),
         value_bootstrap_frames=reanalysis_frames[:, 1:],
@@ -191,7 +190,6 @@ def test_cache_does_not_copy_an_invalid_value_to_a_valid_duplicate() -> None:
     batch = replace(
         _batch(),
         policy_targets=torch.tensor([[[0.5, 0.5], [0.0, 0.0]], [[0.5, 0.5], [0.0, 0.0]]]),
-        value_mask=torch.tensor([[False, False], [True, False]]),
         value_targets=torch.tensor([[0.0, 0.0], [10.0, 0.0]]),
         value_bootstrap_mask=torch.zeros(2, 2, dtype=torch.bool),
         reanalysis_state_ids=torch.tensor([[7, -1], [7, -1]]),
