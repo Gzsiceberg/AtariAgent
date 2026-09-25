@@ -50,6 +50,7 @@ def _pipeline(
     timeout_seconds: float = 60.0,
     target_update_interval: int = 200,
     search_algorithm: str = "puct",
+    search_value_mode: str = "improved_policy",
     cache_targets: bool = True,
     cache_target_ttl: int = 200,
     action_embedding: bool = True,
@@ -61,6 +62,7 @@ def _pipeline(
             num_simulations=2 if search_algorithm == "gumbel" else 1,
             search_algorithm=search_algorithm,
             num_top_actions=2,
+            search_value_mode=search_value_mode,
         ),
         policy_chunk_size=4,
         cache_targets=cache_targets,
@@ -89,13 +91,15 @@ def _pipeline(
 
 @pytest.mark.parametrize("action_embedding", [True, False])
 @pytest.mark.parametrize("search_algorithm", ["puct", "gumbel"])
+@pytest.mark.parametrize("search_value_mode", ["improved_policy", "simulation_average"])
 def test_native_pipeline_enforces_prefetch_bound_and_matches_requests(
-    action_embedding, search_algorithm
+    action_embedding, search_algorithm, search_value_mode
 ) -> None:
     pipeline = _pipeline(
         prefetch_batches=2,
         action_embedding=action_embedding,
         search_algorithm=search_algorithm,
+        search_value_mode=search_value_mode,
     )
     try:
         first = pipeline.submit(_batch())

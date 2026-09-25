@@ -36,7 +36,8 @@ public:
         const std::string& search_algorithm = "puct",
         std::int64_t num_top_actions = 4,
         double c_visit = 50.0,
-        double c_scale = 0.1
+        double c_scale = 0.1,
+        const std::string& search_value_mode = "improved_policy"
     );
 
     void eval();

@@ -64,7 +64,8 @@ PYBIND11_MODULE(_tree_search_native, module) {
         )
         .def(
             "policy_and_root_values_arrays",
-            &BatchTree::policy_and_root_values_arrays
+            &BatchTree::policy_and_root_values_arrays,
+            py::arg("simulation_average") = false
         )
         .def("selected_actions_array", &BatchTree::selected_actions_array);
 }

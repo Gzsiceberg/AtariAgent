@@ -123,6 +123,15 @@ uv run python scripts/train_agent.py \
     environment.id=ALE/Breakout-v5
 ```
 
+Gumbel defaults to `self_play.search_value_mode=improved_policy`: the returned
+search value is the improved-policy-weighted average of raw completed Q values.
+Use `self_play.search_value_mode=simulation_average` for V2-style aggregation:
+`(initial network value + sum of simulation returns) / (1 + simulations)`.
+This applies to self-play and target reanalysis, is restored from checkpoints,
+and changes only the returned value—not search traversal, policy targets, or
+selected actions. It does not switch Q completion to V2's formula. PUCT always
+uses the simulation average regardless of this setting.
+
 The two search presets are:
 
 | Preset | Search | Periodic cache clearing | Target TTL | Select with |

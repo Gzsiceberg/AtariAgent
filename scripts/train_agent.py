@@ -537,6 +537,7 @@ def main(config: TrainAgentConfig) -> None:
                 num_top_actions=num_top_actions,
                 c_visit=config.self_play.c_visit,
                 c_scale=config.self_play.c_scale,
+                search_value_mode=config.self_play.search_value_mode,
             ),
             search_rng=random.Random(config.seed),
             precision=config.training.precision,

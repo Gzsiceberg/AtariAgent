@@ -79,8 +79,13 @@ class SearchConfig:
     num_top_actions: int = 4
     c_visit: float = 50.0
     c_scale: float = 0.1
+    search_value_mode: str = "improved_policy"
 
     def __post_init__(self) -> None:
+        if self.search_value_mode not in {"improved_policy", "simulation_average"}:
+            raise ValueError(
+                "search_value_mode must be improved_policy or simulation_average"
+            )
         if self.num_simulations <= 0:
             raise ValueError("num_simulations must be positive")
         if not 0.0 <= self.discount <= 1.0:
@@ -359,7 +364,9 @@ class TreeSearch:
                 )
 
         is_gumbel = self.config.search_algorithm == "gumbel"
-        policy_targets, root_values = tree.policy_and_root_values_arrays()
+        policy_targets, root_values = tree.policy_and_root_values_arrays(
+            self.config.search_value_mode == "simulation_average"
+        )
         return SearchBatchResult(
             policy_targets=policy_targets,
             root_values=root_values,

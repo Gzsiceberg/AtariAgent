@@ -365,12 +365,14 @@ def test_gumbel_materialization_uses_direct_action_and_improved_policy() -> None
     np.testing.assert_array_equal(result.target_policy, batch.policy_targets[0])
 
 
-def test_gumbel_root_value_uses_improved_policy_completed_q() -> None:
+@pytest.mark.parametrize("search_value_mode", ["improved_policy", "simulation_average"])
+def test_gumbel_root_value_aggregation(search_value_mode: str) -> None:
     config = SearchConfig(
         num_simulations=2,
         discount=0.9,
         search_algorithm="gumbel",
         num_top_actions=2,
+        search_value_mode=search_value_mode,
     )
     root_logits = np.asarray([1.0, 0.2, -0.7])
     raw_root_value = 0.6
@@ -401,8 +403,46 @@ def test_gumbel_root_value_uses_improved_policy_completed_q() -> None:
     completed_q = np.where(visited, q_values, v_mix)
     expected = float((batch.policy_targets[0] * completed_q).sum())
 
-    assert batch.root_values[0] == pytest.approx(expected)
-    assert batch.root_values[0] != pytest.approx(simulation_average)
+    assert expected != pytest.approx(simulation_average)
+    expected_value = (
+        simulation_average if search_value_mode == "simulation_average" else expected
+    )
+    assert batch.root_values[0] == pytest.approx(expected_value)
+
+
+@pytest.mark.parametrize("search_algorithm", ["puct", "gumbel"])
+@pytest.mark.parametrize("gumbel_sampling", [False, True])
+def test_search_value_mode_preserves_policy_and_actions(
+    search_algorithm: str, gumbel_sampling: bool
+) -> None:
+    batches = []
+    for mode in ("improved_policy", "simulation_average"):
+        search = _make_search(SearchConfig(
+            num_simulations=8,
+            search_algorithm=search_algorithm,
+            num_top_actions=2,
+            search_value_mode=mode,
+        ))
+        batches.append(search.search_batch(
+            torch.zeros(1, 1),
+            torch.tensor([0.6]),
+            torch.tensor([[1.0, 0.2, -0.7]]),
+            gumbel_sampling=gumbel_sampling,
+            _deterministic_ties=True,
+        ))
+    np.testing.assert_array_equal(batches[0].policy_targets, batches[1].policy_targets)
+    if search_algorithm == "gumbel":
+        np.testing.assert_array_equal(
+            batches[0].selected_actions, batches[1].selected_actions
+        )
+    else:
+        np.testing.assert_array_equal(batches[0].root_values, batches[1].root_values)
+
+
+def test_search_value_mode_validation_and_default() -> None:
+    assert SearchConfig().search_value_mode == "improved_policy"
+    with pytest.raises(ValueError, match="search_value_mode"):
+        SearchConfig(search_value_mode="unknown")
 
 
 @pytest.mark.parametrize("temperature", [-0.1, 1.1, math.nan])

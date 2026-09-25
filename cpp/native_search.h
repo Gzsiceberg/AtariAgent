@@ -72,7 +72,9 @@ public:
         float value,
         std::span<const float> policy_logits
     );
-    float write_policy_and_root_value(float* output) const;
+    float write_policy_and_root_value(
+        float* output, bool simulation_average = false
+    ) const;
     int selected_action() const;
 
 private:

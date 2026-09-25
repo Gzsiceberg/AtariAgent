@@ -73,7 +73,8 @@ ValueTargetNetwork::ValueTargetNetwork(
     const std::string& search_algorithm,
     std::int64_t num_top_actions,
     double c_visit,
-    double c_scale
+    double c_scale,
+    const std::string& search_value_mode
 )
     : representation_(std::move(representation)),
       prediction_(std::move(prediction)),
@@ -108,7 +109,8 @@ ValueTargetNetwork::ValueTargetNetwork(
         search_algorithm,
         num_top_actions,
         c_visit,
-        c_scale
+        c_scale,
+        search_value_mode
     );
     eval();
 }

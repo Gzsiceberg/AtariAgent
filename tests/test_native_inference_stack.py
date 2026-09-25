@@ -86,9 +86,11 @@ def test_native_batched_evaluator_matches_python(checkpoint_networks) -> None:
 
 
 @pytest.mark.parametrize("search_algorithm", ["puct", "gumbel"])
+@pytest.mark.parametrize("search_value_mode", ["improved_policy", "simulation_average"])
 def test_native_complete_tree_search_matches_python(
     checkpoint_networks,
     search_algorithm: str,
+    search_value_mode: str,
 ) -> None:
     native_models, dynamics, prediction = checkpoint_networks
     config = SearchConfig(
@@ -97,6 +99,7 @@ def test_native_complete_tree_search_matches_python(
         value_prefix_horizon=3,
         search_algorithm=search_algorithm,
         num_top_actions=4,
+        search_value_mode=search_value_mode,
     )
     python_evaluator = PythonBatchedNetworkEvaluator(
         dynamics,
@@ -130,6 +133,7 @@ def test_native_complete_tree_search_matches_python(
         config.num_top_actions,
         config.c_visit,
         config.c_scale,
+        config.search_value_mode,
     )
     states = torch.randn(2, 64, 6, 6)
     with torch.inference_mode():

@@ -40,6 +40,7 @@ class SelfPlayConfig:
     root_exploration_fraction: float = 0.25
     c_visit: float = 50.0
     c_scale: float = 0.1
+    search_value_mode: str = "improved_policy"
     steps_per_iteration: int = 25
     trajectory_length: int = 400
     clip_rewards: bool = True

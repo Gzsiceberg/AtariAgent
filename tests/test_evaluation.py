@@ -119,8 +119,9 @@ def test_evaluate_agent_rejects_invalid_parallelism() -> None:
 @pytest.mark.parametrize("precision", [None, "fp32", "bf16"])
 @pytest.mark.parametrize("action_embedding", [None, True, False])
 @pytest.mark.parametrize("unroll_steps", [2, 5])
+@pytest.mark.parametrize("search_value_mode", [None, "improved_policy", "simulation_average"])
 def test_load_agent_checkpoint_applies_search_overrides(
-    monkeypatch, precision, action_embedding, unroll_steps,
+    monkeypatch, precision, action_embedding, unroll_steps, search_value_mode,
 ) -> None:
     checkpoint = {
         "config": {
@@ -140,6 +141,8 @@ def test_load_agent_checkpoint_applies_search_overrides(
         "prediction": {},
     }
 
+    if search_value_mode is not None:
+        checkpoint["config"]["self_play"]["search_value_mode"] = search_value_mode
     if precision is not None:
         checkpoint["config"]["training"]["precision"] = precision
     if action_embedding is not None:
@@ -197,6 +200,9 @@ def test_load_agent_checkpoint_applies_search_overrides(
     assert gumbel_agent.search_config.search_algorithm == "gumbel"
     assert gumbel_agent.search_config.num_simulations == 16
     assert gumbel_agent.search_config.num_top_actions == 8
+    assert gumbel_agent.search_config.search_value_mode == (
+        search_value_mode or "improved_policy"
+    )
     assert gumbel_agent.search_config.value_prefix_horizon == unroll_steps
 
 

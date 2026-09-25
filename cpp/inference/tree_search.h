@@ -30,7 +30,8 @@ public:
         const std::string& search_algorithm = "puct",
         std::int64_t num_top_actions = 4,
         double c_visit = 50.0,
-        double c_scale = 0.1
+        double c_scale = 0.1,
+        const std::string& search_value_mode = "improved_policy"
     );
 
     std::tuple<torch::Tensor, torch::Tensor> search_batch(
@@ -63,6 +64,7 @@ private:
     std::int64_t num_top_actions_;
     double c_visit_;
     double c_scale_;
+    bool simulation_average_;
     std::mt19937_64 rng_;
 };
 

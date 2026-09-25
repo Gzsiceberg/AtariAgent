@@ -209,9 +209,13 @@ void RootTree::write_policy(float* output) const {
     }
 }
 
-float RootTree::write_policy_and_root_value(float* output) const {
+float RootTree::write_policy_and_root_value(
+    float* output, bool simulation_average
+) const {
     write_policy(output);
-    if (algorithm_ != SearchAlgorithm::Gumbel) {
+    // V2 averages the initial network value and all simulation returns.
+    // PUCT always retains this aggregation, independent of the Gumbel option.
+    if (algorithm_ != SearchAlgorithm::Gumbel || simulation_average) {
         return nodes_[0].value();
     }
 

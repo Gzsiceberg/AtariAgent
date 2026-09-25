@@ -52,7 +52,8 @@ TreeSearch::TreeSearch(
     const std::string& search_algorithm,
     std::int64_t num_top_actions,
     double c_visit,
-    double c_scale
+    double c_scale,
+    const std::string& search_value_mode
 )
     : evaluator_(std::move(evaluator)),
       num_simulations_(num_simulations),
@@ -71,7 +72,14 @@ TreeSearch::TreeSearch(
       num_top_actions_(num_top_actions),
       c_visit_(c_visit),
       c_scale_(c_scale),
+      simulation_average_(search_value_mode == "simulation_average"),
       rng_(seed) {
+    if (search_value_mode != "improved_policy"
+        && search_value_mode != "simulation_average") {
+        throw std::invalid_argument(
+            "search_value_mode must be improved_policy or simulation_average"
+        );
+    }
     if (!evaluator_) {
         throw std::invalid_argument("evaluator must not be null");
     }
@@ -316,7 +324,7 @@ std::tuple<torch::Tensor, torch::Tensor> TreeSearch::search_batch(
     num_threads(configured_tree_search_num_threads())
     for (std::int64_t root = 0; root < root_count; ++root) {
         roots_data[root] = trees[root].write_policy_and_root_value(
-            policy_data + root * action_count
+            policy_data + root * action_count, simulation_average_
         );
     }
     return {policies, values};

@@ -226,6 +226,9 @@ def load_agent_checkpoint(
         num_top_actions = 4  # Unused by PUCT.
         c_visit = float(self_play_config.get("c_visit", 50.0))
         c_scale = float(self_play_config.get("c_scale", 0.1))
+        search_value_mode = str(
+            self_play_config.get("search_value_mode", "improved_policy")
+        )
         discount = float(training_config["discount"]) ** int(
             environment_config["frame_skip"]
         )
@@ -270,6 +273,7 @@ def load_agent_checkpoint(
             num_top_actions=num_top_actions,
             c_visit=c_visit,
             c_scale=c_scale,
+            search_value_mode=search_value_mode,
         ),
     ).to(device)
     for key, network in (

@@ -28,6 +28,8 @@ self_play:
   total_transitions: 100000
   c_visit: 50.0
   c_scale: 0.1
+  # Gumbel returned value only; PUCT always uses simulation_average.
+  search_value_mode: improved_policy  # or simulation_average (V2-style)
   # Four environments collect 100 transitions between actor refreshes.
   steps_per_iteration: 25
   trajectory_length: 400

@@ -180,7 +180,7 @@ public:
         }
     }
 
-    py::tuple policy_and_root_values_arrays() const {
+    py::tuple policy_and_root_values_arrays(bool simulation_average) const {
         const auto root_count = static_cast<py::ssize_t>(roots_.size());
         py::array_t<float> policies({
             root_count,
@@ -192,7 +192,7 @@ public:
 #pragma omp parallel for if(root_count >= 32)
         for (py::ssize_t index = 0; index < root_count; ++index) {
             value_output(index) = roots_[index].write_policy_and_root_value(
-                &policy_output(index, 0)
+                &policy_output(index, 0), simulation_average
             );
         }
         return py::make_tuple(policies, values);
@@ -269,8 +269,8 @@ void BatchTree::expand_and_back_up_arrays(
     );
 }
 
-py::tuple BatchTree::policy_and_root_values_arrays() const {
-    return impl_->policy_and_root_values_arrays();
+py::tuple BatchTree::policy_and_root_values_arrays(bool simulation_average) const {
+    return impl_->policy_and_root_values_arrays(simulation_average);
 }
 
 py::array_t<std::int64_t> BatchTree::selected_actions_array() const {

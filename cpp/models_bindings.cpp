@@ -245,7 +245,8 @@ PYBIND11_MODULE(_models_native, module) {
                 const std::string&,
                 std::int64_t,
                 double,
-                double
+                double,
+                const std::string&
             >(),
             py::arg("evaluator"),
             py::arg("num_simulations") = 50,
@@ -260,7 +261,8 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("search_algorithm") = "puct",
             py::arg("num_top_actions") = 4,
             py::arg("c_visit") = 50.0,
-            py::arg("c_scale") = 0.1
+            py::arg("c_scale") = 0.1,
+            py::arg("search_value_mode") = "improved_policy"
         )
         .def(
             "search_batch",
@@ -301,7 +303,8 @@ PYBIND11_MODULE(_models_native, module) {
                 const std::string&,
                 std::int64_t,
                 double,
-                double
+                double,
+                const std::string&
             >(),
             py::arg("representation"),
             py::arg("prediction"),
@@ -323,7 +326,8 @@ PYBIND11_MODULE(_models_native, module) {
             py::arg("search_algorithm") = "puct",
             py::arg("num_top_actions") = 4,
             py::arg("c_visit") = 50.0,
-            py::arg("c_scale") = 0.1
+            py::arg("c_scale") = 0.1,
+            py::arg("search_value_mode") = "improved_policy"
         )
         .def("eval", [](ValueTargetNetwork& self) -> ValueTargetNetwork& {
             self.eval();

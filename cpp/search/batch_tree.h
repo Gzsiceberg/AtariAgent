@@ -44,7 +44,9 @@ public:
         FloatArray values,
         FloatArray policy_logits
     );
-    pybind11::tuple policy_and_root_values_arrays() const;
+    pybind11::tuple policy_and_root_values_arrays(
+        bool simulation_average = false
+    ) const;
     pybind11::array_t<std::int64_t> selected_actions_array() const;
 
 private:

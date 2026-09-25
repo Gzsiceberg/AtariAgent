@@ -91,6 +91,7 @@ def make_value_target(
         config.num_top_actions,
         config.c_visit,
         config.c_scale,
+        config.search_value_mode,
     )
 
 
