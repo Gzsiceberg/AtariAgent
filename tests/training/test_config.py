@@ -235,6 +235,28 @@ def test_determinism_can_be_enabled_without_changing_precision() -> None:
     assert enabled.training.precision == default.training.precision
 
 
+def test_file_outputs_can_be_disabled_without_disabling_evaluation() -> None:
+    register_train_agent_config()
+    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        config = compose(
+            config_name="train_agent",
+            overrides=[
+                "checkpoint.path=null",
+                "checkpoint.pre_final_snapshot_path=null",
+                "evaluation.data_path=null",
+                "evaluation.plot_path=null",
+                "wandb.enabled=true",
+            ],
+        )
+    assert config.checkpoint.path is None
+    assert config.checkpoint.pre_final_snapshot_path is None
+    assert config.evaluation.data_path is None
+    assert config.evaluation.plot_path is None
+    assert config.evaluation.enabled is True
+    assert config.wandb.enabled is True
+
+
 def test_progress_can_be_forced_for_redirected_batch_output() -> None:
     register_train_agent_config()
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")

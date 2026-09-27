@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 # Submit the 26 Atari 100k games to jobd's shared controller queue.
-# Uses train_agent.yaml defaults, enables W&B, and disables pre-final snapshots.
+# Uses default algorithm settings and W&B evaluation; disables checkpoint,
+# snapshot, evaluation JSON, and plot files. Training/W&B logs remain enabled.
 # Requires workers provisioned by vastai/setup.yml.
 # No local files or credentials are sent to workers; results stay on workers.
 # Supply W&B authentication through jobd queue secrets.
 # This script neither restarts workers nor manages power or queue concurrency.
 #
-# Usage: ./scripts/train_game_experiments.sh [--gumbel | --puct-target-400 | --gumbel-target-400]
-#   No option: default PUCT experiment using train_agent.yaml defaults
-#   --gumbel: Gumbel experiment using the default target update interval
-#   --puct-target-400: PUCT experiment with target updates every 400 learner steps
-#   --gumbel-target-400: Gumbel experiment with target updates every 400 learner steps
+# Usage: ./scripts/train_game_experiments.sh
+# Algorithm settings come exclusively from train_agent.yaml defaults.
 # Optional environment:
 #   SEED: training seed (default 2)
 #   RUN_ID: run label (default timestamp); use distinct IDs on shared storage
@@ -26,31 +24,12 @@
 set -Eeuo pipefail
 
 experiment=default
-experiment_overrides=()
-experiment_selected=0
 for option in "$@"; do
     case "$option" in
         -h|--help)
-            echo "Usage: ${0##*/} [--gumbel | --puct-target-400 | --gumbel-target-400]"
+            echo "Usage: ${0##*/}"
             exit 0 ;;
-        --gumbel|--puct-target-400|--gumbel-target-400)
-            if (( experiment_selected )); then
-                printf 'Error: choose only one experiment option.\n' >&2
-                exit 1
-            fi
-            experiment_selected=1 ;;
         *) printf 'Error: unknown option: %s\n' "$option" >&2; exit 1 ;;
-    esac
-    case "$option" in
-        --gumbel)
-            experiment=gumbel
-            experiment_overrides=("search=gumbel") ;;
-        --puct-target-400)
-            experiment=puct_target400
-            experiment_overrides=("search=puct" "reanalysis.target_update_interval=400") ;;
-        --gumbel-target-400)
-            experiment=gumbel_target400
-            experiment_overrides=("search=gumbel" "reanalysis.target_update_interval=400") ;;
     esac
 done
 
@@ -90,17 +69,16 @@ while IFS='|' read -r number game environment_id; do
     args=(
         "seed=$SEED"
         "environment.id=$environment_id"
-        "checkpoint.path=$output_dir/checkpoints/agent_latest.pt"
+        "checkpoint.path=null"
         "checkpoint.pre_final_snapshot_path=null"
-        "evaluation.data_path=$output_dir/evaluations/agent_evaluations.json"
-        "evaluation.plot_path=$output_dir/evaluations/agent_evaluation.png"
+        "evaluation.data_path=null"
+        "evaluation.plot_path=null"
         "training.progress_mode=always"
         "training.progress_interval_seconds=10"
         "wandb.enabled=true"
         "wandb.project=$WANDB_PROJECT"
         "wandb.name=${environment_id##*/}_${experiment}_seed${SEED}_${RUN_ID}"
         "wandb.tags=[jobd,atari-100k,$experiment,all-games,$game]"
-        "${experiment_overrides[@]}"
     )
     [[ -z "$WANDB_ENTITY" ]] || args+=("wandb.entity=$WANDB_ENTITY")
     # Positional arguments keep paths and Hydra overrides safe from shell expansion.

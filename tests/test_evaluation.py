@@ -206,6 +206,14 @@ def test_load_agent_checkpoint_applies_search_overrides(
     assert gumbel_agent.search_config.value_prefix_horizon == unroll_steps
 
 
+def test_evaluation_record_without_checkpoint() -> None:
+    stats = EvaluationStats.from_rewards((1.0, 3.0))
+    record = EvaluationRecord.create(100, None, stats)
+    assert record.checkpoint is None
+    assert record.as_dict()["checkpoint"] is None
+    assert record.mean == 2.0
+
+
 def test_evaluation_history_writes_json_and_plot(tmp_path) -> None:
     stats = EvaluationStats.from_rewards((1.0, 3.0))
     records = [EvaluationRecord.create(100, tmp_path / "model.pt", stats)]

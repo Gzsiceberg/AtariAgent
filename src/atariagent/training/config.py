@@ -136,7 +136,7 @@ class LossConfig:
 class CheckpointConfig:
     """Checkpoint and resumable pre-final snapshot settings."""
 
-    path: str = "checkpoints/${environment_slug:${environment.id}}/agent_latest.pt"
+    path: str | None = "checkpoints/${environment_slug:${environment.id}}/agent_latest.pt"
     collection_interval: int = 10_000
     final_interval: int = 5_000
     pre_final_snapshot_path: str | None = (
@@ -153,10 +153,10 @@ class EvaluationConfig:
     evaluate_on_resume: bool = False
     episodes: int = 10
     num_envs: int = 4
-    data_path: str = (
+    data_path: str | None = (
         "evaluations/${environment_slug:${environment.id}}/agent_evaluations.json"
     )
-    plot_path: str = (
+    plot_path: str | None = (
         "evaluations/${environment_slug:${environment.id}}/agent_evaluation.png"
     )
 

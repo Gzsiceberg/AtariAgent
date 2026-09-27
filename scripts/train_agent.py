@@ -664,8 +664,10 @@ def main(config: TrainAgentConfig) -> None:
         checkpointed_updates: set[int] = set()
         reward_tracker = EpisodeRewardTracker()
         self_play_episode_rewards: list[float] = []
-        latest_checkpoint_path = Path(config.checkpoint.path)
-        if config.evaluation.enabled:
+        latest_checkpoint_path = (
+            Path(config.checkpoint.path) if config.checkpoint.path is not None else None
+        )
+        if config.evaluation.enabled and config.evaluation.data_path is not None:
             write_evaluation_history(
                 config.evaluation.data_path,
                 evaluation_records,
@@ -708,7 +710,7 @@ def main(config: TrainAgentConfig) -> None:
         )
 
         def evaluate_current_agent(
-            checkpoint_path: Path, *, phase: str = "Evaluation"
+            checkpoint_path: Path | None, *, phase: str = "Evaluation"
         ) -> None:
             """Evaluate the in-memory agent and persist its result."""
             stats = evaluate_agent(
@@ -721,11 +723,12 @@ def main(config: TrainAgentConfig) -> None:
             evaluation_records.append(
                 EvaluationRecord.create(update, checkpoint_path, stats)
             )
-            write_evaluation_history(
-                config.evaluation.data_path,
-                evaluation_records,
-                environment_id=config.environment.id,
-            )
+            if config.evaluation.data_path is not None:
+                write_evaluation_history(
+                    config.evaluation.data_path,
+                    evaluation_records,
+                    environment_id=config.environment.id,
+                )
             wandb_logger.log_evaluation(stats, update=update)
             log(
                 f"[bold blue]{phase} complete[/bold blue] "
@@ -739,27 +742,28 @@ def main(config: TrainAgentConfig) -> None:
             if update in checkpointed_updates:
                 return
             is_representative = update in representative_updates
-            save_checkpoint(
-                latest_checkpoint_path,
-                agent=agent,
-                trainer=trainer,
-                target_state=target_state,
-                target_version=target_version,
-                update=update,
-                config=config,
-            )
             saved_path = latest_checkpoint_path
-            if is_representative:
-                saved_path = representative_checkpoint_path(
-                    latest_checkpoint_path, update
+            if latest_checkpoint_path is not None:
+                save_checkpoint(
+                    latest_checkpoint_path,
+                    agent=agent,
+                    trainer=trainer,
+                    target_state=target_state,
+                    target_version=target_version,
+                    update=update,
+                    config=config,
                 )
-                saved_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(latest_checkpoint_path, saved_path)
+                if is_representative:
+                    saved_path = representative_checkpoint_path(
+                        latest_checkpoint_path, update
+                    )
+                    saved_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(latest_checkpoint_path, saved_path)
+                log(
+                    "[green]Checkpoint saved[/green] "
+                    f"[dim]update={update:,} path={saved_path}[/dim]"
+                )
             checkpointed_updates.add(update)
-            log(
-                "[green]Checkpoint saved[/green] "
-                f"[dim]update={update:,} path={saved_path}[/dim]"
-            )
 
             if not config.evaluation.enabled or not is_representative:
                 return
@@ -1095,7 +1099,7 @@ def main(config: TrainAgentConfig) -> None:
         run_updates(config.training.final_steps)
 
         checkpoint_and_evaluate()
-        if config.evaluation.enabled:
+        if config.evaluation.enabled and config.evaluation.plot_path is not None:
             plot_evaluation_history(
                 config.evaluation.plot_path,
                 evaluation_records,

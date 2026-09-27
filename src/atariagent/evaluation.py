@@ -46,7 +46,7 @@ class EvaluationRecord:
     """One checkpoint's evaluation result."""
 
     update: int
-    checkpoint: str
+    checkpoint: str | None
     rewards: tuple[float, ...]
     mean: float
     median: float
@@ -54,11 +54,11 @@ class EvaluationRecord:
 
     @classmethod
     def create(
-        cls, update: int, checkpoint: Path, stats: EvaluationStats
+        cls, update: int, checkpoint: Path | None, stats: EvaluationStats
     ) -> EvaluationRecord:
         return cls(
             update=update,
-            checkpoint=str(checkpoint),
+            checkpoint=None if checkpoint is None else str(checkpoint),
             rewards=stats.rewards,
             mean=stats.mean,
             median=stats.median,
