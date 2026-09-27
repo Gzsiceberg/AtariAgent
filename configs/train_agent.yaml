@@ -15,7 +15,7 @@ environment:
   # full_game: life losses keep the remaining time budget (historical default).
   # episodic_life: each life-loss reset starts a new budget (V2 wrapper order).
   # Without episodic_life enabled, both modes limit the full game.
-  time_limit_mode: episodic_life # full_game or episodic_life
+  time_limit_mode: full_game # full_game or episodic_life
   grayscale: false
   episodic_life: true
 
@@ -29,7 +29,7 @@ self_play:
   c_visit: 50.0
   c_scale: 0.1
   # Gumbel returned value only; PUCT always uses simulation_average.
-  search_value_mode: improved_policy  # or simulation_average (V2-style)
+  search_value_mode: simulation_average  # or improved_policy
   # Four environments collect 100 transitions between actor refreshes.
   steps_per_iteration: 25
   trajectory_length: 400
@@ -39,12 +39,12 @@ replay:
   # Reporting budget only: replay keeps all transitions without eviction.
   max_transitions: 100000
   warmup_transitions: 2000
-  # By default both modes use V2 insertion: each new trajectory gets
+  # With use_max_priority=false, V2 insertion uses
   # max(buffer maximum, trajectory error maximum); empty buffer maximum is 1.
   # Lower bound for normalized importance weights, in [0, 1]; 0 disables clipping.
   priority_weight_clip: 0.0
   # Override insertion with V1's buffer maximum only (1 when empty).
-  use_max_priority: false
+  use_max_priority: true
   # Sample with priority**0.6 and linearly anneal the
   # importance-sampling exponent from 0.4 to 1.0 over all learner updates.
   priority_alpha: 0.6
@@ -61,7 +61,7 @@ reanalysis:
   cache_targets: true
   # Re-search an entry once it is this many learner updates old. Zero disables
   # age-based expiration; cache clearing and target publication still refresh it.
-  cache_target_ttl: 200
+  cache_target_ttl: 50
   # Hard limit for queued native reanalysis requests.
   prefetch_batches: 2
   timeout_seconds: 600.0
@@ -88,7 +88,7 @@ training:
   # stale replay states after the model has become reliable.
   value_target: mixed
   mixed_value_start_step: 30000
-  mixed_value_threshold: 20000
+  mixed_value_threshold: 10000
   # Learner-only updates preserve replay freshness for mixed value targets.
   # Bound threaded sampling, reanalysis, H2D transfer, and ready GPU batches.
   batch_max_in_flight: 3
