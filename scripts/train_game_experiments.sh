@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Submit the 26 Atari 100k games to jobd's shared controller queue.
-# Uses default algorithm settings and W&B evaluation; disables checkpoint,
+# Uses default algorithm settings with optional overrides and W&B evaluation; disables checkpoint,
 # snapshot, evaluation JSON, and plot files. Training/W&B logs remain enabled.
 # Requires workers provisioned by vastai/setup.yml.
 # No local files or credentials are sent to workers; results stay on workers.
 # Supply W&B authentication through jobd queue secrets.
 # This script neither restarts workers nor manages power or queue concurrency.
 #
-# Usage: ./scripts/train_game_experiments.sh
-# Algorithm settings come exclusively from train_agent.yaml defaults.
+# Usage: ./scripts/train_game_experiments.sh [--mixed-value-threshold-20000] [--deterministic]
+# Algorithm settings use train_agent.yaml defaults unless opted in:
+#   --mixed-value-threshold-20000: set training.mixed_value_threshold=20000
+#   --deterministic: set training.deterministic=true
 # Optional environment:
 #   SEED: training seed (default 2)
 #   RUN_ID: run label (default timestamp); use distinct IDs on shared storage
@@ -24,10 +26,16 @@
 set -Eeuo pipefail
 
 experiment=default
+training_overrides=()
 for option in "$@"; do
     case "$option" in
+        --mixed-value-threshold-20000)
+            training_overrides+=("training.mixed_value_threshold=20000") ;;
+        --deterministic)
+            training_overrides+=("training.deterministic=true") ;;
         -h|--help)
-            echo "Usage: ${0##*/}"
+            echo "Usage: ${0##*/} [--mixed-value-threshold-20000] [--deterministic]"
+            echo "Both flags are opt-in; omitted flags use train_agent.yaml defaults."
             exit 0 ;;
         *) printf 'Error: unknown option: %s\n' "$option" >&2; exit 1 ;;
     esac
@@ -73,6 +81,7 @@ while IFS='|' read -r number game environment_id; do
         "checkpoint.pre_final_snapshot_path=null"
         "evaluation.data_path=null"
         "evaluation.plot_path=null"
+        "${training_overrides[@]}"
         "training.progress_mode=always"
         "training.progress_interval_seconds=10"
         "wandb.enabled=true"
