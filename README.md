@@ -3,302 +3,113 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.13+](https://img.shields.io/badge/Python-3.13%2B-blue.svg)](pyproject.toml)
 
-**Reproduce EfficientZero-style Atari 100k experiments on a single consumer GPU.**
+An independent PyTorch/C++ implementation of EfficientZero-style learning on a **single CUDA GPU**, without Ray or a distributed training cluster. AtariAgent combines EfficientZero learning objectives with EfficientZero V2-style Gumbel search and mixed value targets.
 
-AtariAgent is an independent PyTorch/C++ implementation of [EfficientZero](https://arxiv.org/abs/2111.00210) for the Atari 100k benchmark. It combines the Atari model and learning objectives introduced by EfficientZero with selected [EfficientZero V2](https://arxiv.org/abs/2403.00564) ideas, including Gumbel tree search and mixed value targets.
+## Results
 
-The project is intended both for reproducing sample-efficient Atari experiments and as a compact base for new model-based reinforcement-learning work. It uses one process and one CUDA GPU instead of a distributed Ray cluster or a multi-GPU worker topology.
+These single-seed results use the default [`configs/train_agent.yaml`](configs/train_agent.yaml): seed **2**, Gumbel search with **16 simulations**, BF16, a mixed-value threshold of **20,000**, and `deterministic=false`. Training uses 100,000 environment transitions and 120,000 learner updates: 100,000 during collection plus 20,000 final offline updates.
 
-This is primarily a **systems and accessibility contribution**, not a new reinforcement-learning algorithm or a bit-for-bit reimplementation of either official repository.
+Scores are the **highest evaluation mean across 14 evaluations**, each using 16 episodes—not final-checkpoint scores. Runtime is logged run elapsed time (hours:minutes:seconds), excluding queue wait; it varies with hardware and game. Missing results are **N/A**.
 
-## Reproduction snapshot
+| Game | AtariAgent best eval mean | Runtime | Human | EfficientZero V1 | EfficientZero V2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| alien | N/A | N/A | 7,127.7 | 808.5 | 1,557.7 |
+| amidar | N/A | N/A | 1,719.5 | 148.6 | 184.9 |
+| assault | 1,724.625 | 2:58:49 | 742 | 1,263.1 | 1,757.5 |
+| asterix | 33,606.25 | 3:30:59 | 8,503.3 | 25,557.8 | 61,810 |
+| bank-heist | N/A | N/A | 753.1 | 351 | 1,316.7 |
+| battle-zone | N/A | N/A | 37,187.5 | 13,871.2 | 14,433.3 |
+| boxing | 39 | 3:14:44 | 12.1 | 52.7 | 75 |
+| breakout | 380 | 6:02:52 | 30.5 | 414.1 | 400.1 |
+| chopper-command | N/A | N/A | 7,387.8 | 1,117.3 | 1,196.6 |
+| crazy-climber | 130,275 | 3:29:40 | 35,829.4 | 83,940.2 | 112,363.3 |
+| demon-attack | 17,960.3125 | 3:37:14 | 1,971 | 13,003.9 | 22,773.5 |
+| freeway | N/A | N/A | 29.6 | 21.8 | 0 |
+| frostbite | N/A | N/A | 4,334.7 | 296.3 | 1,136.3 |
+| gopher | 3,628.75 | 3:43:52 | 2,412.5 | 3,260.3 | 3,868.7 |
+| hero | N/A | N/A | 30,826.4 | 9,315.9 | 9,705 |
+| jamesbond | 393.75 | 2:48:38 | 302.8 | 517 | 468.3 |
+| kangaroo | N/A | N/A | 3,035 | 724.1 | 1,886.7 |
+| krull | 9,260.625 | 3:00:22 | 2,665.5 | 5,663.3 | 9,080 |
+| kung-fu-master | 35,712.5 | 3:01:35 | 22,736.3 | 30,944.8 | 28,883.3 |
+| ms-pacman | N/A | N/A | 6,951.6 | 1,281.2 | 2,251 |
+| pong | 14.5 | 4:12:16 | 14.6 | 20.1 | 20.8 |
+| private-eye | N/A | N/A | 69,571.3 | 96.7 | 99.8 |
+| qbert | 16,204.6875 | 2:59:01 | 13,455 | 13,781.9 | 16,058.3 |
+| road-runner | 36,450 | 3:32:29 | 7,845 | 17,751.3 | 27,516.7 |
+| seaquest | N/A | N/A | 42,054.7 | 1,100.2 | 1,974 |
+| up-n-down | 22,555 | 3:06:40 | 11,693.2 | 17,264.2 | 15,224.3 |
 
-The following scores come from completed local runs in `runs/` and `evaluations/`. Every AtariAgent entry is the **final 120,000-update checkpoint** after 100,000 environment transitions, trained with seed `2`, Gumbel search, 16 simulations, and BF16. Scores are raw returns from 16 complete evaluation episodes using seeds 2–17, greedy actions, sticky-action `ALE/*-v5` environments, and no terminal-on-life-loss evaluation.
+### Human-normalized aggregates
 
-| Game | Reanalysis cache clearing | AtariAgent final score, mean ± episode std | Median | EfficientZero paper |
-| --- | ---: | ---: | ---: | ---: |
-| Alien | Disabled | **816.9 ± 241.3** | 670 | 808.5 ± 204.4 |
-| Breakout | Every 200 updates | **343.3 ± 86.2** | 411 | 414.1 ± 17.4 |
-| Ms. Pac-Man | Every 200 updates | **1,649.4 ± 247.0** | 1,820 | 1,281.2 ± 130.4 |
+All methods use the **same 14 measured games**, excluding N/A entries. These are subset results, not full 26-game benchmark aggregates.
 
-These results show that the implementation learns effectively within the 100k interaction budget, but they are **not yet a full benchmark reproduction**. Each AtariAgent number is one training run evaluated over 16 episodes. The paper values are means over three independently trained agents, each evaluated with 32 seeds, as reported in the [EfficientZero supplementary material](https://papers.nips.cc/paper_files/paper/2021/file/d5eca8dc3820cad9fe56a3bafda65ca1-Supplemental.pdf). Differences in evaluation sample size and implementation mean the columns should be treated as a reference rather than a strict statistical comparison.
+| Method | Normalized mean | Normalized median |
+| --- | ---: | ---: |
+| AtariAgent | 416.69% | 306.64% |
+| EfficientZero V1 | 343.16% | 213.37% |
+| EfficientZero V2 | 469.36% | 323.28% |
 
-Training writes the raw per-episode rewards, checkpoint paths, means, medians, and standard deviations to `evaluations/<game>/agent_evaluations.json` so results can be inspected rather than inferred from a plot.
+AtariAgent exceeds human scores on **13/14** games and EfficientZero V1 on **10/14**. Paper results are reference values, not local reruns; their reporting protocols differ from these single-seed, best-evaluation results.
 
-## Measured wall-clock performance
+### Cautions
 
-On `ALE/Alien-v5`, the optimized Gumbel configuration completed **100,000 environment transitions and 120,000 learner updates**—100,000 during data collection plus 20,000 offline updates—in **2 hours 55 minutes**. This time includes the final 16-episode evaluation.
-
-| Hardware | Search | Reanalysis cache | Precision | Time |
-| --- | --- | --- | --- | --- |
-| NVIDIA GeForce RTX 3060 Ti (8 GB), Intel Core i9-13900KF | Gumbel, 16 simulations | No periodic clearing | BF16 | 2:55:39 |
-
-This is one historical systems result, not a throughput guarantee. Wall-clock time varies by game, search budget, cache freshness, CPU, and software version. The measured run disabled periodic cache clearing; current training instead ramps policy-cache clearing from 100 to 1,000 learner updates over the first half of collection. For comparison, a measured 50-simulation PUCT run on the same machine took approximately 4 hours 6 minutes.
-
-## Why AtariAgent?
-
-- **Single-process, single-GPU training.** No Ray, DDP, or multi-GPU worker topology is required.
-- **Native search and reanalysis.** Batched PUCT/Gumbel tree traversal and target-network inference run through an asynchronous in-process C++/LibTorch pipeline, reducing Python serialization, tensor copies, and CPU/GPU synchronization.
-- **Replay-state reanalysis cache.** Search values and policies are cached with bounded age, while deterministic target-network bootstrap predictions are cached until the next model publication. Repeated replay samples evaluate only cache misses.
-- **Explicit freshness/throughput trade-off.** Hydra settings control periodic cache clearing, allowing experiments to choose between fresher targets and higher throughput.
-- **V1/V2 search comparison.** Conventional PUCT and EfficientZero V2-style Gumbel top-*m* sequential halving are available in the same implementation.
-- **Modern experiment tooling.** Typed Hydra configuration, `uv`, BF16, `torch.compile`, bounded asynchronous prefetching, checkpoints, parallel evaluation, and tests are included.
+- **Highly unstable games:** Qbert, Pong, Kung-fu-master, Gopher, Up-n-down, and Jamesbond can show large differences across runs and evaluations. Peak scores may not be sustained. Multiple seeds and predefined evaluation protocols are needed for reliable comparisons.
+- **Prioritized replay has a large impact on results.** Priority initialization, sampling exponent, importance weights, and priority updates materially affect learning. Keep these settings fixed and report them when comparing experiments.
+- Best-over-evaluations selection can inflate scores. This is a partial experimental snapshot, not a complete multi-seed reproduction of either paper.
 
 ## Quick start
 
-### Requirements
-
-Training currently requires Linux and an NVIDIA CUDA GPU. The optimized configuration requires BF16 support. Native extensions are compiled during installation, so a CUDA toolkit with `nvcc`, CMake 3.20 or newer, and a C++20 compiler are also required.
-
-The measured setup used:
-
-- NVIDIA GeForce RTX 3060 Ti with 8 GB VRAM
-- Intel Core i9-13900KF and 64 GB system RAM
-- Pop!_OS 24.04 LTS
-- Python 3.13.11 and `uv` 0.9.21
-- PyTorch 2.13.0+cu130 and CUDA toolkit 13.3
-- CMake 3.28.3 and GCC 13.3
-
-Other compatible versions may work but have not yet been included in the tested matrix.
-
-### Install
-
-Install [`uv`](https://docs.astral.sh/uv/), then clone and synchronize the locked environment:
+Requires Linux, an NVIDIA CUDA GPU, Python 3.13+, and a CUDA toolkit with `nvcc`, CMake 3.20+, and a C++20 compiler. BF16 requires compatible hardware.
 
 ```bash
 git clone https://github.com/Gzsiceberg/AtariAgent.git
 cd AtariAgent
 uv sync
-```
-
-Verify the installation, native extensions, and Atari environment:
-
-```bash
-uv run python -c "import ale_py, gymnasium as gym; gym.register_envs(ale_py); env = gym.make('ALE/Alien-v5'); env.close()"
 uv run pytest -q
-```
 
-### End-to-end smoke run
-
-Before starting a full experiment, this small run checks environment collection, replay, native reanalysis, learning, and checkpointing. Its score is not meaningful.
-
-```bash
-uv run python scripts/train_agent.py \
-    self_play.total_transitions=400 \
-    replay.max_transitions=400 \
-    replay.warmup_transitions=256 \
-    training.steps=10 \
-    training.final_steps=0 \
-    training.updates_per_iteration=10 \
-    training.batch_size=32 \
-    training.compile_model=false \
-    checkpoint.path=/tmp/atariagent-smoke/agent_latest.pt \
-    checkpoint.pre_final_snapshot_path=/tmp/atariagent-smoke/agent_pre_final.pt \
-    evaluation.enabled=false
-```
-
-### Train an agent
-
-The default preset uses **PUCT**, bounds cached reanalysis targets to 200 learner updates, and trains on Alien:
-
-```bash
+# Train with the default configuration
 uv run python scripts/train_agent.py
-```
 
-cuDNN convolution autotuning is disabled by default (`training.cudnn_benchmark=false`) to avoid repeated algorithm searches and GPU synchronization as reanalysis cache-miss batch sizes change. This is a process-wide setting for training and native inference; BF16, TF32, and learner compilation remain unchanged. Set `training.cudnn_benchmark=true` to compare the previous behavior. Autotuning is controlled independently of `training.deterministic`.
-
-Optional [ROSMO-style behavior regularization](https://arxiv.org/abs/2210.05980) can be enabled with `loss.behavior_regularization_weight=0.1` (default: `0.0`, disabled). This adds `-log π(a|s)` for replay actions whose detached model-based advantage `r̂ + γ V̂(next) - V̂(current)` is strictly positive. Predicted immediate rewards are recovered from value-prefix differences, respecting LSTM resets; γ uses the existing frame-skip-adjusted training discount. The loss covers valid replay transitions (not the final unroll state), uses replay importance weights and the existing unroll scaling, and applies during both online and final offline updates. This uses the current learner's recurrent model predictions; it does not enable ROSMO policy improvement or a separate offline-data pipeline.
-
-Choose another Atari environment through a Hydra override:
-
-```bash
+# Select another game
 uv run python scripts/train_agent.py environment.id=ALE/Breakout-v5
-```
 
-Use the EfficientZero V2-style Gumbel preset:
-
-```bash
-uv run python scripts/train_agent.py \
-    search=gumbel \
-    environment.id=ALE/Breakout-v5
-```
-
-Gumbel defaults to `self_play.search_value_mode=improved_policy`: the returned
-search value is the improved-policy-weighted average of raw completed Q values.
-Use `self_play.search_value_mode=simulation_average` for V2-style aggregation:
-`(initial network value + sum of simulation returns) / (1 + simulations)`.
-This applies to self-play and target reanalysis, is restored from checkpoints,
-and changes only the returned value—not search traversal, policy targets, or
-selected actions. It does not switch Q completion to V2's formula. PUCT always
-uses the simulation average regardless of this setting.
-
-The two search presets are:
-
-| Preset | Search | Periodic cache clearing | Target TTL | Select with |
-| --- | --- | --- | --- | --- |
-| PUCT (default) | Conventional PUCT MCTS | Disabled (`0`) | 200 updates | `search=puct` |
-| Gumbel | Top-*m* sequential halving | Every 400 learner updates | 200 updates | `search=gumbel` |
-
-All settings can be overridden from the command line. Inspect the resolved default configuration with:
-
-```bash
+# Inspect all settings
 uv run python scripts/train_agent.py --cfg job
 ```
 
-Checkpoints are written under `checkpoints/<game>/`. Evaluation data and plots are written under `evaluations/<game>/`.
-
-### Rerun only the final learner phase
-
-Immediately before `training.final_steps`, training writes
-`checkpoints/<game>/agent_pre_final.pt`. Unlike model-only checkpoints, this
-snapshot includes the replay buffer, optimizer, target network, update counter,
-and RNG states. With the default 100k RGB replay it is roughly 3 GB.
-
-Rerun only the final learner-only phase with:
-
-```bash
-uv run python scripts/train_agent.py \
-    environment.id=ALE/Alien-v5 \
-    checkpoint.resume_pre_final_path=checkpoints/Alien-v5/agent_pre_final.pt
-```
-
-The resumed run skips self-play and starts at update 100,000. To evaluate the
-loaded model before applying any final-phase updates, add
-`evaluation.evaluate_on_resume=true`. That baseline is recorded at update
-100,000 in the configured evaluation history before training continues.
-Override `checkpoint.path` and the `evaluation.*_path` settings if you want to
-preserve outputs from an earlier final-phase run. Set
-`checkpoint.pre_final_snapshot_path=null` to disable snapshot creation. Only
-load snapshots you trust; replay snapshots use Python pickle through
-`torch.load`.
-
-### Dynamics action encoding
-
-The default `model.action_embedding=true` projects the normalized action plane
-into 16 channels with LayerNorm. To use EfficientZero V1's raw scalar action
-plane instead (no action projection or LayerNorm):
-
-```bash
-uv run python scripts/train_agent.py \
-    environment.id=ALE/Qbert-v5 search=gumbel model.action_embedding=false
-```
-
-Only action encoding changes; the rest of the network is unchanged. The option
-applies to training, self-play, and native reanalysis. Checkpoint evaluation
-reads the saved setting; checkpoints without it retain the previous `true`
-default. The two modes have incompatible dynamics weights, so start a new run
-when switching modes. To resume a pre-final snapshot, select the same mode used
-to create it.
-
-### Evaluate a checkpoint
-
-Training performs periodic and final evaluation automatically. A checkpoint can also be evaluated independently:
+For runs that save checkpoints:
 
 ```bash
 uv run python scripts/eval_agent.py checkpoints/Alien-v5/agent_latest.pt
-```
-
-Override the number of episodes, device, or evaluation search:
-
-```bash
-uv run python scripts/eval_agent.py \
-    checkpoints/Alien-v5/agent_latest.pt \
-    --episodes 16 \
-    --device cuda \
-    --search-algorithm gumbel \
-    --num-simulations 16
-```
-
-### Watch a trained agent
-
-On a machine with a graphical display:
-
-```bash
 uv run python scripts/watch_agent.py checkpoints/Alien-v5/agent_latest.pt
 ```
 
-### Optional Weights & Biases logging
+Watching requires a graphical display. Optional W&B logging uses your own account: `uv sync --extra wandb`, `uv run wandb login`, then train with `wandb.enabled=true`.
 
-Weights & Biases is disabled by default, so training runs without an account or network connection. Install and enable it with:
+### Schedule experiments with jobd
+
+I use [jobd](https://github.com/Gzsiceberg/jobd), a job queue and worker scheduler, to run training jobs on Vast.ai instances. An AI coding agent, jobd, and the instructions in [`vastai/vastai_setup.md`](vastai/vastai_setup.md) make it convenient to provision instances, configure workers, and submit experiments:
 
 ```bash
-uv sync --extra wandb
-uv run wandb login
-uv run python scripts/train_agent.py \
-    wandb.enabled=true \
-    wandb.project=AtariAgent
+SEED=2 ./scripts/train_game_experiments.sh --mixed-value-threshold-20000
+jobd -l
 ```
 
-The W&B entity, project, and tags can also be set through overrides such as `wandb.entity=<entity>` and `wandb.tags=[atari,baseline]`. `train/value_loss` and `train/reward_loss` report MAE, `mean(abs(prediction - target))`, for decoded scalar values and cumulative reward prefixes over valid targets, without replay weighting; optimization still uses categorical cross-entropy. Search-target diagnostics include entropy, maximum action probability, and effective action count `exp(H)`. Reanalysis diagnostics include exact cache hit rate.
+The script schedules all 26 games by default. Use `START_GAME` / `END_GAME` for an inclusive range or `DRY_RUN=1` to preview. Workers need a configured checkout and logging credentials. The script disables checkpoints and local evaluation files but retains training logs and W&B metrics. See [`vastai/vastai_setup.md`](vastai/vastai_setup.md) for worker provisioning.
 
-Four learning-signal metrics are logged at `training.log_every` under `train/`:
-- `importance_weight_mean`: mean replay importance weight; small values suppress the data-loss scale.
-- `importance_weight_ess_fraction`: `(sum(w)^2 / sum(w^2)) / batch_size`; near 1 means balanced weights, small values mean concentrated weights.
-- `representation_feature_variance`: across-sample population variance of root latent features, averaged over coordinates.
-- `dynamics_feature_variance`: the same variance at each unroll depth, averaged by valid sample count; padding is excluded.
+## Implementation
 
-Feature variances approaching zero can indicate collapse. They use the existing augmented training forwards (not extra inference passes), so compare trends rather than applying a universal cutoff. All four diagnostics are computed without gradients and do not change the training objective.
+- Native batched PUCT/Gumbel search and asynchronous C++/LibTorch reanalysis.
+- Cached replay-state search targets with configurable freshness limits.
+- Mixed value targets, prioritized replay, BF16, and learner compilation.
+- Hydra configuration, `uv` dependency management, and pytest tests.
 
-## Using AtariAgent as a research base
+The implementation mixes V1/V2 design choices and is not a bit-for-bit reproduction. Reanalysis caching trades target freshness for throughput. Training requires CUDA; CPU training is unsupported.
 
-The main extension points are:
+## References and license
 
-```text
-configs/                       Hydra experiment configurations
-src/atariagent/agent.py        Agent and action-selection interface
-src/atariagent/models/         Representation, dynamics, and prediction models
-src/atariagent/search/         Python search configuration and interface
-src/atariagent/training/       Learner, reanalysis, checkpoints, and logging
-src/atariagent/selfplay.py     Atari preprocessing and self-play collection
-cpp/search/                    Native batched tree traversal
-cpp/reanalysis/                Native target reanalysis and caching
-cpp/models/                    LibTorch inference models
-scripts/                       Training, evaluation, watching, and benchmarks
-tests/                         Unit and integration tests
-```
+- [EfficientZero V1 paper](https://arxiv.org/abs/2111.00210) · [Official implementation](https://github.com/YeWR/EfficientZero)
+- [EfficientZero V2 paper](https://arxiv.org/abs/2403.00564) · [Official implementation](https://github.com/Shengjiewang-Jason/EfficientZeroV2)
 
-Hydra configuration lives in `configs/train_agent.yaml`, with search presets in `configs/search/`. New experiments normally require configuration overrides rather than edits to the training script.
-
-## How this differs from the official implementations
-
-AtariAgent retains the central EfficientZero learning ideas while redesigning the execution pipeline for constrained hardware.
-
-| Aspect | EfficientZero V1 | EfficientZero V2 | AtariAgent |
-| --- | --- | --- | --- |
-| Primary scope | Atari 100k | Discrete and continuous control across Atari and DeepMind Control | Atari 100k |
-| Atari search | PUCT MCTS, normally 50 simulations | Gumbel top-*m* sequential halving, normally 16 simulations | Native PUCT by default; native Gumbel is also available |
-| Value targets | Bootstrapped *n*-step targets; policy reanalysis and root-value targets are separately configured | Mixed TD/search value targets with full policy reanalysis | V2-style mixed value targets and delayed-target-network reanalysis |
-| Prioritized replay | Priority exponent 0.6; importance exponent annealed from 0.4 to 1.0; standard launcher inserts at the current maximum | Priority and importance exponents 1.0 with a 0.1 weight floor; maximum-priority insertion | Configurable V1/V2 sampling and weighting; V2 insertion by default, or V1 buffer-maximum-only insertion with `replay.use_max_priority=true` |
-| Runtime architecture | Distributed Ray workers with a C++/Cython tree | Distributed Ray workers with Cython/C++ search | Python learner with an asynchronous in-process C++ reanalysis worker |
-| Reanalysis reuse | Recomputes sampled targets in reanalysis workers | Recomputes sampled targets in reanalysis workers | Caches targets by replay state and searches only cache misses |
-| Hardware objective | Official README recommends four RTX 3090 GPUs for high-throughput training | Official example launches with two GPUs and supports broader workloads | Consumer single-GPU experiments |
-| License | GPL-3.0 | GPL-3.0 | MIT |
-
-New trajectories receive a shared priority `max(current_buffer_max, max(trajectory_errors))`, matching V2 replay insertion. The buffer maximum defaults to **1 only when empty**, reflects current priorities, and is not a historical maximum. Trajectory errors are individual prediction/bootstrap absolute errors plus epsilon, excluding lookahead-only starts; insertion does not add epsilon again. Existing transition priorities are unchanged at insertion, and subsequent learner updates set individual priorities. Every sampled root has a supervised value target and updates its priority, including short tails with zero bootstrap. Snapshot loading preserves saved priorities rather than reinitializing them. Stored `initial_priorities` retain the raw individual errors for compatibility.
-
-Replay merges contiguous blocks from the same environment and episode into one training trajectory. Before the continuation arrives, the first lookahead state is a **temporary terminal**: its value target is zero, it has no policy loss, TD reward sums stop there, and later lookahead actions have no reward/consistency loss. When the next owner block arrives, overlapping lookahead is replaced rather than duplicated: 400 starts + 5 lookahead becomes 800 starts + 5 lookahead. The old boundary disappears, its state regains normal policy/value supervision, and TD bootstraps and dynamics unrolls can cross it. A terminal or truncated continuation is merged too, but replay never joins across an actual episode/life boundary. Each episode segment lives once in contiguous NumPy arrays; continuation insertion concatenates arrays and recomputes targets. Sampling uses precomputed NumPy slot-to-episode/offset tables, with no chunk scans, prefix sums, or merged-context dictionary lookups. Replay IDs remain stable across interleaved environments. There is **no eviction**: the legacy `max_transitions` setting is a reporting budget only, and storage grows with collected data. `reachable_mask` identifies active root/successor states; `action_mask` is its zero-copy `[:, 1:]` view, while `value_mask` additionally includes the real or temporary endpoint via `terminal_mask`. Mixed targets retain V2's strict `index > collected_transitions - threshold` recent-sample test. Final collection flushes pending starts into the same merge path without inventing environment terminal flags or completed-game scores. Version-4 replay snapshots store the episode arrays once and rebuild direct lookup tables on restore; older replay snapshots are rejected.
-
-Target-network publication clears both policy and value caches on its fixed 1,000-update schedule. Independently, `reanalysis.cache_target_ttl` expires policy/search entries after a bounded number of learner updates (200 by default). Raw bootstrap values need no TTL because they are deterministic for fixed target-network weights.
-
-## Scope and limitations
-
-- Training requires an NVIDIA CUDA GPU; CPU training is not supported.
-- The published snapshot contains single-training-seed evidence rather than a complete multi-seed, 26-game Atari 100k benchmark.
-- AtariAgent intentionally mixes V1 and V2 design choices and is not expected to reproduce either official implementation bit for bit.
-- Aggressive reanalysis caching improves throughput but changes target freshness. This trade-off should be reported with experimental results.
-- Wall-clock measurements are hardware- and software-specific.
-
-## Papers and official implementations
-
-- Weirui Ye et al., [“Mastering Atari Games with Limited Data”](https://arxiv.org/abs/2111.00210), NeurIPS 2021 — [official EfficientZero repository](https://github.com/YeWR/EfficientZero).
-- Shengjie Wang et al., [“EfficientZero V2: Mastering Discrete and Continuous Control with Limited Data”](https://arxiv.org/abs/2403.00564), ICML 2024 — [official EfficientZero V2 repository](https://github.com/Shengjiewang-Jason/EfficientZeroV2).
-
-This project is an independent implementation and is not affiliated with the paper authors or official repositories.
-
-## Contributing
-
-Bug reports, reproduction results, documentation improvements, and focused pull requests are welcome. Please include the resolved Hydra configuration, commit hash, hardware, software versions, training seed, and raw evaluation statistics when reporting an experiment.
-
-## License
-
-AtariAgent is released under the [MIT License](LICENSE).
+AtariAgent is independent and unaffiliated with the paper authors. Released under the [MIT License](LICENSE).
