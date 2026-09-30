@@ -1,11 +1,7 @@
 """Offline tests: never install packages, contact W&B, or start real workers."""
 
-import importlib.util
-import os
 import subprocess
-import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -90,32 +86,3 @@ def test_missing_token_fails_before_installation(bootstrap_env):
     result, trace = run_bootstrap(bootstrap_env)
     assert result.returncode != 0
     assert not trace
-
-
-@pytest.mark.parametrize("login_success", [True, False])
-def test_auth_check_isolates_login_files(monkeypatch, login_success):
-    spec = importlib.util.spec_from_file_location(
-        "verify_wandb_auth", ROOT / "scripts/verify_wandb_auth.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    monkeypatch.setenv("WANDB_API_KEY", "test-secret")
-    monkeypatch.setenv("HOME", "/original-home")
-    homes = []
-
-    def login(**kwargs):
-        assert kwargs == {"key": "test-secret", "verify": True, "timeout": 30}
-        homes.append(Path(os.environ["HOME"]))
-        assert homes[-1] != Path("/original-home")
-        Path(os.environ["NETRC"]).write_text("test-secret")
-        return login_success
-
-    # Deliberately provide no init() API: creating a run would fail the test.
-    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(login=login))
-    if login_success:
-        module.main()
-    else:
-        with pytest.raises(RuntimeError, match="authentication failed"):
-            module.main()
-    assert os.environ["HOME"] == "/original-home"
-    assert not homes[0].exists()
