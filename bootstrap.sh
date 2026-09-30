@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fresh workers only. Prerequisites: uv, procps, OpenCV system libraries,
-# and an exported JOBD_WORKER_TOKEN. Ansible provisions these prerequisites.
+# and exported JOBD_CONTROLLER / JOBD_WORKER_TOKEN. Ansible provisions these prerequisites.
 set -Eeuo pipefail
 trap 'status=$?; printf "Bootstrap failed at line %s (exit %s).\n" "$LINENO" "$status" >&2; exit "$status"' ERR
 umask 077
@@ -8,6 +8,11 @@ umask 077
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 export PATH="$HOME/.local/bin:$PATH"
 : "${JOBD_WORKER_TOKEN:?Set JOBD_WORKER_TOKEN before running bootstrap}"
+: "${JOBD_CONTROLLER:?Set JOBD_CONTROLLER to your own HTTPS controller before running bootstrap}"
+if [[ ! "$JOBD_CONTROLLER" =~ ^https://[^/[:space:]]+(/[^[:space:]]*)?$ ]]; then
+    echo 'Error: JOBD_CONTROLLER must be an HTTPS URL.' >&2
+    exit 1
+fi
 command -v pgrep >/dev/null
 if pgrep -x jobd-worker >/dev/null; then
     echo 'Error: a jobd worker is already running; refusing to interrupt it.' >&2

@@ -7,8 +7,13 @@
   vars:
     worker_token_file: "{{ lookup('env', 'HOME') }}/.local/state/atariagent/provision/worker-token"
     jobd_queue: default
-    jobd_controller: https://jobd-controller.aflashsheng.workers.dev
   tasks:
+    - name: Require an explicit HTTPS jobd controller before activation
+      ansible.builtin.assert:
+        that:
+          - (jobd_controller | default('')) is match('^https://[^/\\s]+(/[^\\s]*)?$')
+        fail_msg: 'Set jobd_controller to your own HTTPS controller URL in inventory or extra vars.'
+
     - name: Activate exactly the prepared checkout
       ansible.builtin.shell: |
         set -Eeuo pipefail

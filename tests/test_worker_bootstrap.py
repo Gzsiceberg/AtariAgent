@@ -27,6 +27,7 @@ def bootstrap_env(tmp_path):
         "HOME": str(tmp_path),
         "TRACE": str(tmp_path / "trace"),
         "JOBD_WORKER_TOKEN": "test-secret",
+        "JOBD_CONTROLLER": "https://controller.example.test",
     }
     return env
 
@@ -81,8 +82,19 @@ def test_existing_worker_is_not_interrupted(bootstrap_env):
     assert not trace
 
 
-def test_missing_token_fails_before_installation(bootstrap_env):
-    del bootstrap_env["JOBD_WORKER_TOKEN"]
+@pytest.mark.parametrize("variable", ["JOBD_WORKER_TOKEN", "JOBD_CONTROLLER"])
+def test_missing_configuration_fails_before_installation(bootstrap_env, variable):
+    del bootstrap_env[variable]
+    result, trace = run_bootstrap(bootstrap_env)
+    assert result.returncode != 0
+    assert not trace
+
+
+@pytest.mark.parametrize(
+    "controller", ["", "http://controller.example.test", "https://", "https://host bad"]
+)
+def test_invalid_controller_fails_before_installation(bootstrap_env, controller):
+    bootstrap_env["JOBD_CONTROLLER"] = controller
     result, trace = run_bootstrap(bootstrap_env)
     assert result.returncode != 0
     assert not trace

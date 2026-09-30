@@ -4,7 +4,22 @@ Use the existing Vast CLI and Ansible playbooks. No provisioning daemon or billi
 watchdog is needed. Fresh Ubuntu 24.04 instances only; never prepare over an
 existing jobd worker. **Preparation and activation are separate.**
 
-## 1. Keep one private inventory
+## 1. Configure your controller and keep one private inventory
+
+Use your own [jobd](https://github.com/Gzsiceberg/jobd) HTTPS controller. There is
+no AtariAgent controller default. Export the same endpoint and queue used to
+create worker tokens and submit jobs; the example inventory reads the endpoint
+from `JOBD_CONTROLLER`.
+
+```bash
+export JOBD_CONTROLLER="https://YOUR_JOBD_CONTROLLER"
+export JOBD_QUEUE=default
+```
+
+Authenticate the submitting host with your own jobd admin credentials. Never send
+those credentials to workers. Setup and activation reject a missing or non-HTTPS
+controller before making remote changes. A custom inventory must set
+`jobd_controller` explicitly (or pass it with `-e`).
 
 ```bash
 umask 077
@@ -80,14 +95,18 @@ verification. Do not suppress SSH stderr in a readiness loop.
 
 ## 4. Prepare, without starting training
 
-On the submitting host, ensure `ansible-playbook`, `jobd`, and authenticated `gh`
-are available. Commit and push the intended bootstrap revision to `main` first.
+On the submitting host, ensure `ansible-playbook` and `jobd` are available.
+Commit and push the intended bootstrap revision to `main` first.
 
-1. Generate `/root/.ssh/atari_deploy` on each instance. Register its public key as
-   a **read-only** GitHub deploy key; keep the private key on that instance.
-2. Install GitHub's published SSH host keys from `https://api.github.com/meta`
-   in each instance's `known_hosts` (not unverified `ssh-keyscan` output).
-3. Ask for the worker-token lifetime, then generate a new token on the submitting
+The public repository is cloned over HTTPS using
+`https://github.com/Gzsiceberg/AtariAgent.git`. No GitHub login, deploy key, or
+GitHub SSH host-key setup is required. Existing private inventories should change
+`repo_url` from the SSH URL to this HTTPS URL. SSH access to the Vast.ai instance
+itself is still required.
+
+1. Confirm your inventory's `jobd_controller` and `jobd_queue` match the submitting
+   host's `JOBD_CONTROLLER` and `JOBD_QUEUE`.
+2. Ask for the worker-token lifetime, then generate a new token on the submitting
    host. Use a distinct private file for each batch so existing credentials are
    not overwritten:
 

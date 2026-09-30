@@ -64,19 +64,19 @@ def test_replay_uses_efficientzero_v1_per_defaults() -> None:
     assert linear_priority_beta(120_000, 120_000) == pytest.approx(1.0)
 
 
-def test_replay_max_priority_can_be_enabled() -> None:
+def test_replay_max_priority_defaults_to_enabled_and_can_be_disabled() -> None:
     register_train_agent_config()
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")
 
     with initialize_config_dir(version_base=None, config_dir=config_dir):
         default = compose(config_name="train_agent")
-        enabled = compose(
+        disabled = compose(
             config_name="train_agent",
-            overrides=["replay.use_max_priority=true"],
+            overrides=["replay.use_max_priority=false"],
         )
 
-    assert default.replay.use_max_priority is False
-    assert enabled.replay.use_max_priority is True
+    assert default.replay.use_max_priority is True
+    assert disabled.replay.use_max_priority is False
 
 
 def test_replay_priority_weight_clip_can_be_overridden() -> None:
@@ -112,13 +112,16 @@ def test_search_presets_select_their_simulation_budgets() -> None:
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")
 
     with initialize_config_dir(version_base=None, config_dir=config_dir):
-        puct = compose(config_name="train_agent")
+        default = compose(config_name="train_agent")
+        puct = compose(config_name="train_agent", overrides=["search=puct"])
         custom_puct = compose(
             config_name="train_agent",
-            overrides=["self_play.root_exploration_fraction=0.4"],
+            overrides=["search=puct", "self_play.root_exploration_fraction=0.4"],
         )
         gumbel = compose(config_name="train_agent", overrides=["search=gumbel"])
 
+    assert default.self_play.search_algorithm == "gumbel"
+    assert default.self_play.num_simulations == 16
     assert puct.self_play.search_algorithm == "puct"
     assert puct.self_play.num_simulations == 50
     assert puct.self_play.root_exploration_fraction == pytest.approx(0.25)

@@ -14,4 +14,7 @@ all:
         ansible_user: root
         ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15'
         repo_root: /workspace/AtariAgent
-        repo_url: git@github.com:Gzsiceberg/AtariAgent.git
+        repo_url: https://github.com/Gzsiceberg/AtariAgent.git
+        # Export your controller URL on the submitting host; no project default.
+        jobd_controller: "{{ lookup('env', 'JOBD_CONTROLLER') }}"
+        jobd_queue: default
