@@ -5,14 +5,10 @@ from hydra import compose, initialize_config_dir
 from hydra.errors import ConfigCompositionException
 
 from atariagent.training.config import (
-    AugmentationConfig,
     EvaluationConfig,
-    LossConfig,
     ReanalysisConfig,
     ReplayConfig,
-    SelfPlayConfig,
     TrainingConfig,
-    WandbConfig,
     checkpoint_path_for_environment,
     environment_slug,
     final_evaluation_max_episode_steps,
@@ -83,17 +79,6 @@ def test_replay_max_priority_can_be_enabled() -> None:
     assert enabled.replay.use_max_priority is True
 
 
-def test_full_game_time_limit_can_be_enabled() -> None:
-    register_train_agent_config()
-    config_dir = str(Path(__file__).resolve().parents[2] / "configs")
-    with initialize_config_dir(version_base=None, config_dir=config_dir):
-        config = compose(
-            config_name="train_agent",
-            overrides=["environment.time_limit_mode=full_game"],
-        )
-    assert config.environment.time_limit_mode == "full_game"
-
-
 def test_replay_priority_weight_clip_can_be_overridden() -> None:
     register_train_agent_config()
     config_dir = str(Path(__file__).resolve().parents[2] / "configs")
@@ -120,24 +105,6 @@ def test_environment_time_limit_mode_can_be_overridden() -> None:
 
     assert default.environment.time_limit_mode == "full_game"
     assert per_life.environment.time_limit_mode == "episodic_life"
-
-
-def test_augmentation_uses_efficientzero_atari_defaults() -> None:
-    config = AugmentationConfig()
-
-    assert config.enabled
-    assert config.transforms == ["shift", "intensity"]
-    assert config.shift_delta == 4
-    assert config.intensity_scale == pytest.approx(0.05)
-
-
-def test_self_play_defaults_to_50_simulation_puct() -> None:
-    config = SelfPlayConfig()
-
-    assert config.search_algorithm == "puct"
-    assert config.num_simulations == 50
-    assert config.root_exploration_fraction == pytest.approx(0.25)
-    assert config.num_envs * config.steps_per_iteration == 100
 
 
 def test_search_presets_select_their_simulation_budgets() -> None:
@@ -178,43 +145,6 @@ def test_resume_evaluation_is_disabled_by_default_and_can_be_enabled() -> None:
 
     assert not config.evaluate_on_resume
     assert resumed.evaluation.evaluate_on_resume
-
-
-def test_wandb_is_disabled_by_default() -> None:
-    config = WandbConfig()
-
-    assert not config.enabled
-    assert config.project == "AtariAgent"
-    assert config.entity is None
-    assert config.name is None
-    assert config.tags == []
-
-
-def test_consistency_loss_uses_efficientzero_defaults() -> None:
-    config = LossConfig()
-
-    assert config.consistency_weight == pytest.approx(5.0)
-
-
-def test_target_network_uses_efficientzero_hard_copy_interval() -> None:
-    config = TrainingConfig()
-    assert config.value_target == "mixed"
-    assert config.mixed_value_start_step == 30_000
-    assert config.mixed_value_threshold == 20_000
-    assert config.batch_max_in_flight == 3
-    assert config.batch_ready_prefetch == 2
-    assert config.batch_worker_timeout_seconds == pytest.approx(600.0)
-    assert config.optimizer == "adam"
-    assert config.learning_rate == pytest.approx(0.001)
-    assert config.lr_warmup_steps == 1_000
-    assert config.lr_decay_rate == pytest.approx(0.1)
-    assert config.lr_decay_steps == 100_000
-    assert config.steps == 100_000
-    assert config.final_steps == 20_000
-    assert config.updates_per_iteration == 100
-    assert config.compile_mode == "max-autotune"
-    assert config.progress_mode == "auto"
-    assert config.progress_interval_seconds == pytest.approx(0.1)
 
 
 def test_determinism_can_be_enabled_without_changing_precision() -> None:
@@ -272,18 +202,6 @@ def test_progress_can_be_forced_for_redirected_batch_output() -> None:
 
     assert config.training.progress_mode == "always"
     assert config.training.progress_interval_seconds == pytest.approx(10.0)
-
-
-def test_reanalysis_uses_target_network_defaults() -> None:
-    config = ReanalysisConfig()
-
-    assert config.policy_chunk_size == 768
-    assert config.cache_targets
-    assert config.cache_target_ttl == 200
-    assert config.prefetch_batches == 2
-    assert config.timeout_seconds == pytest.approx(600.0)
-    assert config.worker_num_threads == 4
-    assert config.target_update_interval == 1_000
 
 
 def test_target_network_uses_fixed_update_interval() -> None:

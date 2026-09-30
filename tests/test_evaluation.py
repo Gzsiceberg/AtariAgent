@@ -116,10 +116,18 @@ def test_evaluate_agent_rejects_invalid_parallelism() -> None:
         evaluate_agent(GreedyAgent(), OneStepEnvironment, episodes=1, num_envs=0)
 
 
-@pytest.mark.parametrize("precision", [None, "fp32", "bf16"])
-@pytest.mark.parametrize("action_embedding", [None, True, False])
-@pytest.mark.parametrize("unroll_steps", [2, 5])
-@pytest.mark.parametrize("search_value_mode", [None, "improved_policy", "simulation_average"])
+# Cover defaults and each independent override without a Cartesian product.
+@pytest.mark.parametrize(
+    "precision,action_embedding,unroll_steps,search_value_mode",
+    [
+        (None, None, 5, None),
+        ("fp32", True, 2, "improved_policy"),
+        ("bf16", False, 5, "simulation_average"),
+        ("bf16", None, 2, None),
+        (None, False, 2, "improved_policy"),
+        ("fp32", True, 5, "simulation_average"),
+    ],
+)
 def test_load_agent_checkpoint_applies_search_overrides(
     monkeypatch, precision, action_embedding, unroll_steps, search_value_mode,
 ) -> None:

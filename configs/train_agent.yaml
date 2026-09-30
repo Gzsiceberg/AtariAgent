@@ -88,7 +88,7 @@ training:
   # stale replay states after the model has become reliable.
   value_target: mixed
   mixed_value_start_step: 30000
-  mixed_value_threshold: 10000
+  mixed_value_threshold: 20000
   # Learner-only updates preserve replay freshness for mixed value targets.
   # Bound threaded sampling, reanalysis, H2D transfer, and ready GPU batches.
   batch_max_in_flight: 3

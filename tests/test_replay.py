@@ -633,8 +633,11 @@ def test_precomputed_values_match_reference_for_boundary_types(
 
 
 @pytest.mark.parametrize("include_bootstraps", [False, True])
-@pytest.mark.parametrize("block_length", [1, 4, 100])
-@pytest.mark.parametrize("lookahead", [0, 1, 5])
+# Short/padded and long blocks, with absent, partial, and full lookahead.
+@pytest.mark.parametrize(
+    "block_length,lookahead",
+    [(1, 0), (1, 5), (4, 1), (4, 5), (100, 0), (100, 5)],
+)
 @pytest.mark.parametrize("boundary", ["nonterminal", "terminated", "truncated"])
 def test_separate_prediction_and_dynamics_masks_at_block_boundaries(
     include_bootstraps, block_length, lookahead, boundary,
@@ -852,8 +855,8 @@ def test_first_replay_transitions_use_maximum_error_above_one() -> None:
     np.testing.assert_allclose(replay.priorities, [18.000001, 18.000001])
 
 
-@pytest.mark.parametrize("priority_weight_clip", [0.0, 0.1])
-@pytest.mark.parametrize("capacity", [3, 6])
+# Keep both sampling modes and reporting budgets without repeating every pair.
+@pytest.mark.parametrize("priority_weight_clip,capacity", [(0.0, 3), (0.1, 6)])
 @pytest.mark.parametrize(
     "existing,errors,expected",
     [
